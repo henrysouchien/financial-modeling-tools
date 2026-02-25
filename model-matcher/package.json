@@ -1,0 +1,23 @@
+{
+  "name": "model-matcher",
+  "version": "0.1.0",
+  "description": "Pure financial data to model matching engine.",
+  "license": "MIT",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build --silent && node --test dist/tests/*.test.js"
+  }
+}
