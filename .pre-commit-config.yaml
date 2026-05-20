@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: mcp-tool-lint
+        name: MCP tool ergonomics lint
+        entry: python3 scripts/mcp_lint.py --staged
+        language: system
+        files: '(^|/)mcp_server\.py$|(^|/)x_mcp_server\.py$|(^|/)[A-Za-z0-9_]+_mcp_server\.py$|(^|/)mcp_servers/.*\.py$|(^|/)mcp-server/.*\.py$|(^|/)src/server\.py$|(^|/)server\.py$'
+        require_serial: false

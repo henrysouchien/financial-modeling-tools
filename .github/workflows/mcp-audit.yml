@@ -1,0 +1,43 @@
+name: MCP audit
+
+on:
+  pull_request:
+    paths:
+      - "**/mcp_server.py"
+      - "**/x_mcp_server.py"
+      - "**/*_mcp_server.py"
+      - "**/mcp_servers/**/*.py"
+      - "**/mcp-server/**/*.py"
+      - "**/src/server.py"
+      - "**/server.py"
+      - "scripts/mcp_lint.py"
+      - ".pre-commit-config.yaml"
+      - ".github/workflows/mcp-audit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/mcp_server.py"
+      - "**/x_mcp_server.py"
+      - "**/*_mcp_server.py"
+      - "**/mcp_servers/**/*.py"
+      - "**/mcp-server/**/*.py"
+      - "**/src/server.py"
+      - "**/server.py"
+      - "scripts/mcp_lint.py"
+      - ".pre-commit-config.yaml"
+      - ".github/workflows/mcp-audit.yml"
+  workflow_dispatch:
+
+jobs:
+  mcp-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run MCP ergonomics lint
+        run: python3 scripts/mcp_lint.py --all
