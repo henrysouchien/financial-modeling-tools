@@ -57,7 +57,20 @@ def model_summarize(
   file_path: str,
   historical_cutoff_year: Optional[int] = None,
 ) -> dict:
-  """Summarize model structure: sheets, sections, item counts, key metrics."""
+  """Summarize model structure, sheets, sections, item counts, and key metrics.
+
+  Discovery: pass file_path as an existing .xlsx model path. If the caller only
+  has a workspace or ticker, locate the workbook first with file search or the
+  upstream model-building tool, then use this summary to discover sheet names,
+  sections, item IDs, and period coverage.
+
+  Sibling tools: call model_find after this when you need candidate item IDs by
+  label, model_values when you already know item IDs, and model_clear_cache
+  after editing the workbook on disk.
+
+  Common mistake: historical_cutoff_year changes period classification only; it
+  does not filter the workbook file itself.
+  """
   try:
     file_path = _validate_file_path(file_path)
     result = _summarize(file_path, historical_cutoff_year=historical_cutoff_year)
@@ -73,7 +86,20 @@ def model_find(
   limit: int = 20,
   historical_cutoff_year: Optional[int] = None,
 ) -> dict:
-  """Search for line items by name or ID substring match."""
+  """Search for line items by name or ID substring match.
+
+  Discovery: call model_summarize first to confirm file_path parses and to
+  understand available sheets/sections. Use a short query such as revenue,
+  ebitda, working capital, or part of a known item_id; returned items include
+  IDs that can feed model_values, model_drivers, sensitivity, and scenario.
+
+  Sibling tools: use model_values for exact item IDs, model_drivers for one
+  item's upstream tree, and model_summarize when the caller has not inspected
+  the workbook structure yet.
+
+  Common mistake: query is a substring search, not a formula evaluator. Use the
+  returned item IDs in downstream tools.
+  """
   try:
     file_path = _validate_file_path(file_path)
     results = _find(
@@ -94,7 +120,19 @@ def model_values(
   periods: str = "all",
   historical_cutoff_year: Optional[int] = None,
 ) -> dict:
-  """Get full time series values for one or more line items."""
+  """Get time-series values for one or more model line items.
+
+  Discovery: run model_find or model_summarize first to obtain exact item_ids.
+  Pass item_ids as a list of IDs from those results; periods can be all or the
+  period selector supported by the schema tools.
+
+  Sibling tools: use model_drivers when you need to explain where a value comes
+  from, model_sensitivity to rank upstream inputs for one target, and
+  model_scenario to compare values after overrides.
+
+  Common mistake: item_ids are schema/model line-item IDs, not display labels.
+  Search with model_find when you only know the label.
+  """
   try:
     file_path = _validate_file_path(file_path)
     result = _values(
@@ -115,7 +153,19 @@ def model_drivers(
   depth: int = 3,
   historical_cutoff_year: Optional[int] = None,
 ) -> dict:
-  """Trace the upstream driver tree for a line item."""
+  """Trace the upstream driver tree for one model line item.
+
+  Discovery: run model_find or model_values first to choose the exact item_id.
+  Increase depth only when the first driver tree is too shallow; larger depths
+  can make the response much larger.
+
+  Sibling tools: use model_values for the target's time series,
+  model_sensitivity to quantify which drivers matter most, and model_scenario
+  to test explicit input overrides.
+
+  Common mistake: item_id must be one line-item ID. Do not pass a display label
+  or a list; use model_find and then call this tool once per target.
+  """
   try:
     file_path = _validate_file_path(file_path)
     result = _drivers(
@@ -139,7 +189,20 @@ def model_sensitivity(
   max_candidates: Optional[int] = None,
   historical_cutoff_year: Optional[int] = None,
 ) -> dict:
-  """Rank upstream inputs by impact on a target metric. Can be slow."""
+  """Rank upstream inputs by impact on one target metric.
+
+  Discovery: run model_find/model_values first to choose target_id, and
+  model_drivers to sanity-check the upstream driver graph. candidate_filter
+  controls which inputs are considered; max_candidates limits expensive scans.
+
+  Sibling tools: use model_drivers for explainability, model_scenario when you
+  already know the overrides to test, and model_values to inspect the target
+  before and after sensitivity work.
+
+  Common mistake: this can be slow on large workbooks. Start with a modest n,
+  candidate_filter='drivers', and max_candidates when an agent needs a quick
+  read.
+  """
   try:
     file_path = _validate_file_path(file_path)
     result = _sensitivity(
@@ -163,7 +226,20 @@ def model_scenario(
   compare_items: Optional[List[str]] = None,
   historical_cutoff_year: Optional[int] = None,
 ) -> dict:
-  """Apply input overrides and compare resulting metrics against the base case."""
+  """Apply input overrides and compare resulting metrics against the base case.
+
+  Discovery: run model_find/model_values first to obtain exact input item IDs
+  and compare item IDs. overrides must map item_id to {period: value}; periods
+  are converted to integer period keys before evaluation.
+
+  Sibling tools: use model_sensitivity to discover candidate inputs,
+  model_drivers to understand upstream dependencies, and model_values to fetch
+  current values before choosing override magnitudes.
+
+  Common mistake: overrides use item IDs and period keys, not display labels or
+  Excel cell addresses. Use model_find and model_values to build the override
+  payload.
+  """
   try:
     file_path = _validate_file_path(file_path)
     normalized: Dict[str, Dict[int, float]] = {}
@@ -187,7 +263,18 @@ def model_scenario(
 
 @mcp.tool()
 def model_clear_cache() -> dict:
-  """Clear the in-memory model cache. Useful after editing model files."""
+  """Clear the in-memory parsed-model cache.
+
+  Discovery: call this after editing a workbook on disk or after a model build
+  rewrites a file_path that has already been parsed by this server.
+
+  Sibling tools: use model_summarize immediately after clearing to confirm the
+  server reloads the current workbook. Value, driver, sensitivity, and scenario
+  tools will also reload on their next call.
+
+  Common mistake: this does not delete model files or generated artifacts; it
+  only clears the process-local cache.
+  """
   try:
     _clear_cache()
     return {"status": "ok", "message": "Model cache cleared"}
