@@ -1,0 +1,24 @@
+# schema/strategy_categories/defaults.yaml
+# Aliases must be NORMALIZED-DISTINCT from the canonical id and from each other.
+# Display-only variants (e.g. "Value" for id "value") are accepted as user input
+# automatically via the canonical-id self-entry in _alias_to_id; they do NOT need
+# to be listed in `aliases:`. List only forms whose normalized output differs
+# from the canonical id (e.g. "value-investing" → "value_investing" ≠ "value").
+version: 1.0
+categories:
+  - id: value
+    display_name: Value
+    aliases: [value-investing]
+    description: Buying assets below intrinsic value; margin of safety; mean reversion.
+  - id: special_situation
+    display_name: Special Situation
+    aliases: [special-situations]
+    description: Spinoffs, restructurings, M&A arb, IPO post-lockup, forced selling.
+  - id: macro
+    display_name: Macro
+    aliases: []
+    description: Top-down driven by economic cycles, rates, currency, commodity flows.
+  - id: compounder
+    display_name: Compounder
+    aliases: [compounder-quality, quality-compounder]
+    description: Long-duration high-quality businesses with reinvestment runway.

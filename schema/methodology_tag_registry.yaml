@@ -1,0 +1,44 @@
+# Approved methodology tag registry for plan #9 (KNOWLEDGE_WIKI_SCHEMA_PLAN.md §3.4).
+# Methodology units may only use tags listed here in their `methodology_tags:` frontmatter.
+# CI gate (sub-phase F) fails if a unit references an unlisted tag.
+# Add new tags here first (PR review), then use them in units.
+version: 1.0
+tags:
+  # Investment patterns (mirroring wiki/patterns/ filenames)
+  - attractive_setup
+  - expected_value_decision
+  - financial_warning_signs
+  - ideal_market_characteristics
+  - investment_case_types
+  - priced_to_perfection
+  - return_risk_decomposition
+  # Peer comparison/comps narrative lenses
+  - canonical_comps
+  - materiality_guardrails
+  - operating_comps
+  # Anti-patterns
+  - value_trap
+  - commodity_cycle
+  # Quality lenses
+  - high_quality_compounder
+  - margin_expansion
+  - capital_light
+  - quality_transition
+  - leverage_trajectory
+  - gross_margin_inflection
+  - fcf_durability
+  - transition_priced_in
+  # Special situations sublabels
+  - spinoff
+  - ipo_post_lockup
+  - restructuring
+  - merger_arb
+  - biotech_catalyst
+  - fda_designation
+  - clinical_readout
+  - catalyst_calendar
+  - tail_winner_setup
+  # Risk lenses
+  - factor_risk_dominant
+  - idiosyncratic_risk_dominant
+  - regulatory_risk

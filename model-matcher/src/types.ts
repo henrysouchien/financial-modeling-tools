@@ -27,6 +27,7 @@ export interface MatcherChange {
   new_formula?: string;
   match_hits?: number;
   collision_hits?: number;
+  missing_write_hits?: number;
 }
 
 export interface AutoDetectMeta {
@@ -43,6 +44,7 @@ export interface MatcherResult {
   cells_processed: number;
   cells_updated: number;
   cells_cleared: number;
+  missing_write_hits: number;
   collisions: number;
   collision_rate: number;
   low_match_warning?: string;

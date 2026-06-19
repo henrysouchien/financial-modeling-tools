@@ -87,6 +87,7 @@ export function match(input: MatcherInput): MatcherResult {
   let processedCount = 0;
   let updatedCount = 0;
   let clearedCount = 0;
+  let missingWriteCount = 0;
   let collisionCount = 0;
 
   for (let i = 0; i < sourceValues.length; i++) {
@@ -153,6 +154,7 @@ export function match(input: MatcherInput): MatcherResult {
     if (matchedFormula.matchHits > 0) {
       updatedCount++;
     }
+    missingWriteCount += matchedFormula.missingWriteHits;
     if (matchedFormula.collisionHits > 0) {
       collisionCount += matchedFormula.collisionHits;
     }
@@ -166,6 +168,7 @@ export function match(input: MatcherInput): MatcherResult {
       new_formula: matchedFormula.formula,
       match_hits: matchedFormula.matchHits,
       collision_hits: matchedFormula.collisionHits,
+      missing_write_hits: matchedFormula.missingWriteHits,
     });
   }
 
@@ -186,6 +189,7 @@ export function match(input: MatcherInput): MatcherResult {
     cells_processed: processedCount,
     cells_updated: updatedCount,
     cells_cleared: clearedCount,
+    missing_write_hits: missingWriteCount,
     collisions: collisionCount,
     collision_rate: collisionRate,
     low_match_warning: lowMatchWarning,

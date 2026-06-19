@@ -61,3 +61,42 @@ test("match throws conversion_factor_required when auto-detect fails", () => {
     (err: unknown) => err instanceof MatcherError && err.code === "conversion_factor_required"
   );
 });
+
+test("formula missing write values are zeroed without counting as clean matches", () => {
+  const result = match({
+    data: [
+      { prior_value: 100000, current_value: 120000 },
+      { prior_value: 200000, current_value: null },
+    ],
+    source_values: [100],
+    source_formulas: ["=100/200"],
+    conversion_factor: 1000,
+  });
+
+  assert.equal(result.cells_processed, 1);
+  assert.equal(result.cells_updated, 1);
+  assert.equal(result.missing_write_hits, 1);
+  assert.equal(result.changes[0].change_type, "formula");
+  assert.equal(result.changes[0].new_formula, "=+120/+0");
+  assert.equal(result.changes[0].match_hits, 1);
+  assert.equal(result.changes[0].missing_write_hits, 1);
+});
+
+test("reverse-mode formulas zero current-only facts without inflating clean matches", () => {
+  const result = match({
+    data: [{ prior_value: null, current_value: 120000 }],
+    source_values: [120],
+    source_formulas: ["=120"],
+    conversion_factor: 1000,
+    reverse_mode: true,
+  });
+
+  assert.equal(result.cells_processed, 1);
+  assert.equal(result.cells_updated, 0);
+  assert.equal(result.cells_cleared, 0);
+  assert.equal(result.missing_write_hits, 1);
+  assert.equal(result.changes[0].change_type, "formula");
+  assert.equal(result.changes[0].new_formula, "=+0");
+  assert.equal(result.changes[0].match_hits, 0);
+  assert.equal(result.changes[0].missing_write_hits, 1);
+});

@@ -10,6 +10,13 @@ from pathlib import Path
 from pprint import pformat
 from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+from .codegen_preflight import (
+    _all_specs_with_paths as _all_specs_with_paths,  # noqa: F401 - compatibility alias
+    _scan_formula_spec as _scan_formula_spec,  # noqa: F401 - compatibility alias
+    _walk_params_for_unsupported as _walk_params_for_unsupported,  # noqa: F401 - compatibility alias
+    codegen_preflight_scan,
+)
+from .codegen_runtime_helpers import _emit_entry_point, _emit_helpers
 from .dependency_graph import DependencyGraph
 from .models import (
     FinancialModel,
@@ -21,6 +28,7 @@ from .models import (
     PERIOD_MODE_YEARLY,
     ValueProvenance,
 )
+from .refs import line_item_ref_from_obj
 
 _INPUT_PROVENANCE = {
     ValueProvenance.input,
@@ -90,10 +98,28 @@ class ExprCompiler:
                 return self.compile_expr(params.get("expr"))
 
             function = params.get("function")
-            if function in {"SUM", "AVERAGE"}:
+            if function == "SUM_RANGE":
+                target_obj = params.get("target")
+                if line_item_ref_from_obj(target_obj) is None:
+                    raise NotImplementedError(
+                        f"SUM_RANGE in item {item_id!r} has malformed 'target' "
+                        f"(expected LineItemRef-coercible; got {type(target_obj).__name__}: "
+                        f"{target_obj!r})."
+                    )
+                raise NotImplementedError(
+                    "SUM_RANGE is not supported in codegen-compute path. "
+                    "Use dependency_graph evaluator."
+                )
+            if function in {"SUM", "AVERAGE", "MEDIAN"}:
                 items = params.get("items", [])
                 compiled = [self.compile_expr(it) for it in items]
-                helper = "safe_avg" if function == "AVERAGE" else "safe_sum"
+                helper = (
+                    "safe_avg"
+                    if function == "AVERAGE"
+                    else "safe_median"
+                    if function == "MEDIAN"
+                    else "safe_sum"
+                )
                 return f"{helper}({', '.join(compiled)})" if compiled else f"{helper}()"
 
             operands = params.get("operands")
@@ -164,7 +190,7 @@ class ExprCompiler:
         if expr is None:
             return "None"
 
-        ref = _line_item_ref_from_obj(expr)
+        ref = line_item_ref_from_obj(expr)
         if ref is not None:
             return self._compile_ref(ref)
 
@@ -173,7 +199,7 @@ class ExprCompiler:
 
         if isinstance(expr, dict):
             op = expr.get("op")
-            if op in {"+", "SUM", "AVG", "*"}:
+            if op in {"+", "SUM", "AVG", "MAX", "*"}:
                 args = [self.compile_expr(arg) for arg in expr.get("args", [])]
                 if op == "+":
                     return f"expr_add({', '.join(args)})" if args else "expr_add()"
@@ -181,7 +207,14 @@ class ExprCompiler:
                     return f"safe_sum({', '.join(args)})" if args else "safe_sum()"
                 if op == "AVG":
                     return f"safe_avg({', '.join(args)})" if args else "safe_avg()"
+                if op == "MAX":
+                    return f"expr_max({', '.join(args)})" if args else "expr_max()"
                 return f"expr_mul({', '.join(args)})" if args else "expr_mul()"
+
+            if op == "IFERROR":
+                inner = self.compile_expr(expr.get("expr"))
+                fallback = self.compile_expr(expr.get("fallback", 0))
+                return f"expr_iferror({inner}, {fallback})"
 
             if op in {"-", "/", "^"}:
                 left = self.compile_expr(expr.get("left"))
@@ -199,6 +232,11 @@ class ExprCompiler:
         return "None"
 
     def _compile_ref(self, ref: LineItemRef) -> str:
+        if ref.period_anchor != "first":
+            raise NotImplementedError(
+                f"LineItemRef {ref.id!r} uses period_anchor={ref.period_anchor!r}; "
+                "only 'first' is supported in codegen-compute path."
+            )
         if ref.id in self._missing_refs:
             return "None"
         item = _quote(ref.id)
@@ -214,6 +252,7 @@ def generate_python(
     """Generate a standalone Python model module from a FinancialModel."""
 
     model.build_index()
+    codegen_preflight_scan(model)
     graph = DependencyGraph()
     graph.build(model)
 
@@ -317,262 +356,6 @@ def _emit_cached_values(
     _emit_assignment(emitter, "INPUT_CACHED", input_cached)
     _emit_assignment(emitter, "ALL_CACHED", all_cached)
     _emit_assignment(emitter, "_CACHED_COMPUTED", cached_computed)
-    emitter.blank()
-
-
-def _emit_helpers(emitter: CodeEmitter) -> None:
-    emitter.comment("Helpers")
-
-    emitter.line("def _bootstrap_period(period: int, t: int) -> Optional[int]:")
-    with emitter.indent():
-        emitter.line("if PERIOD_MODE == 'yearly':")
-        with emitter.indent():
-            emitter.line("return period + t")
-        emitter.line("if PERIOD_MODE != 'quarterly5':")
-        with emitter.indent():
-            emitter.line("raise ValueError(f'Unknown period mode: {PERIOD_MODE}')")
-        emitter.line("if t == 0:")
-        with emitter.indent():
-            emitter.line("return period")
-        emitter.line("year = period // 10")
-        emitter.line("slot = period % 10")
-        emitter.line("if slot < 1 or slot > 5:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("index = year * 5 + (slot - 1)")
-        emitter.line("shifted = index + t")
-        emitter.line("if shifted < 0:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("shifted_year = shifted // 5")
-        emitter.line("shifted_slot = shifted % 5 + 1")
-        emitter.line("return shifted_year * 10 + shifted_slot")
-    emitter.blank()
-
-    emitter.line("def val(r: Dict[str, Dict[int, Optional[float]]], item_id: str, period: int, t: int = 0) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("idx = _PERIOD_INDEX.get(period)")
-        emitter.line("if idx is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("if t == 0:")
-        with emitter.indent():
-            emitter.line("v = r.get(item_id, {}).get(period)")
-            emitter.line("if v is not None:")
-            with emitter.indent():
-                emitter.line("return v")
-            emitter.line("return INPUT_CACHED.get(item_id, {}).get(period)")
-        emitter.line("target_idx = idx + t")
-        emitter.line("if 0 <= target_idx < len(PERIODS):")
-        with emitter.indent():
-            emitter.line("target_period = PERIODS[target_idx]")
-            emitter.line("v = r.get(item_id, {}).get(target_period)")
-            emitter.line("if v is not None:")
-            with emitter.indent():
-                emitter.line("return v")
-            emitter.line("return INPUT_CACHED.get(item_id, {}).get(target_period)")
-        emitter.line("if target_idx < 0:")
-        with emitter.indent():
-            emitter.line("target_period = _bootstrap_period(period, t)")
-            emitter.line("if target_period is None:")
-            with emitter.indent():
-                emitter.line("return None")
-            emitter.line("return INPUT_CACHED.get(item_id, {}).get(target_period)")
-        emitter.line("return None")
-    emitter.blank()
-
-    emitter.line("def safe_sum(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("non_none = [v for v in values if v is not None]")
-        emitter.line("if not non_none:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return sum(non_none)")
-    emitter.blank()
-
-    emitter.line("def safe_avg(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("non_none = [v for v in values if v is not None]")
-        emitter.line("if not non_none:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return sum(non_none) / len(non_none)")
-    emitter.blank()
-
-    emitter.line("def safe_items(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if any(v is None for v in values):")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return sum(values)")
-    emitter.blank()
-
-    emitter.line("def expr_add(*values: Optional[float]) -> float:")
-    with emitter.indent():
-        emitter.line("return sum(v or 0 for v in values)")
-    emitter.blank()
-
-    emitter.line("def expr_mul(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if any(v is None for v in values):")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("result = 1.0")
-        emitter.line("for value in values:")
-        with emitter.indent():
-            emitter.line("result *= value")
-        emitter.line("return result")
-    emitter.blank()
-
-    emitter.line("def safe_sub(left: Optional[float], right: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if left is None or right is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return left - right")
-    emitter.blank()
-
-    emitter.line("def safe_chain_sub(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if not values:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("if any(v is None for v in values):")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return values[0] - sum(values[1:])")
-    emitter.blank()
-
-    emitter.line("def safe_mul(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if not values:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("if any(v is None for v in values):")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("result = 1.0")
-        emitter.line("for value in values:")
-        with emitter.indent():
-            emitter.line("result *= value")
-        emitter.line("return result")
-    emitter.blank()
-
-    emitter.line("def safe_div(left: Optional[float], right: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if left is None or right is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("if right == 0:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return left / right")
-    emitter.blank()
-
-    emitter.line("def safe_chain_div(*values: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if not values:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("if any(v is None for v in values):")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("result = values[0]")
-        emitter.line("for value in values[1:]:")
-        with emitter.indent():
-            emitter.line("if value == 0:")
-            with emitter.indent():
-                emitter.line("return None")
-            emitter.line("result /= value")
-        emitter.line("return result")
-    emitter.blank()
-
-    emitter.line("def _negate(value: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("return None if value is None else -value")
-    emitter.blank()
-
-    emitter.line("def _adjust(value: Optional[float], adjustment: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if value is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("if adjustment is None:")
-        with emitter.indent():
-            emitter.line("return value")
-        emitter.line("return value + adjustment")
-    emitter.blank()
-
-    emitter.line("def _apply_scale_fn(value: float, scale_fn: str) -> float:")
-    with emitter.indent():
-        emitter.line("scale_fn = scale_fn.strip()")
-        emitter.line("if not scale_fn:")
-        with emitter.indent():
-            emitter.line("return value")
-        emitter.line("if scale_fn.startswith('/'):")
-        with emitter.indent():
-            emitter.line("return value / float(scale_fn[1:])")
-        emitter.line("if scale_fn.startswith('*'):")
-        with emitter.indent():
-            emitter.line("return value * float(scale_fn[1:])")
-        emitter.line("return value")
-    emitter.blank()
-
-    emitter.line(
-        "def _driver(base: Optional[float], rate: Optional[float], scale: Optional[float] = None, scale_fn: Optional[str] = None) -> Optional[float]:"
-    )
-    with emitter.indent():
-        emitter.line("if base is None or rate is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("result = base * rate")
-        emitter.line("if scale:")
-        with emitter.indent():
-            emitter.line("result /= float(scale)")
-        emitter.line("if isinstance(scale_fn, str):")
-        with emitter.indent():
-            emitter.line("result = _apply_scale_fn(result, scale_fn)")
-        emitter.line("return result")
-    emitter.blank()
-
-    emitter.line("def _ratio_sub1(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("value = safe_div(numerator, denominator)")
-        emitter.line("if value is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return value - 1")
-    emitter.blank()
-
-    emitter.line("def _growth(base: Optional[float], rate: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if base is None or rate is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return base * (1 + rate)")
-    emitter.blank()
-
-    emitter.line(
-        "def _roll_fwd(beginning: Optional[float], additions: List[Optional[float]], subtractions: List[Optional[float]]) -> Optional[float]:"
-    )
-    with emitter.indent():
-        emitter.line("if beginning is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("return beginning + sum(v or 0 for v in additions) - sum(v or 0 for v in subtractions)")
-    emitter.blank()
-
-    emitter.line("def _pow(left: Optional[float], right: Optional[float]) -> Optional[float]:")
-    with emitter.indent():
-        emitter.line("if left is None or right is None:")
-        with emitter.indent():
-            emitter.line("return None")
-        emitter.line("try:")
-        with emitter.indent():
-            emitter.line("return left ** right")
-        emitter.line("except (ValueError, OverflowError):")
-        with emitter.indent():
-            emitter.line("return None")
     emitter.blank()
 
 
@@ -1054,51 +837,6 @@ def _emit_compute(emitter: CodeEmitter) -> None:
     emitter.blank()
 
 
-def _emit_entry_point(emitter: CodeEmitter) -> None:
-    emitter.comment("Entry point")
-
-    emitter.line("def _filter_items(results: Dict[str, Dict[int, Optional[float]]], item_ids: Optional[List[str]]) -> Dict[str, Dict[int, Optional[float]]]:")
-    with emitter.indent():
-        emitter.line("if not item_ids:")
-        with emitter.indent():
-            emitter.line("return results")
-        emitter.line("return {item_id: results.get(item_id, {}) for item_id in item_ids}")
-    emitter.blank()
-
-    emitter.line("def _write_csv(path: str, results: Dict[str, Dict[int, Optional[float]]]) -> None:")
-    with emitter.indent():
-        emitter.line("with open(path, 'w', newline='', encoding='utf-8') as f:")
-        with emitter.indent():
-            emitter.line("writer = csv.writer(f)")
-            emitter.line("writer.writerow(['item_id'] + [str(period) for period in PERIODS])")
-            emitter.line("for item_id in sorted(results.keys()):")
-            with emitter.indent():
-                emitter.line("row = [item_id] + [results.get(item_id, {}).get(period) for period in PERIODS]")
-                emitter.line("writer.writerow(row)")
-    emitter.blank()
-
-    emitter.line("def main() -> None:")
-    with emitter.indent():
-        emitter.line("parser = argparse.ArgumentParser(description='Run generated financial model.')")
-        emitter.line("parser.add_argument('--json', action='store_true', help='Print JSON output.')")
-        emitter.line("parser.add_argument('--csv', type=str, help='Write CSV output to the given path.')")
-        emitter.line("parser.add_argument('--items', nargs='*', help='Limit output to listed item IDs.')")
-        emitter.line("args = parser.parse_args()")
-        emitter.line("results = compute(default_assumptions())")
-        emitter.line("results = _filter_items(results, args.items)")
-        emitter.line("if args.csv:")
-        with emitter.indent():
-            emitter.line("_write_csv(args.csv, results)")
-        emitter.line("if args.json or not args.csv:")
-        with emitter.indent():
-            emitter.line("print(json.dumps(results, sort_keys=True, indent=2))")
-    emitter.blank()
-
-    emitter.line("if __name__ == '__main__':")
-    with emitter.indent():
-        emitter.line("main()")
-
-
 def _time_order(model: FinancialModel) -> List[int]:
     ts = model.time_structure
     if ts.historical_periods or ts.projection_periods:
@@ -1194,17 +932,6 @@ def _value_dict_from_item(item: LineItem) -> Dict[int, float]:
     return values
 
 
-def _line_item_ref_from_obj(obj) -> Optional[LineItemRef]:
-    if isinstance(obj, LineItemRef):
-        return obj
-    if isinstance(obj, dict) and "id" in obj:
-        try:
-            return LineItemRef(id=str(obj["id"]), t=int(obj.get("t", 0)))
-        except Exception:
-            return None
-    return None
-
-
 def _quote(value) -> str:
     return json.dumps(value)
 
@@ -1239,4 +966,4 @@ def _emit_inline_assignment(emitter: CodeEmitter, lhs: str, value) -> None:
         emitter.line(line)
 
 
-__all__ = ["CodeEmitter", "ExprCompiler", "generate_python"]
+__all__ = ["CodeEmitter", "ExprCompiler", "codegen_preflight_scan", "generate_python"]

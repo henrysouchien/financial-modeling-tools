@@ -374,11 +374,17 @@ class FormulaPatternMatcher:
         over generic ratio/driver patterns.
         """
         if isinstance(ast, FuncCall):
-            if ast.name in {"OFFSET", "NPV", "XNPV", "IRR"}:
-                subtype = ast.name.lower()
-                if ast.name == "OFFSET":
-                    subtype = "offset_scenario"
-                return FormulaSpec(type=FormulaType.valuation, subtype=subtype, params={"formula": ast.name})
+            if ast.name == "OFFSET":
+                offset_spec = self._match_offset_scenario(ast, context)
+                if offset_spec:
+                    return offset_spec
+                return None
+            if ast.name in {"NPV", "XNPV", "IRR"}:
+                # Template-authored valuation specs carry structured params and
+                # remain renderable. Parsed workbook functions do not, so keep
+                # the original Excel formula as raw instead of inventing an
+                # incomplete valuation spec that cannot be re-rendered.
+                return None
 
         # DCF discount: CF / ((1 + r)^t)
         if isinstance(ast, BinaryOp) and ast.op == "/":
@@ -499,6 +505,34 @@ class FormulaPatternMatcher:
                 )
 
         return None
+
+    def _match_offset_scenario(self, ast: FuncCall, context: CellContext) -> Optional[FormulaSpec]:
+        if ast.name != "OFFSET" or len(ast.args) not in {2, 3}:
+            return None
+        anchor_node, selector_node = ast.args[0], ast.args[1]
+        if not isinstance(anchor_node, Ref) or not isinstance(selector_node, Ref):
+            return None
+
+        anchor_ref = self._to_line_item_ref(anchor_node, context)
+        selector_ref = self._to_line_item_ref(selector_node, context)
+        if anchor_ref is None or selector_ref is None:
+            return None
+
+        column_offset = 0
+        if len(ast.args) == 3:
+            column_arg = ast.args[2]
+            if isinstance(column_arg, Empty):
+                column_offset = 0
+            elif isinstance(column_arg, Number) and float(column_arg.value).is_integer():
+                column_offset = int(column_arg.value)
+            else:
+                return None
+
+        return FormulaSpec(
+            type=FormulaType.valuation,
+            subtype="offset_scenario",
+            params={"anchor": anchor_ref, "selector": selector_ref, "column_offset": column_offset},
+        )
 
     def _constant_value(self, ast: Node) -> Optional[float]:
         """Evaluate constant-only formulas (no refs).

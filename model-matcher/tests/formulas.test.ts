@@ -27,4 +27,16 @@ test("matchFormula zeros unmatched numeric tokens", () => {
   const result = matchFormula("=200/999", searchArray, writeArray, collisionArray, 1000);
   assert.equal(result.formula, "=+240/0");
   assert.equal(result.matchHits, 1);
+  assert.equal(result.missingWriteHits, 0);
+});
+
+test("matchFormula zeroes matched tokens with missing write values separately from clean matches", () => {
+  const searchArray = [null, null, 100000, 200000];
+  const writeArray = [null, null, 120000, null];
+  const collisionArray = [0, 0, 0, 0];
+
+  const result = matchFormula("=100/200", searchArray, writeArray, collisionArray, 1000);
+  assert.equal(result.formula, "=+120/+0");
+  assert.equal(result.matchHits, 1);
+  assert.equal(result.missingWriteHits, 1);
 });

@@ -174,11 +174,6 @@ def _default_period(model: FinancialModel) -> int:
     return periods[-1]
 
 
-def _default_year(model: FinancialModel) -> int:
-    """Backward-compatible alias for callers expecting year naming."""
-    return _default_period(model)
-
-
 def _downstream_nodes(graph: DependencyGraph, start: str) -> Set[str]:
     """Return all downstream nodes reachable from the start node."""
     visited: Set[str] = set()

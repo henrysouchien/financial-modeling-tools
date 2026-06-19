@@ -1,0 +1,1249 @@
+{
+  "summary": {
+    "total_expected_pairs": 0,
+    "error_counts": {},
+    "root_formula_types": {},
+    "root_cross_sheet_counts": {},
+    "root_ref_duplicate_source_count": 0,
+    "root_ref_total": 0
+  },
+  "cycle": {
+    "total_cycle_components": 51,
+    "component_classification_counts": {
+      "self_loop": 2,
+      "likely_false_cycle_year_collapse": 49
+    },
+    "edge_formula_type_counts": {
+      "driver": 349,
+      "ratio": 609,
+      "ref": 191,
+      "arithmetic": 233,
+      "growth": 37,
+      "roll_forward": 33
+    },
+    "sheet_participation": {
+      "Materiality": 2,
+      "Assumptions": 118,
+      "Quarterly": 74
+    },
+    "components": [
+      {
+        "size": 71,
+        "nodes": [
+          "quarterly.amortization_of_intangible_assets_r184",
+          "assumptions.as_of_cost_of_revenues_and_sg_a_r504",
+          "quarterly.accrued_compensation_and_related_benefits",
+          "assumptions.accrued_compensation_and_related_benefits",
+          "assumptions.as_of_cost_of_revenues_and_sg_a",
+          "quarterly.other_r120",
+          "assumptions.other_current_assets",
+          "assumptions.as_of_cost_of_revenues_and_sg_a_r507",
+          "quarterly.other_accrued_liabilities_add_income_taxes_payable",
+          "assumptions.other_accrued_liabilities",
+          "quarterly.accrued_expenses",
+          "quarterly.other_current_liabilities",
+          "quarterly.accounts_payable",
+          "assumptions.accounts_payable",
+          "assumptions.as_of_cost_of_revenues_and_sg_a_r501",
+          "quarterly.prepaid_income_taxes",
+          "assumptions.prepaid_income_taxes",
+          "quarterly.prepaid_and_other_assets_r197",
+          "quarterly.other_current_assets",
+          "quarterly.prepaid_and_other_assets",
+          "assumptions.prepaid_and_other_assets",
+          "assumptions.y_y_change_r469",
+          "quarterly.changes_in_operating_assets_and_liabilties",
+          "quarterly.other_liabilities_income_taxes_pay_accr_liab",
+          "quarterly.other_noncurrent_liabilities",
+          "quarterly.deferred_income_taxes_noncurrent",
+          "assumptions.deferred_income_taxes_noncurrent",
+          "assumptions.y_y_change_r510",
+          "assumptions.y_y_change_r466",
+          "assumptions.dividend_per_share",
+          "quarterly.net_cash_used_in_provided_by_financing_activities",
+          "quarterly.proceeds_from_payments_for_equity",
+          "quarterly.cash_dividends",
+          "assumptions.dividend_paid",
+          "assumptions.y_y_change_r547",
+          "assumptions.total_r318",
+          "assumptions.total_r302",
+          "quarterly.adjusted_ebitda_r24",
+          "quarterly.operating_income",
+          "quarterly.adjusted_operating_income",
+          "assumptions.amortization_of_acquired_intangibles_expense",
+          "quarterly.amortization_of_intangible_assets_r75",
+          "quarterly.amortization_of_intangible_assets",
+          "assumptions.amortization_r391",
+          "quarterly.intangible_assets_net",
+          "assumptions.intangible_assets_net",
+          "assumptions.less_amortization",
+          "assumptions.amortization_of_internally_developed_capitalized_software_expense",
+          "assumptions.avg_intangibles_r390",
+          "assumptions.end_intangibles_r389",
+          "quarterly.total_assets",
+          "quarterly.total_current_assets",
+          "quarterly.tax_rate",
+          "quarterly.provision_for_income_taxes",
+          "assumptions.income_tax_expense",
+          "assumptions.tax_rate",
+          "quarterly.net_cash_used_in_provided_by_operating_activities",
+          "quarterly.net_income_loss",
+          "quarterly.net_income_loss_attributable_to_msci_ltd",
+          "quarterly.income_from_continuing_operations",
+          "quarterly.income_before_income_taxes",
+          "quarterly.interest_income",
+          "assumptions.interest_rate",
+          "assumptions.interest_income_r416",
+          "assumptions.average",
+          "assumptions.cash_end_of_period",
+          "quarterly.cash_cash_equivalents",
+          "quarterly.cash_cash_equivalents_r112",
+          "quarterly.cash_and_cash_equivalents_end_of_period",
+          "quarterly.net_change_in_cash_and_cash_equivalents",
+          "quarterly.effect_of_exchange_rate_changes_disc_ops"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 39,
+          "Assumptions": 32
+        },
+        "internal_edges": 517,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 86,
+          "ratio": 238,
+          "driver": 16,
+          "arithmetic": 152,
+          "growth": 14,
+          "roll_forward": 11
+        },
+        "collapse_signals": 1233,
+        "quarterly_ref_signals": 9712,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 6,
+        "nodes": [
+          "assumptions.market_appreciation_depreciation_r265",
+          "assumptions.market_appreciation_depreciation",
+          "assumptions.cash_inflows_r266",
+          "assumptions.beginning_period_aum_in_etfs_linked_to_msci_indexes_billions",
+          "assumptions.period_end_aum_in_etfs_linked_to_msci_indexes",
+          "assumptions.cash_inflows"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 6
+        },
+        "internal_edges": 43,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 30,
+          "driver": 4,
+          "arithmetic": 9
+        },
+        "collapse_signals": 208,
+        "quarterly_ref_signals": 732,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 6,
+        "nodes": [
+          "quarterly.gross_a_r",
+          "quarterly.allowance_of_doubtful_accounts",
+          "assumptions.allowance_for_doubtful_accounts",
+          "assumptions.of_gross_a_r",
+          "assumptions.total_gross_accounts_receivable",
+          "assumptions.dso_gross"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 2,
+          "Assumptions": 4
+        },
+        "internal_edges": 114,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "arithmetic": 30,
+          "ref": 6,
+          "driver": 24,
+          "ratio": 54
+        },
+        "collapse_signals": 75,
+        "quarterly_ref_signals": 640,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 4,
+        "nodes": [
+          "quarterly.treasury_stock",
+          "assumptions.treasury_stock",
+          "assumptions.total_amount",
+          "quarterly.repurchases_of_common_stock"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 2,
+          "Assumptions": 2
+        },
+        "internal_edges": 27,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 5,
+          "roll_forward": 11,
+          "arithmetic": 11
+        },
+        "collapse_signals": 144,
+        "quarterly_ref_signals": 377,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 4,
+        "nodes": [
+          "assumptions.depreciation_as_of_beginning_fixed_assets",
+          "assumptions.depreciation",
+          "quarterly.depreciation",
+          "quarterly.depreciation_r76"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 2
+        },
+        "internal_edges": 21,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 14,
+          "ref": 5,
+          "driver": 2
+        },
+        "collapse_signals": 90,
+        "quarterly_ref_signals": 350,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.of_total_revenues_r484",
+          "assumptions.add_capitalized_software_development_costs",
+          "quarterly.capitalized_software_development_costs"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "ref": 3,
+          "driver": 1
+        },
+        "collapse_signals": 156,
+        "quarterly_ref_signals": 397,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.of_total_revenues",
+          "quarterly.capital_expenditures",
+          "assumptions.add_capital_expenditures"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "ref": 3,
+          "driver": 1
+        },
+        "collapse_signals": 156,
+        "quarterly_ref_signals": 397,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.chg_seq_r433",
+          "assumptions.diluted_shares_outstanding",
+          "quarterly.diluted_shares_outstanding"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 46,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 32,
+          "ref": 3,
+          "growth": 11
+        },
+        "collapse_signals": 153,
+        "quarterly_ref_signals": 338,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.chg_y_y_r414",
+          "assumptions.stock_based_compensation",
+          "quarterly.stock_based_compensation"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "ref": 3,
+          "growth": 1
+        },
+        "collapse_signals": 136,
+        "quarterly_ref_signals": 383,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "quarterly.long_term_debt",
+          "assumptions.long_term_debt",
+          "assumptions.change"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 2
+        },
+        "internal_edges": 33,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3,
+          "roll_forward": 11,
+          "arithmetic": 19
+        },
+        "collapse_signals": 125,
+        "quarterly_ref_signals": 310,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.interest_rate_r426",
+          "quarterly.interest_expense",
+          "assumptions.interest_expense_r422"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "ref": 3,
+          "driver": 1
+        },
+        "collapse_signals": 86,
+        "quarterly_ref_signals": 353,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.subscription_cancellations_of_beginning_run_rate",
+          "assumptions.net_new_recurring_subscription_sales",
+          "assumptions.subscription_cancellations"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 3
+        },
+        "internal_edges": 85,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "driver": 82,
+          "arithmetic": 3
+        },
+        "collapse_signals": 43,
+        "quarterly_ref_signals": 285,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.y_y_change_r516",
+          "assumptions.other_r515",
+          "quarterly.other_r141"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 44,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 40,
+          "ref": 3,
+          "growth": 1
+        },
+        "collapse_signals": 43,
+        "quarterly_ref_signals": 293,
+        "parse_failures": 1,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.net_new_recurring_subscription_sales_r157",
+          "assumptions.subscription_cancellations_of_beginning_run_rate_r167",
+          "assumptions.subscription_cancellations_r156"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 3
+        },
+        "internal_edges": 85,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "arithmetic": 3,
+          "driver": 82
+        },
+        "collapse_signals": 42,
+        "quarterly_ref_signals": 290,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "assumptions.index_r305",
+          "quarterly.index_r19",
+          "assumptions.index_r297"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2,
+          "Quarterly": 1
+        },
+        "internal_edges": 27,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "ref": 3,
+          "driver": 11
+        },
+        "collapse_signals": 40,
+        "quarterly_ref_signals": 194,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "quarterly.deferred_tax_assets",
+          "assumptions.deferred_tax_assets",
+          "assumptions.of_total_revenues_r495"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 2
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3,
+          "driver": 1,
+          "ratio": 13
+        },
+        "collapse_signals": 21,
+        "quarterly_ref_signals": 304,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "quarterly.other_liabilities",
+          "assumptions.of_total_revenues_r513",
+          "assumptions.other_long_term_liabilities"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 2
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3,
+          "ratio": 13,
+          "driver": 1
+        },
+        "collapse_signals": 21,
+        "quarterly_ref_signals": 317,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "quarterly.other_r131",
+          "assumptions.other_assets",
+          "assumptions.of_total_revenues_r498"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 2
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3,
+          "driver": 1,
+          "ratio": 13
+        },
+        "collapse_signals": 21,
+        "quarterly_ref_signals": 304,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 3,
+        "nodes": [
+          "quarterly.deferred_revenues",
+          "assumptions.of_total_revenues_r521",
+          "assumptions.deferred_revenues"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 2
+        },
+        "internal_edges": 17,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3,
+          "ratio": 13,
+          "driver": 1
+        },
+        "collapse_signals": 21,
+        "quarterly_ref_signals": 303,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.add_acquisitions",
+          "quarterly.acquisitions_net_of_cash"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 1,
+          "Quarterly": 1
+        },
+        "internal_edges": 11,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "arithmetic": 3,
+          "ref": 8
+        },
+        "collapse_signals": 122,
+        "quarterly_ref_signals": 277,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.non_etf_revenues",
+          "assumptions.y_y_chg_r278"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 2,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "growth": 1,
+          "ratio": 1
+        },
+        "collapse_signals": 86,
+        "quarterly_ref_signals": 215,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.y_y_chg_r281",
+          "assumptions.futures_options"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 14,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "growth": 1
+        },
+        "collapse_signals": 75,
+        "quarterly_ref_signals": 227,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.index",
+          "assumptions.index"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 74,
+        "quarterly_ref_signals": 289,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.income_tax_effect",
+          "assumptions.effective_tax_rate"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 5,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "driver": 3,
+          "ratio": 2
+        },
+        "collapse_signals": 73,
+        "quarterly_ref_signals": 241,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.new_recurring_subscription_sales_r194",
+          "assumptions.new_recurring_subscription_sales_r205"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 14,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "growth": 1,
+          "ratio": 13
+        },
+        "collapse_signals": 63,
+        "quarterly_ref_signals": 175,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.new_recurring_subscription_sales_r186",
+          "assumptions.new_recurring_subscription_sales_r175"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 14,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "growth": 1
+        },
+        "collapse_signals": 62,
+        "quarterly_ref_signals": 174,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.new_recurring_subscription_sales_r166",
+          "assumptions.new_recurring_subscription_sales_r155"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 14,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 13,
+          "growth": 1
+        },
+        "collapse_signals": 61,
+        "quarterly_ref_signals": 217,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.index_r74",
+          "assumptions.index_r82"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 14,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "growth": 1,
+          "ratio": 13
+        },
+        "collapse_signals": 61,
+        "quarterly_ref_signals": 139,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.new_recurring_subscription_sales",
+          "assumptions.new_recurring_subscription_sales_r147"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 14,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "growth": 1,
+          "ratio": 13
+        },
+        "collapse_signals": 61,
+        "quarterly_ref_signals": 221,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.index_run_rate_r102",
+          "assumptions.recurring_subscriptions"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "arithmetic": 3
+        },
+        "collapse_signals": 57,
+        "quarterly_ref_signals": 258,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.retained_earnings_deficit",
+          "assumptions.accumulated_earnings_deficit"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 54,
+        "quarterly_ref_signals": 232,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.accumulated_other_comprehensive_income_loss",
+          "assumptions.accumulated_other_comprehensive_income_loss"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 54,
+        "quarterly_ref_signals": 146,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.property_and_equipment_net",
+          "assumptions.fixed_assets_net"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 54,
+        "quarterly_ref_signals": 232,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.goodwill",
+          "assumptions.goodwill"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 54,
+        "quarterly_ref_signals": 189,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.common_stock",
+          "assumptions.common_stock"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 54,
+        "quarterly_ref_signals": 146,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.additional_paid_in_capital",
+          "quarterly.additional_paid_in_capital"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 1,
+          "Quarterly": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 54,
+        "quarterly_ref_signals": 189,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.analytics",
+          "assumptions.analytics"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 42,
+        "quarterly_ref_signals": 148,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.analytics_r20",
+          "assumptions.analytics_r298"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 40,
+        "quarterly_ref_signals": 122,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.all_other_r23",
+          "assumptions.all_other_r301"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 40,
+        "quarterly_ref_signals": 154,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.all_other",
+          "quarterly.all_other"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 1,
+          "Quarterly": 1
+        },
+        "internal_edges": 2,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 2
+        },
+        "collapse_signals": 34,
+        "quarterly_ref_signals": 145,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.subscription_cancellations_of_beginning_run_rate_r187",
+          "assumptions.subscription_cancellations_r176"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 58,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "driver": 58
+        },
+        "collapse_signals": 31,
+        "quarterly_ref_signals": 87,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "quarterly.all_other_private_assets",
+          "assumptions.all_other_private_assets"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1,
+          "Assumptions": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 30,
+        "quarterly_ref_signals": 174,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.esg_and_climate",
+          "quarterly.esg_and_climate"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 1,
+          "Quarterly": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 30,
+        "quarterly_ref_signals": 88,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.subscription_cancellations_r195",
+          "assumptions.subscription_cancellations_of_beginning_run_rate_r206"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 58,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "driver": 58
+        },
+        "collapse_signals": 30,
+        "quarterly_ref_signals": 86,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.all_other_private_assets_r300",
+          "quarterly.all_other_private_assets_r22"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 1,
+          "Quarterly": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 30,
+        "quarterly_ref_signals": 112,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.esg_and_climate_r299",
+          "quarterly.esg_and_climate_r21"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 1,
+          "Quarterly": 1
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ref": 3
+        },
+        "collapse_signals": 30,
+        "quarterly_ref_signals": 112,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.esg_and_climate_r76",
+          "assumptions.esg_and_climate_r84"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "growth": 1,
+          "ratio": 2
+        },
+        "collapse_signals": 20,
+        "quarterly_ref_signals": 88,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 2,
+        "nodes": [
+          "assumptions.y_y_chg_aum",
+          "assumptions.period_end_aum_in_etfs_linked_to_msci_indexes_r284"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Assumptions": 2
+        },
+        "internal_edges": 3,
+        "self_edges": 0,
+        "internal_edge_formula_types": {
+          "ratio": 1,
+          "growth": 2
+        },
+        "collapse_signals": 6,
+        "quarterly_ref_signals": 10,
+        "parse_failures": 0,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 1,
+        "nodes": [
+          "quarterly.goal"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Quarterly": 1
+        },
+        "internal_edges": 1,
+        "self_edges": 1,
+        "internal_edge_formula_types": {
+          "ref": 1
+        },
+        "collapse_signals": 61,
+        "quarterly_ref_signals": 78,
+        "parse_failures": 8,
+        "classification": "likely_false_cycle_year_collapse"
+      },
+      {
+        "size": 1,
+        "nodes": [
+          "materiality.materiality_eps"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Materiality": 1
+        },
+        "internal_edges": 1,
+        "self_edges": 1,
+        "internal_edge_formula_types": {
+          "driver": 1
+        },
+        "collapse_signals": 0,
+        "quarterly_ref_signals": 0,
+        "parse_failures": 0,
+        "classification": "self_loop"
+      },
+      {
+        "size": 1,
+        "nodes": [
+          "materiality.retention_impact"
+        ],
+        "error_pairs": 0,
+        "sheet_counts": {
+          "Materiality": 1
+        },
+        "internal_edges": 1,
+        "self_edges": 1,
+        "internal_edge_formula_types": {
+          "driver": 1
+        },
+        "collapse_signals": 0,
+        "quarterly_ref_signals": 0,
+        "parse_failures": 0,
+        "classification": "self_loop"
+      }
+    ],
+    "sample_items": []
+  },
+  "root_errors": {
+    "count": 0,
+    "sample_items": []
+  },
+  "none_propagation": {
+    "missing_total": 0,
+    "none_with_dep_none": 0,
+    "none_without_dep_none": 0,
+    "none_without_dep_none_ratio_yoy": 0,
+    "reason_counts": {},
+    "origin_samples": []
+  },
+  "quarterly_mismatch": {
+    "total_formula_cells": 49281,
+    "parseable_formula_cells": 48217,
+    "same_year_col_diff_ref_cells": 10198,
+    "same_year_col_diff_refs": 12899,
+    "refs_to_quarterly_cols": 35447,
+    "root_ref_quarterly_signal": 0,
+    "root_ref_same_year_diff_signal": 0
+  }
+}

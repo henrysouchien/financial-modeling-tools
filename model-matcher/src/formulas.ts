@@ -99,10 +99,11 @@ export function matchFormula(
   writeArray: Array<number | string | null>,
   collisionArray: number[],
   conversionFactor: number
-): { formula: string; collisionHits: number; matchHits: number } {
+): { formula: string; collisionHits: number; matchHits: number; missingWriteHits: number } {
   const tokens = tokenizeFormula(formula);
   let collisionHits = 0;
   let matchHits = 0;
+  let missingWriteHits = 0;
 
   if (DEBUG_MATCH_FORMULA) {
     console.log(`[matchFormula] input: "${formula}" -> tokens: [${tokens.map((t) => JSON.stringify(t)).join(", ")}]`);
@@ -128,13 +129,18 @@ export function matchFormula(
     }
 
     if (matchIndex !== -1) {
-      matchHits++;
       const rawWrite = vbaToNumber(writeArray[matchIndex]);
-      const baseValue = isNaN(rawWrite) ? 0 : rawWrite / conversionFactor;
+      const missingWrite = isNaN(rawWrite);
+      if (missingWrite) {
+        missingWriteHits++;
+      } else {
+        matchHits++;
+      }
+      const baseValue = missingWrite ? 0 : rawWrite / conversionFactor;
       const newValue = flipped ? -baseValue : baseValue;
       if (DEBUG_MATCH_FORMULA) {
         console.log(
-          `[matchFormula]   token[${i}] ${JSON.stringify(token)} -> matched[${matchIndex}] -> ${formatForFormula(newValue)}${flipped ? " (flipped)" : ""}`
+          `[matchFormula]   token[${i}] ${JSON.stringify(token)} -> matched[${matchIndex}] -> ${formatForFormula(newValue)}${flipped ? " (flipped)" : ""}${missingWrite ? " (missing write)" : ""}`
         );
       }
       tokens[i] = formatForFormula(newValue);
@@ -156,5 +162,6 @@ export function matchFormula(
     formula: rebuilt,
     collisionHits,
     matchHits,
+    missingWriteHits,
   };
 }

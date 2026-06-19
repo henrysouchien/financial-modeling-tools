@@ -1,0 +1,27 @@
+mappings:
+  revenue.segment_1.volume_growth: tpl.a.revenue_drivers.business_segment_1_volume_growth
+  revenue.segment_1.price_growth: tpl.a.revenue_drivers.business_segment_1_price_growth
+
+  revenue.segment_2.volume_growth: tpl.a.revenue_drivers.business_segment_2_volume_growth
+  revenue.segment_2.price_growth: tpl.a.revenue_drivers.business_segment_2_price_growth
+
+  sales_marketing_pct: tpl.a.operating_leverage.sales_and_marketing_pct_revenue
+  rd_pct: tpl.a.operating_leverage.research_and_development_pct_revenue
+  ga_pct: tpl.a.operating_leverage.general_and_administrative_pct_revenue
+
+  depreciation_rate: tpl.a.depreciation_amortization.depreciation_as_of_beginning_property_and_equipment
+  capex_pct: tpl.a.capital_investments.property_and_equipment_pct_revenue
+
+  tax_rate: tpl.a.tax_net_income.tax_rate
+  share_dilution: tpl.a.tax_net_income.y_y_chg
+
+  dso: tpl.a.balance_sheet_wc.days_sales_outstanding_dso
+  dpo: tpl.a.balance_sheet_wc.days_payable_outstanding_dpo
+
+  debt_change: tpl.a.capital_sources.change
+
+unsupported_in_segment_mode:
+  - key: revenue.segment_N.operating_metric
+    reason: "no post-expansion equivalent — expand_segments() does not emit an operating_metric row"
+  - key: revenue.segment_N.revenue
+    reason: "post-expansion target business_segment_N_revenue is ItemType.derived (per sia_generic.json), not input"

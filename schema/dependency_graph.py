@@ -19,21 +19,65 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import math
-from typing import Dict, Iterable, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Set, Tuple
 
+from .dependency_graph_algorithms import (
+    _Component,
+    _components_from_adj,
+    _downstream_of,
+    _tarjan_sccs,
+)
+from .dependency_graph_eval import (
+    _apply_scale_fn,
+    _eval,
+    _eval_expr,
+    _eval_offset_scenario,
+    _eval_valuation,
+)
+from .dependency_graph_helpers import (
+    _col_to_index,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+    _index_to_col,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+    _is_input_provenance,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+    _numeric_label_value,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+    _offset_column,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+)
+from .dependency_graph_values import (
+    _bootstrap_period,
+    _cached_computed_value_for_period,
+    _cached_value_for_period,
+    _column_for_period,
+    _cycle_cached_fallback_enabled,
+    _fixed_cell_anchor_period,
+    _historical_periods,
+    _input_value_fallback,
+    _period_for_anchor_last,
+    _projection_periods,
+    _ratio_cached_fallback_enabled,
+    _read_with_fallback,
+    _row_item_id,
+    _seed_inputs,
+    _spec_for_period,
+    _sum_range_target_periods,
+    _target_sheet_all_periods,
+    _target_sheet_projection_periods,
+    _time_order,
+    _value_of,
+)
 from .models import (
     FinancialModel,
     FormulaSpec,
     FormulaType,
-    ItemType,
+    ItemType,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
     LineItem,
     LineItemRef,
-    ValueProvenance,
-    PERIOD_MODE_YEARLY,
-    shift_period,
+    ValueProvenance,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+    PERIOD_MODE_YEARLY,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
+    shift_period,  # noqa: F401 - compatibility alias for schema.dependency_graph imports
 )
+from .refs import line_item_ref_from_obj
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class CycleBlock:
@@ -42,13 +86,36 @@ class CycleBlock:
     tol: float = 1e-6
 
 
-@dataclass
-class _Component:
-    nodes: List[str]
-    is_cycle: bool
-
-
 class DependencyGraph:
+    _apply_scale_fn = _apply_scale_fn
+    _bootstrap_period = _bootstrap_period
+    _cached_computed_value_for_period = _cached_computed_value_for_period
+    _cached_value_for_period = _cached_value_for_period
+    _column_for_period = _column_for_period
+    _components_from_adj = _components_from_adj
+    _cycle_cached_fallback_enabled = _cycle_cached_fallback_enabled
+    _downstream_of = _downstream_of
+    _eval = _eval
+    _eval_expr = _eval_expr
+    _eval_offset_scenario = _eval_offset_scenario
+    _eval_valuation = _eval_valuation
+    _fixed_cell_anchor_period = _fixed_cell_anchor_period
+    _historical_periods = _historical_periods
+    _input_value_fallback = _input_value_fallback
+    _period_for_anchor_last = _period_for_anchor_last
+    _projection_periods = _projection_periods
+    _ratio_cached_fallback_enabled = _ratio_cached_fallback_enabled
+    _read_with_fallback = _read_with_fallback
+    _row_item_id = _row_item_id
+    _seed_inputs = _seed_inputs
+    _spec_for_period = _spec_for_period
+    _sum_range_target_periods = _sum_range_target_periods
+    _tarjan_sccs = _tarjan_sccs
+    _target_sheet_all_periods = _target_sheet_all_periods
+    _target_sheet_projection_periods = _target_sheet_projection_periods
+    _time_order = _time_order
+    _value_of = _value_of
+
     def __init__(self) -> None:
         self.model: Optional[FinancialModel] = None
         self.nodes: Set[str] = set()
@@ -66,6 +133,15 @@ class DependencyGraph:
         self._compute_periods: Optional[Set[int]] = None
         self._compute_seed_results: Optional[Dict[str, Dict[int, float]]] = None
         self._global_cycle_node_ids: Set[str] = set()
+        self._item_sheet_map: Dict[str, str] = {}
+        self._item_row_map: Dict[str, int] = {}
+        self._item_column_map: Dict[str, str] = {}
+        self._row_item_map: Dict[Tuple[str, int], List[str]] = {}
+        self._cell_item_map: Dict[Tuple[str, int, str], str] = {}
+        self._deferred_nodes: Set[str] = set()
+        self._deferred_cone: Set[str] = set()
+        self._sum_range_nodes: Set[str] = set()
+        self._period_anchor_last_nodes: Set[str] = set()
 
     def build(self, model: FinancialModel) -> None:
         """Build the dependency graph from FormulaSpecs.
@@ -77,12 +153,37 @@ class DependencyGraph:
         """
         self.model = model
         self._global_cycle_node_ids = set()
+        self._item_sheet_map = {}
+        self._item_row_map = {}
+        self._item_column_map = {}
+        self._row_item_map = {}
+        self._cell_item_map = {}
+        self._deferred_nodes = set()
+        self._deferred_cone = set()
+        self._sum_range_nodes = set()
+        self._period_anchor_last_nodes = set()
         if not model.sheets:
             self.nodes = set()
             return
 
         model.build_index()
         self.nodes = set(model._index.keys())
+        self._item_sheet_map = {
+            item.id: sheet_name
+            for sheet_name, sheet in model.sheets.items()
+            for section in sheet.sections
+            for item in section.line_items
+        }
+        for sheet_name, sheet in model.sheets.items():
+            for section in sheet.sections:
+                for item in section.line_items:
+                    row = int(item.row)
+                    self._item_row_map[item.id] = row
+                    self._row_item_map.setdefault((sheet_name, row), []).append(item.id)
+                    if item.column:
+                        column = str(item.column).upper()
+                        self._item_column_map[item.id] = column
+                        self._cell_item_map[(sheet_name, row, column)] = item.id
         self.adj = {node: set() for node in self.nodes}
         self.time_edges = {node: set() for node in self.nodes}
         self.missing_refs = set()
@@ -97,6 +198,9 @@ class DependencyGraph:
                         self.adj[ref.id].add(item.id)
                     else:
                         self.time_edges[item.id].add(ref)
+
+        self._identify_deferred_nodes()
+        self._validate_deferred_cone_invariant()
 
         self.components, self.component_order = self._components_from_adj(self.adj)
         self.cycle_blocks = [
@@ -117,6 +221,7 @@ class DependencyGraph:
         ] = "strict",
         periods: Optional[Set[int]] = None,
         seed_results: Optional[Dict[str, Dict[int, float]]] = None,
+        propagate_roots: Optional[Set[str]] = None,
     ) -> Dict[str, Dict[int, float]]:
         """Compute model values period-by-period given input overrides.
 
@@ -136,6 +241,10 @@ class DependencyGraph:
         seed_results:
         - Optional baseline matrix used as fallback when a scoped compute needs
           values from non-evaluated periods.
+
+        propagate_roots:
+        - Optional subset of input ids whose downstream constant overrides
+          should be bypassed. Defaults to all input ids.
         """
         if not self.model:
             raise ValueError("DependencyGraph.build() must be called before compute().")
@@ -158,7 +267,8 @@ class DependencyGraph:
         # Compute downstream set of user input overrides — these items should
         # have their constant overrides bypassed so formula propagation works.
         if inputs and recompute:
-            self._compute_propagate = self._downstream_of(set(inputs.keys()))
+            roots = set(inputs.keys()) if propagate_roots is None else set(propagate_roots)
+            self._compute_propagate = self._downstream_of(roots) if roots else set()
         else:
             self._compute_propagate = None
         self._ratio_zero_denominator_policy = ratio_zero_denominator_policy
@@ -172,6 +282,20 @@ class DependencyGraph:
                 for comp_id in order:
                     comp = components[comp_id]
                     if comp.is_cycle:
+                        active_nodes = [node for node in comp.nodes if node not in self._deferred_nodes]
+                        if not active_nodes:
+                            continue
+                        if len(active_nodes) != len(comp.nodes):
+                            self._solve_period_active_cycle_component(
+                                active_nodes,
+                                period,
+                                results,
+                                time_index,
+                                time_order,
+                                inputs=inputs,
+                            )
+                            singleton_node_ids.extend(active_nodes)
+                            continue
                         self._solve_cycle_block(
                             comp.nodes,
                             period,
@@ -182,6 +306,8 @@ class DependencyGraph:
                         )
                         continue
                     node_id = comp.nodes[0]
+                    if node_id in self._deferred_nodes:
+                        continue
                     singleton_node_ids.append(node_id)
                     self._eval_singleton_node(
                         node_id, period, results, time_index, time_order
@@ -206,6 +332,8 @@ class DependencyGraph:
 
             for period in eval_periods:
                 for item_id, item in self.model._index.items():
+                    if item_id in self._deferred_nodes:
+                        continue
                     if not item.overrides or period not in item.overrides:
                         continue
                     spec = item.overrides[period]
@@ -216,6 +344,14 @@ class DependencyGraph:
                         results.setdefault(item_id, {})[period] = value
                     else:
                         logger.debug("Override for %s period=%s returned None (missing deps)", item_id, period)
+
+            self._evaluate_deferred_nodes(
+                results,
+                time_index,
+                time_order,
+                eval_periods,
+                inputs,
+            )
         finally:
             self._compute_periods = None
             self._compute_seed_results = None
@@ -239,7 +375,7 @@ class DependencyGraph:
             return True
 
         if node_id in self._global_cycle_node_ids and self._cycle_cached_fallback_enabled():
-            if self._compute_has_recompute and not self._compute_propagate:
+            if self._compute_has_recompute and self._compute_propagate is None:
                 cached_forced = self._cached_value_for_period(node_id, period, results)
                 if cached_forced is not None:
                     results.setdefault(node_id, {})[period] = cached_forced
@@ -247,7 +383,7 @@ class DependencyGraph:
             item = self.model.get_item(node_id)
             spec = self._spec_for_period(item, period)
             missing_dep = False
-            if spec is not None:
+            if spec is not None and not self._is_sum_range_spec(spec):
                 for ref in self._extract_refs(spec.params):
                     if self._value_of(ref, period, results, time_index, time_order) is None:
                         missing_dep = True
@@ -272,7 +408,7 @@ class DependencyGraph:
         item = self.model.get_item(node_id)
         spec = self._spec_for_period(item, period)
         missing_dep = False
-        if spec is not None:
+        if spec is not None and not self._is_sum_range_spec(spec):
             for ref in self._extract_refs(spec.params):
                 if self._value_of(ref, period, results, time_index, time_order) is None:
                     missing_dep = True
@@ -283,7 +419,7 @@ class DependencyGraph:
         if (
             cached_computed is not None
             and self._compute_has_recompute
-            and not self._compute_propagate
+            and self._compute_propagate is None
         ):
             results.setdefault(node_id, {})[period] = cached_computed
             return True
@@ -317,7 +453,7 @@ class DependencyGraph:
             item = self.model.get_item(node_id)
             spec = self._spec_for_period(item, period)
             missing_dep = False
-            if spec is not None:
+            if spec is not None and not self._is_sum_range_spec(spec):
                 for ref in self._extract_refs(spec.params):
                     if self._value_of(ref, period, results, time_index, time_order) is None:
                         missing_dep = True
@@ -394,72 +530,297 @@ class DependencyGraph:
                     cycle_adj[ref.id].add(node)
         return order_adj, cycle_adj
 
-    def _components_from_adj(
+    def downstream_for_periods(
         self,
-        cycle_adj: Dict[str, Set[str]],
-        order_adj: Optional[Dict[str, Set[str]]] = None,
-    ) -> Tuple[List[_Component], List[int]]:
-        """Build SCC components and topological component order from adjacency."""
-        if order_adj is None:
-            order_adj = cycle_adj
-        sccs = self._tarjan_sccs(cycle_adj)
-        node_to_component: Dict[str, int] = {}
-        components: List[_Component] = []
-        for scc in sccs:
-            if len(scc) == 1:
-                node = scc[0]
-                is_cycle = node in cycle_adj.get(node, set())
-            else:
-                is_cycle = True
-            comp_id = len(components)
-            for node in scc:
-                node_to_component[node] = comp_id
-            components.append(_Component(nodes=scc, is_cycle=is_cycle))
+        start_ids: Iterable[str],
+        periods: Iterable[int],
+    ) -> Set[str]:
+        """Return item ids reachable through formulas active in any period.
 
-        comp_adj: Dict[int, Set[int]] = {i: set() for i in range(len(components))}
-        comp_indegree: Dict[int, int] = {i: 0 for i in range(len(components))}
-        for src, dsts in order_adj.items():
-            for dst in dsts:
-                c_src = node_to_component[src]
-                c_dst = node_to_component[dst]
-                if c_src == c_dst:
+        This is intentionally independent from compute-time propagation state:
+        constant period overrides stay pinned, and historical fallback formulas
+        are not treated as projection-period edges.
+        """
+        return self._reachable_for_periods(start_ids, periods, direction="downstream")
+
+    def upstream_for_periods(
+        self,
+        target_ids: Iterable[str],
+        periods: Iterable[int],
+    ) -> Set[str]:
+        """Return item ids feeding targets through formulas active in any period."""
+        return self._reachable_for_periods(target_ids, periods, direction="upstream")
+
+    def active_adjacency_for_periods(self, periods: Iterable[int]) -> Dict[str, Set[str]]:
+        """Build item-level adjacency for formulas active in any supplied period."""
+        active_periods = {int(period) for period in periods}
+        adj: Dict[str, Set[str]] = {node: set() for node in self.nodes}
+        if not self.model or not active_periods:
+            return adj
+
+        for item in self.model._index.values():
+            for period in active_periods:
+                spec = self._static_spec_for_period(item, period)
+                if spec is None:
                     continue
-                if c_dst not in comp_adj[c_src]:
-                    comp_adj[c_src].add(c_dst)
-                    comp_indegree[c_dst] += 1
+                for ref in self._extract_refs(spec.params):
+                    if ref.id not in self.nodes:
+                        continue
+                    adj[ref.id].add(item.id)
+        return adj
 
-        queue: List[int] = [i for i, deg in comp_indegree.items() if deg == 0]
-        order: List[int] = []
-        while queue:
-            comp = queue.pop(0)
-            order.append(comp)
-            for nxt in comp_adj[comp]:
-                comp_indegree[nxt] -= 1
-                if comp_indegree[nxt] == 0:
-                    queue.append(nxt)
-        if len(order) != len(components):
-            # Some ordering edges can still create cycles (e.g., unresolved
-            # references). Keep partial topological order and append remaining.
-            seen = set(order)
-            for comp in range(len(components)):
-                if comp not in seen:
-                    order.append(comp)
+    def _reachable_for_periods(
+        self,
+        start_ids: Iterable[str],
+        periods: Iterable[int],
+        *,
+        direction: Literal["downstream", "upstream"],
+    ) -> Set[str]:
+        adj = self.active_adjacency_for_periods(periods)
+        if direction == "upstream":
+            reverse: Dict[str, Set[str]] = {node: set() for node in self.nodes}
+            for src, dsts in adj.items():
+                for dst in dsts:
+                    reverse.setdefault(dst, set()).add(src)
+            adj = reverse
 
-        return components, order
-
-    def _downstream_of(self, start_ids: Set[str]) -> Set[str]:
-        """Return all nodes reachable downstream from start_ids via the adjacency graph."""
         visited: Set[str] = set()
-        stack = list(start_ids)
+        stack = [item_id for item_id in start_ids if item_id in self.nodes]
         while stack:
             node = stack.pop()
             if node in visited:
                 continue
             visited.add(node)
-            for dep in self.adj.get(node, set()):
+            for dep in adj.get(node, set()):
                 if dep not in visited:
                     stack.append(dep)
         return visited
+
+    def _static_spec_for_period(self, item: LineItem, period: int) -> Optional[FormulaSpec]:
+        """Resolve the formula active for a period without compute fallbacks."""
+        if item.overrides and period in item.overrides:
+            return item.overrides[period]
+
+        if item.formula_periods is not None and period not in item.formula_periods:
+            return None
+
+        ts = self.model.time_structure if self.model else None
+        projection_periods = set(ts.projection_periods if ts else [])
+        historical_periods = set(ts.historical_periods if ts else [])
+        if not projection_periods and ts is not None:
+            projection_periods = set(ts.projection_years)
+        if not historical_periods and ts is not None:
+            historical_periods = set(ts.historical_years)
+
+        if period in historical_periods:
+            return item.historical
+        if period in projection_periods:
+            return item.projected
+        if item.projected is not None:
+            return item.projected
+        if item.historical is not None:
+            return item.historical
+        return None
+
+    def _identify_deferred_nodes(self) -> None:
+        """Classify SUM_RANGE and period_anchor='last' nodes plus downstream closure."""
+        if not self.model:
+            return
+        sum_range_nodes: Set[str] = set()
+        period_anchor_last_nodes: Set[str] = set()
+
+        for item in self.model._index.values():
+            for path, spec in self._iter_all_formula_specs_with_paths(item):
+                if self._is_sum_range_spec(spec):
+                    self._coerce_sum_range_target(spec, item.id, path)
+                    sum_range_nodes.add(item.id)
+
+                for ref, _ref_path in self._iter_refs_with_paths(spec.params, f"{path}.params"):
+                    if ref.period_anchor != "last":
+                        continue
+                    try:
+                        target_item = self.model.get_item(ref.id)
+                    except KeyError:
+                        continue
+                    if target_item.column is None:
+                        period_anchor_last_nodes.add(item.id)
+
+        direct = sum_range_nodes | period_anchor_last_nodes
+        deferred = self._downstream_of(direct) if direct else set()
+        self._sum_range_nodes = sum_range_nodes
+        self._period_anchor_last_nodes = period_anchor_last_nodes
+        self._deferred_nodes = deferred
+        self._deferred_cone = deferred - direct
+
+    def _evaluate_deferred_nodes(
+        self,
+        results: Dict[str, Dict[int, float]],
+        time_index: Dict[int, int],
+        time_order: List[int],
+        eval_periods: List[int],
+        inputs: Dict[str, Dict[int, float]],
+    ) -> None:
+        if not self._deferred_nodes:
+            return
+
+        eval_set = set(self._compute_periods) if self._compute_periods is not None else set(eval_periods)
+        if not eval_set:
+            return
+
+        for node_id in self._deferred_nodes:
+            inputs_for_node = (inputs or {}).get(node_id, {})
+            if node_id not in results:
+                continue
+            for period in list(results[node_id].keys()):
+                if period not in inputs_for_node:
+                    del results[node_id][period]
+            if not results[node_id]:
+                del results[node_id]
+
+        ordered_nodes = self._ordered_deferred_nodes()
+        ordered_periods = sorted(eval_set, key=lambda p: time_index.get(p, len(time_order)))
+        for node_id in ordered_nodes:
+            for period in ordered_periods:
+                if period not in time_index:
+                    continue
+                self._eval_singleton_node(node_id, period, results, time_index, time_order)
+
+    def _ordered_deferred_nodes(self) -> List[str]:
+        deferred = set(self._deferred_nodes)
+        if not deferred:
+            return []
+        order_adj: Dict[str, Set[str]] = {node: set() for node in deferred}
+        indegree: Dict[str, int] = {node: 0 for node in deferred}
+        for src in sorted(deferred):
+            for dst in self.adj.get(src, set()):
+                if dst in deferred:
+                    order_adj[src].add(dst)
+                    indegree[dst] += 1
+
+        queue = sorted(node for node, degree in indegree.items() if degree == 0)
+        ordered: List[str] = []
+        while queue:
+            node = queue.pop(0)
+            ordered.append(node)
+            for dst in sorted(order_adj.get(node, set())):
+                indegree[dst] -= 1
+                if indegree[dst] == 0:
+                    queue.append(dst)
+                    queue.sort()
+
+        if len(ordered) != len(deferred):
+            ordered.extend(sorted(deferred - set(ordered)))
+        return ordered
+
+    def _validate_deferred_cone_invariant(self) -> None:
+        if not self.model:
+            return
+        for node_id in sorted(self._deferred_nodes):
+            try:
+                item = self.model.get_item(node_id)
+            except KeyError:
+                continue
+            if item.column is None:
+                continue
+            for path, spec in self._iter_all_formula_specs_with_paths(item):
+                self._validate_period_invariant_obj(spec, node_id, path)
+
+    def _validate_period_invariant_obj(self, obj: Any, node_id: str, path: str) -> None:
+        if obj is None:
+            return
+        if isinstance(obj, FormulaSpec):
+            params = obj.params or {}
+            if self._is_sum_range_spec(obj):
+                self._coerce_sum_range_target(obj, node_id, path)
+                for key, value in params.items():
+                    if key == "target":
+                        continue
+                    self._validate_period_invariant_obj(value, node_id, f"{path}.params.{key}")
+                return
+            self._validate_period_invariant_obj(params, node_id, f"{path}.params")
+            return
+
+        ref = line_item_ref_from_obj(obj)
+        if ref is not None:
+            if ref.period_anchor == "last":
+                return
+            try:
+                target_item = self.model.get_item(ref.id)
+            except KeyError:
+                return
+            if target_item is not None and target_item.column is not None:
+                return
+            raise ValueError(
+                f"Fixed-cell SUM_RANGE cone member {node_id!r} uses first-anchor "
+                f"time-axis ref to {ref.id!r} via {path}; fixed-cell cone members "
+                "must be period-invariant."
+            )
+
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                self._validate_period_invariant_obj(value, node_id, f"{path}.{key}")
+            return
+        if isinstance(obj, (list, tuple, set)):
+            for index, value in enumerate(obj):
+                self._validate_period_invariant_obj(value, node_id, f"{path}[{index}]")
+
+    def _coerce_sum_range_target(
+        self,
+        spec: FormulaSpec,
+        item_id: str,
+        path: str,
+    ) -> LineItemRef:
+        target_obj = (spec.params or {}).get("target")
+        target_ref = line_item_ref_from_obj(target_obj)
+        if target_ref is None:
+            raise ValueError(
+                f"SUM_RANGE in {item_id!r} has malformed 'target' at {path}.params.target "
+                f"(expected single LineItemRef-coercible; got {type(target_obj).__name__}: "
+                f"{target_obj!r})"
+            )
+        return target_ref
+
+    def _is_sum_range_spec(self, spec: Optional[FormulaSpec]) -> bool:
+        return (
+            spec is not None
+            and spec.type == FormulaType.arithmetic
+            and (spec.params or {}).get("function") == "SUM_RANGE"
+        )
+
+    def _iter_all_formula_specs(self, item: LineItem) -> Iterator[FormulaSpec]:
+        for _path, spec in self._iter_all_formula_specs_with_paths(item):
+            yield spec
+
+    def _iter_all_formula_specs_with_paths(
+        self,
+        item: LineItem,
+    ) -> Iterator[Tuple[str, FormulaSpec]]:
+        if item.historical is not None:
+            yield "historical", item.historical
+        if item.projected is not None:
+            yield "projected", item.projected
+        if item.overrides:
+            for period, spec in item.overrides.items():
+                if spec is not None:
+                    yield f"overrides[{int(period)}]", spec
+
+    def _iter_refs_with_paths(self, obj: Any, path: str) -> Iterator[Tuple[LineItemRef, str]]:
+        if obj is None:
+            return
+        if isinstance(obj, FormulaSpec):
+            yield from self._iter_refs_with_paths(obj.params, f"{path}.params")
+            return
+        coerced = line_item_ref_from_obj(obj)
+        if coerced is not None:
+            yield coerced, path
+            return
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                yield from self._iter_refs_with_paths(value, f"{path}.{key}")
+            return
+        if isinstance(obj, (list, tuple, set)):
+            for index, value in enumerate(obj):
+                yield from self._iter_refs_with_paths(value, f"{path}[{index}]")
 
     def get_dependents(self, line_item_id: str) -> List[str]:
         """Return downstream dependents for a line item."""
@@ -568,446 +929,6 @@ class DependencyGraph:
                 return False, max_residual
         return True, max_residual
 
-    def _eval(
-        self,
-        line_item_id: str,
-        period: int,
-        results: Dict[str, Dict[int, float]],
-        time_index: Dict[int, int],
-        time_order: List[int],
-    ) -> Optional[float]:
-        """Evaluate a single line item for a given period.
-
-        Uses FormulaType-specific handlers and delegates nested expressions
-        to _eval_expr.
-        """
-        item = self.model.get_item(line_item_id)
-        spec = self._spec_for_period(item, period)
-        if spec is None:
-            return None
-
-        params = spec.params or {}
-        spec_type = spec.type
-
-        if spec_type == FormulaType.constant:
-            return float(params.get("value")) if params.get("value") is not None else None
-
-        if spec_type == FormulaType.ref:
-            source = params.get("source")
-            value = self._value_of(source, period, results, time_index, time_order)
-            if value is None:
-                return None
-            adjustment = params.get("adjustment")
-            if adjustment is not None:
-                value += float(adjustment)
-            if params.get("negate"):
-                value = -value
-            return value
-
-        if spec_type == FormulaType.arithmetic:
-            if "expr" in params:
-                return self._eval_expr(params.get("expr"), period, results, time_index, time_order)
-
-            if params.get("function") in {"SUM", "AVERAGE"}:
-                items = params.get("items", [])
-                values = [self._eval_expr(i, period, results, time_index, time_order) for i in items]
-                non_none = [v for v in values if v is not None]
-                # If ALL values are None, return None (no data — AVERAGE will ignore this)
-                # Otherwise treat None as 0 in SUM (matches Excel: blank cells are 0)
-                if not non_none:
-                    return None
-                if params.get("function") == "AVERAGE":
-                    return sum(non_none) / len(non_none)
-                return sum(non_none)
-
-            operands = params.get("operands")
-            if isinstance(operands, list) and operands:
-                operator = "+"
-                start_index = 0
-                if isinstance(operands[0], str) and operands[0] in {"+", "-", "*", "/"}:
-                    operator = operands[0]
-                    start_index = 1
-                values = [self._eval_expr(i, period, results, time_index, time_order) for i in operands[start_index:]]
-                if not values:
-                    return None
-                non_none = [v for v in values if v is not None]
-                # If ALL values are None, return None (no data)
-                if not non_none:
-                    return None
-                # For + operator, sum non-None values (None treated as 0)
-                if operator == "+":
-                    return sum(non_none)
-                # For other operators, None propagates
-                if any(v is None for v in values):
-                    return None
-                if operator == "-":
-                    return values[0] - sum(values[1:])
-                if operator == "*":
-                    result = 1.0
-                    for v in values:
-                        result *= v
-                    return result
-                if operator == "/":
-                    result = values[0]
-                    for v in values[1:]:
-                        if v == 0:
-                            return None
-                        result /= v
-                    return result
-
-            items = params.get("items")
-            if isinstance(items, list):
-                values = [self._eval_expr(i, period, results, time_index, time_order) for i in items]
-                if any(v is None for v in values):
-                    return None
-                return sum(values)
-
-        if spec_type == FormulaType.driver:
-            base = self._eval_expr(params.get("base"), period, results, time_index, time_order)
-            rate = self._eval_expr(params.get("rate"), period, results, time_index, time_order)
-            if base is None or rate is None:
-                return None
-            result = base * rate
-            scale = params.get("scale")
-            if scale:
-                result /= float(scale)
-            scale_fn = params.get("scale_fn")
-            if isinstance(scale_fn, str):
-                result = self._apply_scale_fn(result, scale_fn)
-            return result
-
-        if spec_type == FormulaType.ratio:
-            numerator = self._eval_expr(params.get("numerator"), period, results, time_index, time_order)
-            denominator = self._eval_expr(params.get("denominator"), period, results, time_index, time_order)
-            if numerator is None or denominator is None:
-                return None
-            if denominator == 0:
-                if self._ratio_cached_fallback_enabled():
-                    cached = self._cached_value_for_period(line_item_id, period, results)
-                    if cached is not None:
-                        logger.debug(
-                            "Ratio denominator-zero cached fallback for %s period=%s",
-                            line_item_id,
-                            period,
-                        )
-                        return cached
-                return None
-            result = numerator / denominator
-            if params.get("subtract_one"):
-                result -= 1
-            return result
-
-        if spec_type == FormulaType.growth:
-            base = self._eval_expr(params.get("base"), period, results, time_index, time_order)
-            rate = self._eval_expr(params.get("rate"), period, results, time_index, time_order)
-            if base is None or rate is None:
-                return None
-            return base * (1 + rate)
-
-        if spec_type == FormulaType.roll_forward:
-            beginning = self._eval_expr(params.get("beginning"), period, results, time_index, time_order)
-            additions = params.get("additions", [])
-            subtractions = params.get("subtractions", [])
-            add_values = [self._eval_expr(i, period, results, time_index, time_order) for i in additions]
-            sub_values = [self._eval_expr(i, period, results, time_index, time_order) for i in subtractions]
-            if beginning is None:
-                return None
-            # Treat None additions/subtractions as 0 (empty cells in Excel)
-            return beginning + sum(v or 0 for v in add_values) - sum(v or 0 for v in sub_values)
-
-        return None
-
-    def _seed_inputs(
-        self,
-        period: int,
-        inputs: Dict[str, Dict[int, float]],
-        results: Dict[str, Dict[int, float]],
-        recompute: Optional[Set[str]] = None,
-    ) -> None:
-        """Seed inputs and existing value series into the results matrix."""
-        if inputs:
-            for line_item_id, by_period in inputs.items():
-                if period in by_period:
-                    results.setdefault(line_item_id, {})[period] = by_period[period]
-
-        if not self.model:
-            return
-        for item_id, item in self.model._index.items():
-            if results.get(item_id, {}).get(period) is not None:
-                continue
-            if recompute and item_id in recompute:
-                spec = self._spec_for_period(item, period)
-                if spec is not None and spec.type != FormulaType.constant:
-                    continue
-            if not item.values:
-                continue
-            value_cell = item.values.values.get(period)
-            if value_cell is None:
-                continue
-            results.setdefault(item_id, {})[period] = value_cell.value
-
-    def _time_order(self) -> List[int]:
-        if not self.model:
-            return []
-        ts = self.model.time_structure
-        if ts.historical_periods or ts.projection_periods:
-            return list(ts.historical_periods) + list(ts.projection_periods)
-        return list(ts.historical_years) + list(ts.projection_years)
-
-    def _spec_for_period(self, item: LineItem, period: int) -> Optional[FormulaSpec]:
-        """Select the appropriate FormulaSpec for a period (override/historical/projected)."""
-        recompute_skip = False
-        if item.overrides and period in item.overrides:
-            override = item.overrides[period]
-            # When this item is downstream of user input overrides and the
-            # override is just a constant snapshot, prefer the real formula
-            # so upstream changes can propagate.
-            if (override.type == FormulaType.constant
-                    and self._compute_propagate and item.id in self._compute_propagate
-                    and item.projected and item.projected.type != FormulaType.constant):
-                recompute_skip = True  # fall through to projected/historical below
-            else:
-                return override
-
-        if item.formula_periods is not None and period not in item.formula_periods:
-            # If we skipped a constant override due to recompute, the formula_periods
-            # mask was built assuming those periods had constants.  Allow the
-            # projected formula to apply anyway.
-            if not recompute_skip:
-                return None
-
-        if not self.model:
-            return item.projected or item.historical
-
-        ts = self.model.time_structure
-        historical_periods = list(ts.historical_periods) or list(ts.historical_years)
-        projection_periods = list(ts.projection_periods) or list(ts.projection_years)
-        if period in historical_periods:
-            # Don't fall back to projected formula for historical years
-            # Empty historical cells should evaluate to None (0 in arithmetic)
-            return item.historical
-        if period in projection_periods:
-            # Don't fall back to historical formula for projection years
-            # Empty projection cells should evaluate to None (0 in arithmetic)
-            return item.projected
-        return item.projected or item.historical
-
-    def _spec_for_year(self, item: LineItem, year: int) -> Optional[FormulaSpec]:
-        """Backward-compatible alias for migration tooling."""
-        return self._spec_for_period(item, year)
-
-    def _value_of(
-        self,
-        obj,
-        period: int,
-        results: Dict[str, Dict[int, float]],
-        time_index: Dict[int, int],
-        time_order: List[int],
-    ) -> Optional[float]:
-        """Resolve a LineItemRef or primitive value for a given period."""
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            return self._eval_expr(obj, period, results, time_index, time_order)
-        if isinstance(obj, LineItemRef):
-            idx = time_index.get(period)
-            if idx is None:
-                return None
-            target_idx = idx + obj.t
-            if target_idx < 0:
-                target_period = self._bootstrap_period(period, obj.t)
-                if target_period is None:
-                    return None
-                return self._input_value_fallback(obj.id, target_period)
-            if target_idx >= len(time_order):
-                return None
-            target_period = time_order[target_idx]
-            val = results.get(obj.id, {}).get(target_period)
-            if (
-                val is None
-                and self._compute_seed_results is not None
-                and self._compute_periods is not None
-                and target_period not in self._compute_periods
-            ):
-                val = self._compute_seed_results.get(obj.id, {}).get(target_period)
-            if val is None:
-                # Forward ref to a period not yet evaluated — fall back to
-                # input-provenance cached value (safe for Q4 plug patterns
-                # where Annual is hard-coded imported data with no formula).
-                val = self._input_value_fallback(obj.id, target_period)
-            return val
-        if isinstance(obj, (int, float)):
-            return float(obj)
-        return None
-
-    def _input_value_fallback(self, line_item_id: str, target_period: int) -> Optional[float]:
-        """Look up a genuine input value for bootstrapping prior-period references.
-
-        Only returns values with input provenance (imported_other, input,
-        imported_edgar, imported_fmp). Never falls back to derived/computed
-        cached values — that would mask formula bugs.
-        """
-        item = self.model.get_item(line_item_id)
-        if not item or not item.values:
-            return None
-        vc = item.values.values.get(target_period)
-        if vc is None or vc.value is None:
-            return None
-        if vc.provenance in (
-            ValueProvenance.input,
-            ValueProvenance.imported_other,
-            ValueProvenance.imported_edgar,
-            ValueProvenance.imported_fmp,
-        ):
-            return vc.value
-        # provenance == computed → derived cached value, don't use
-        return None
-
-    def _bootstrap_period(self, period: int, t: int) -> Optional[int]:
-        if not self.model:
-            return None
-        period_mode = self.model.time_structure.period_mode or PERIOD_MODE_YEARLY
-        return shift_period(period, t, period_mode)
-
-    def _cached_value_for_period(
-        self,
-        item_id: str,
-        period: int,
-        results: Dict[str, Dict[int, float]],
-    ) -> Optional[float]:
-        existing = results.get(item_id, {}).get(period)
-        if not self.model:
-            return existing
-        item = self.model.get_item(item_id)
-        if item.values:
-            value_cell = item.values.values.get(period)
-            if value_cell is not None and value_cell.value is not None:
-                return value_cell.value
-        if self._compute_seed_results is not None:
-            seeded = self._compute_seed_results.get(item_id, {}).get(period)
-            if seeded is not None:
-                return seeded
-        return existing
-
-    def _cached_computed_value_for_period(
-        self,
-        item_id: str,
-        period: int,
-    ) -> Optional[float]:
-        if not self.model:
-            return None
-        item = self.model.get_item(item_id)
-        if not item.values:
-            return None
-        value_cell = item.values.values.get(period)
-        if value_cell is None or value_cell.value is None:
-            return None
-        if value_cell.provenance == ValueProvenance.computed:
-            return value_cell.value
-        period_mode = self.model.time_structure.period_mode or PERIOD_MODE_YEARLY
-        if period_mode != PERIOD_MODE_YEARLY and value_cell.provenance in (
-            ValueProvenance.imported_other,
-            ValueProvenance.imported_edgar,
-            ValueProvenance.imported_fmp,
-        ):
-            return value_cell.value
-        return None
-
-    def _ratio_cached_fallback_enabled(self) -> bool:
-        if self._ratio_zero_denominator_policy == "fallback_cached":
-            return True
-        if self._ratio_zero_denominator_policy == "auto_fallback_cached":
-            return self._compute_has_recompute
-        return False
-
-    def _cycle_cached_fallback_enabled(self) -> bool:
-        if self._cycle_fallback_policy == "on":
-            return True
-        if self._cycle_fallback_policy in {"auto", "auto_propagate"}:
-            return self._compute_has_recompute
-        return False
-
-    def _eval_expr(
-        self,
-        expr,
-        period: int,
-        results: Dict[str, Dict[int, float]],
-        time_index: Dict[int, int],
-        time_order: List[int],
-    ) -> Optional[float]:
-        """Evaluate a small expression tree (from pattern matcher).
-
-        Supported ops: +, -, *, /, ^, SUM, AVG, NEG.
-
-        Example:
-        Expr: {"op": "*", "args": [LineItemRef("revenue"), 0.2]}
-        Result: revenue * 0.2
-        """
-        if expr is None:
-            return None
-        if isinstance(expr, LineItemRef):
-            return self._value_of(expr, period, results, time_index, time_order)
-        if isinstance(expr, (int, float)):
-            return float(expr)
-        if isinstance(expr, dict):
-            op = expr.get("op")
-            if op in {"+", "*", "SUM", "AVG"}:
-                args = expr.get("args", [])
-                values = [self._eval_expr(arg, period, results, time_index, time_order) for arg in args]
-                non_none = [v for v in values if v is not None]
-                # For inline + expressions (e.g., in AVERAGE args), blank+blank = 0 in Excel
-                # This differs from top-level SUM which returns None if all None
-                if op == "+":
-                    return sum(v or 0 for v in values)
-                # For SUM, if ALL values are None, return None (no data)
-                if op == "SUM":
-                    if not non_none:
-                        return None
-                    return sum(non_none)
-                # For AVG, average non-None values (matches Excel AVERAGE behavior)
-                if op == "AVG":
-                    if not non_none:
-                        return None
-                    return sum(non_none) / len(non_none)
-                # For *, None propagates (can't multiply with missing value)
-                if any(v is None for v in values):
-                    return None
-                if op == "*":
-                    result = 1.0
-                    for value in values:
-                        result *= value
-                    return result
-            if op in {"-", "/", "^"}:
-                left = self._eval_expr(expr.get("left"), period, results, time_index, time_order)
-                right = self._eval_expr(expr.get("right"), period, results, time_index, time_order)
-                if left is None or right is None:
-                    return None
-                if op == "-":
-                    return left - right
-                if op == "/":
-                    if right == 0:
-                        return None
-                    return left / right
-                if op == "^":
-                    try:
-                        return left ** right
-                    except (ValueError, OverflowError):
-                        return None
-            if op == "NEG":
-                inner = self._eval_expr(expr.get("arg"), period, results, time_index, time_order)
-                return None if inner is None else -inner
-        return None
-
-    def _apply_scale_fn(self, value: float, scale_fn: str) -> float:
-        scale_fn = scale_fn.strip()
-        if not scale_fn:
-            return value
-        if scale_fn.startswith("/"):
-            return value / float(scale_fn[1:])
-        if scale_fn.startswith("*"):
-            return value * float(scale_fn[1:])
-        return value
-
     def _iter_formula_specs(self, item: LineItem) -> Iterable[FormulaSpec]:
         if item.historical:
             yield item.historical
@@ -1024,6 +945,11 @@ class DependencyGraph:
             return refs
         if isinstance(obj, LineItemRef):
             return [obj]
+        if isinstance(obj, FormulaSpec):
+            return self._extract_refs(obj.params)
+        coerced = line_item_ref_from_obj(obj)
+        if coerced is not None:
+            return [coerced]
         if isinstance(obj, dict):
             for value in obj.values():
                 refs.extend(self._extract_refs(value))
@@ -1032,44 +958,3 @@ class DependencyGraph:
             for value in obj:
                 refs.extend(self._extract_refs(value))
         return refs
-
-    def _tarjan_sccs(self, adj: Optional[Dict[str, Set[str]]] = None) -> List[List[str]]:
-        if adj is None:
-            adj = self.adj
-        index = 0
-        stack: List[str] = []
-        indices: Dict[str, int] = {}
-        lowlinks: Dict[str, int] = {}
-        onstack: Set[str] = set()
-        sccs: List[List[str]] = []
-
-        def strongconnect(node: str) -> None:
-            nonlocal index
-            indices[node] = index
-            lowlinks[node] = index
-            index += 1
-            stack.append(node)
-            onstack.add(node)
-
-            for neighbor in adj.get(node, set()):
-                if neighbor not in indices:
-                    strongconnect(neighbor)
-                    lowlinks[node] = min(lowlinks[node], lowlinks[neighbor])
-                elif neighbor in onstack:
-                    lowlinks[node] = min(lowlinks[node], indices[neighbor])
-
-            if lowlinks[node] == indices[node]:
-                component: List[str] = []
-                while True:
-                    w = stack.pop()
-                    onstack.remove(w)
-                    component.append(w)
-                    if w == node:
-                        break
-                sccs.append(component)
-
-        for node in self.nodes:
-            if node not in indices:
-                strongconnect(node)
-
-        return sccs

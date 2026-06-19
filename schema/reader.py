@@ -8,7 +8,7 @@ Purpose:
 The reader is intentionally heuristic:
 - Year headers are inferred from the densest row of year-like values.
 - Column A labels are slugified into line_item_ids.
-- Shared formulas (Excel's shared formula optimization) are not expanded; cached values are used.
+- Shared formulas can be expanded in opt-in mode; default mode uses cached values.
 - Named ranges and structured references are not resolved.
 
 Example:
@@ -18,8 +18,12 @@ Cell H9 formula: =Assumptions!H34 → FormulaSpec(type=ref, source=LineItemRef("
 
 from __future__ import annotations
 
+import hashlib
+import posixpath
+import pathlib
 import re
 import zipfile
+from datetime import datetime, timedelta
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
@@ -31,9 +35,9 @@ from .models import (
     FormulaType,
     ItemType,
     LineItem,
-    LineItemRef,
+    LineItemRef,  # noqa: F401 - compatibility alias for schema.reader imports
     ModelMetadata,
-    ScenarioInputs,
+    ScenarioInputs,  # noqa: F401 - compatibility alias for schema.reader imports
     Section,
     Sheet,
     TimeStructure,
@@ -47,19 +51,78 @@ from .models import (
     period_year,
 )
 from .pattern_matcher import CellContext, FormulaPatternMatcher
+from .reader_cells import (
+    _coerce_number,
+    _col_to_index,
+    _get_cell_value,
+    _index_to_col,
+    _normalize_year_token,  # noqa: F401 - compatibility alias for schema.reader imports
+    _parse_period_token,
+    _slugify,
+    _split_cell,
+)
+from .reader_formula import (
+    _choose_formula,
+    _collect_refs,  # noqa: F401 - compatibility alias for schema.reader imports
+    _dedup_additive_refs,
+    _is_expanded_shared_raw,
+    _is_self_referencing,
+    _param_shape,
+    _shape_sort_key,  # noqa: F401 - compatibility alias for schema.reader imports
+)
+
+
+_PARSER_MANIFEST: list[str] = [
+    "reader.py",
+    "reader_cells.py",
+    "reader_formula.py",
+    "pattern_matcher.py",
+    "formula_ast.py",
+    "models.py",
+]
+_PARSER_DIR = pathlib.Path(__file__).resolve().parent
+
+
+def _compute_reader_version() -> str:
+    h = hashlib.sha1()
+    for name in _PARSER_MANIFEST:
+        h.update(name.encode("utf-8"))
+        h.update(b"\0")
+        h.update((_PARSER_DIR / name).read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
+READER_VERSION: str = _compute_reader_version()
 
 
 @dataclass
 class CellData:
     value: Optional[str]
     formula: Optional[str]
+    expanded_shared: bool = False
+
+
+@dataclass
+class SharedFormulaMaster:
+    formula: str
+    row: int
+    col: int
+    ref_range: Optional[str]
+
+
+@dataclass
+class PendingSlave:
+    row: int
+    col: int
+    si: str
 
 
 class ExcelWorkbookReader:
     def __init__(self, file_path: str) -> None:
         self.file_path = file_path
 
-    def read(self) -> Dict[str, Dict[Tuple[int, int], CellData]]:
+    def read(self, expand_shared: bool = False) -> Dict[str, Dict[Tuple[int, int], CellData]]:
         """Load an .xlsx into a dict of sheet -> {(row, col): CellData}."""
         with zipfile.ZipFile(self.file_path) as zf:
             shared_strings = _load_shared_strings(zf)
@@ -68,7 +131,11 @@ class ExcelWorkbookReader:
             data: Dict[str, Dict[Tuple[int, int], CellData]] = {}
             for sheet_name, sheet_path in sheets.items():
                 xml_data = zf.read(sheet_path)
-                data[sheet_name] = _parse_sheet(xml_data, shared_strings)
+                data[sheet_name] = _parse_sheet(
+                    xml_data,
+                    shared_strings,
+                    expand_shared=expand_shared,
+                )
         return data
 
 
@@ -77,16 +144,18 @@ def read_model(
     mode: str = "quick",
     historical_cutoff_year: Optional[int] = None,
     quarterly_mode: str = "auto",
+    expand_shared: bool = False,
 ) -> Dict:
     """Parse an Excel model into a schema (quick summary or full model)."""
-    workbook = ExcelWorkbookReader(file_path).read()
+    reader = ExcelWorkbookReader(file_path)
+    workbook = reader.read() if not expand_shared else reader.read(expand_shared=True)
     matcher = FormulaPatternMatcher()
 
-    if quarterly_mode not in {"legacy", "auto", "quarterly_native"}:
-        raise ValueError("quarterly_mode must be one of: legacy, auto, quarterly_native")
+    if quarterly_mode not in {"yearly", "auto", "quarterly_native"}:
+        raise ValueError("quarterly_mode must be one of: yearly, auto, quarterly_native")
 
     workbook_has_quarterly = any(_sheet_has_quarterly_tokens(cells) for cells in workbook.values())
-    if quarterly_mode == "legacy":
+    if quarterly_mode == "yearly":
         period_mode = PERIOD_MODE_YEARLY
     elif quarterly_mode == "quarterly_native":
         period_mode = PERIOD_MODE_QUARTERLY5
@@ -107,6 +176,38 @@ def read_model(
         sheet_quarterly_cols[sheet_name] = quarterly_cols
         sheet_annual_cols[sheet_name] = annual_cols
         period_set.update(col_to_period.values())
+
+    fallback_col_to_period = max(sheet_col_to_period.values(), key=len, default={})
+    fallback_annual_cols = {
+        col
+        for sheet_name, col_to_period in sheet_col_to_period.items()
+        if col_to_period == fallback_col_to_period
+        for col in sheet_annual_cols.get(sheet_name, set())
+    }
+    if fallback_col_to_period:
+        for sheet_name, cells in workbook.items():
+            existing_col_to_period = sheet_col_to_period.get(sheet_name, {})
+            existing_is_weak = bool(existing_col_to_period) and _is_weak_annual_period_header(
+                cells,
+                existing_col_to_period,
+                sheet_quarterly_cols.get(sheet_name, set()),
+            )
+            if existing_col_to_period and not existing_is_weak:
+                continue
+            if existing_is_weak and len(fallback_col_to_period) < 3:
+                continue
+            if "financial" not in _slugify(sheet_name):
+                continue
+            if _sheet_uses_period_columns(cells, fallback_col_to_period):
+                sheet_col_to_period[sheet_name] = dict(fallback_col_to_period)
+                sheet_annual_cols[sheet_name] = set(fallback_annual_cols or fallback_col_to_period)
+                sheet_quarterly_cols[sheet_name] = set()
+
+    period_set = {
+        period
+        for col_to_period in sheet_col_to_period.values()
+        for period in col_to_period.values()
+    }
 
     # Detect blank spacer rows referenced by formulas but not yet mapped
     for sheet_name, cells in workbook.items():
@@ -143,6 +244,14 @@ def read_model(
                     )
                     spec = matcher.classify(cell.formula, context)
                     classification_counts[spec.type.value] = classification_counts.get(spec.type.value, 0) + 1
+                    if cell.expanded_shared and spec.type == FormulaType.raw:
+                        cached_value = _coerce_number(cell.value)
+                        if cached_value is not None:
+                            spec = FormulaSpec(
+                                type=FormulaType.constant,
+                                params={"value": cached_value},
+                                note="expanded_shared_raw",
+                            )
                     if is_quarterly_col and quarterly_cols:
                         period_quarterly_formulas.setdefault(period, []).append(spec)
                     else:
@@ -181,9 +290,10 @@ def read_model(
                 specs = period_formula_list.get(period) or period_quarterly_formulas.get(period, [])
                 if not specs:
                     continue
+                vote_specs = [spec for spec in specs if not _is_expanded_shared_raw(spec)] or specs
                 sig_counts: Dict[Tuple[FormulaType, Optional[str], object], int] = {}
                 sig_to_spec: Dict[Tuple[FormulaType, Optional[str], object], FormulaSpec] = {}
-                for spec in specs:
+                for spec in vote_specs:
                     sig = (spec.type, spec.subtype, _param_shape(spec.params))
                     sig_counts[sig] = sig_counts.get(sig, 0) + 1
                     sig_to_spec.setdefault(sig, spec)
@@ -354,24 +464,37 @@ def _load_sheets(zf: zipfile.ZipFile) -> Dict[str, str]:
         target = rel_map.get(rel_id)
         if not target:
             continue
-        sheet_path = f"xl/{target}"
+        sheet_path = _resolve_workbook_relationship_target(target)
         sheets[name] = sheet_path
     return sheets
 
 
-def _parse_sheet(xml_data: bytes, shared_strings: List[str]) -> Dict[Tuple[int, int], CellData]:
+def _resolve_workbook_relationship_target(target: str) -> str:
+    """Resolve a workbook relationship target to an xlsx archive member path."""
+    target = str(target).strip()
+    if target.startswith("/"):
+        return posixpath.normpath(target.lstrip("/"))
+    if target.startswith("xl/"):
+        return posixpath.normpath(target)
+    return posixpath.normpath(posixpath.join("xl", target))
+
+
+def _parse_sheet(
+    xml_data: bytes,
+    shared_strings: List[str],
+    expand_shared: bool = False,
+) -> Dict[Tuple[int, int], CellData]:
     """Parse a worksheet XML into cell value/formula records.
 
     Note: Excel's shared formula optimization means slave cells (which reference
-    a master via ``si`` index but carry no formula text) will have formula=None.
-    These are intentionally left as-is — their cached values are used instead.
-    Expanding shared formulas is possible via ``_translate_formula`` but is not
-    done here because it removes constant-override safety nets that anchor
-    dependency chains.
+    a master via ``si`` index but carry no formula text) will have formula=None
+    unless ``expand_shared=True``. Default mode preserves cached-value behavior.
     """
     root = ET.fromstring(xml_data)
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     cells: Dict[Tuple[int, int], CellData] = {}
+    shared_masters: Dict[str, SharedFormulaMaster] = {}
+    pending_slaves: List[PendingSlave] = []
 
     for row in root.findall(f".//{ns}row"):
         for cell in row.findall(f"{ns}c"):
@@ -396,10 +519,66 @@ def _parse_sheet(xml_data: bytes, shared_strings: List[str]) -> Dict[Tuple[int, 
                     texts = [t.text for t in inline.findall(f".//{ns}t") if t.text]
                     value = "".join(texts)
 
-            formula = formula_node.text if formula_node is not None else None
+            formula_text = formula_node.text if formula_node is not None else None
+            formula_type = formula_node.get("t") if formula_node is not None else None
+            si = formula_node.get("si") if formula_node is not None else None
+            if formula_type == "shared" and formula_text and si is not None:
+                shared_masters[si] = SharedFormulaMaster(
+                    formula=formula_text,
+                    row=row_num,
+                    col=col_idx,
+                    ref_range=formula_node.get("ref"),
+                )
+                formula = formula_text
+            elif formula_type == "shared" and si is not None and not formula_text:
+                pending_slaves.append(PendingSlave(row=row_num, col=col_idx, si=si))
+                formula = None
+            else:
+                formula = formula_text
             cells[(row_num, col_idx)] = CellData(value=value, formula=formula)
 
+    if expand_shared:
+        for slave in pending_slaves:
+            master = shared_masters.get(slave.si)
+            if master is None:
+                continue
+            if master.ref_range and not _cell_in_range(slave.row, slave.col, master.ref_range):
+                continue
+            cell = cells.get((slave.row, slave.col))
+            if cell is None:
+                continue
+            expanded = _translate_formula(
+                master.formula,
+                slave.row - master.row,
+                slave.col - master.col,
+            )
+            cells[(slave.row, slave.col)] = CellData(
+                value=cell.value,
+                formula=expanded,
+                expanded_shared=True,
+            )
+
     return cells
+
+
+def _cell_in_range(row: int, col: int, ref_range: str) -> bool:
+    """Return whether the cell lies inside an A1 ref range like H7:S7."""
+    try:
+        if ":" in ref_range:
+            start_ref, end_ref = ref_range.split(":", 1)
+        else:
+            start_ref = ref_range
+            end_ref = ref_range
+        start_col, start_row = _split_cell(start_ref.replace("$", ""))
+        end_col, end_row = _split_cell(end_ref.replace("$", ""))
+        start_col_idx = _col_to_index(start_col)
+        end_col_idx = _col_to_index(end_col)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        min(start_row, end_row) <= row <= max(start_row, end_row)
+        and min(start_col_idx, end_col_idx) <= col <= max(start_col_idx, end_col_idx)
+    )
 
 
 def _translate_formula(formula: str, row_offset: int, col_offset: int) -> str:
@@ -428,13 +607,31 @@ def _translate_formula(formula: str, row_offset: int, col_offset: int) -> str:
 
         return f"{col_abs}{col_str}{row_abs}{row_str}"
 
+    zones: Dict[str, str] = {}
+    zone_pattern = re.compile(r"""("(?:[^"]|"")*"|'(?:[^']|'')*'!|[A-Za-z_][\w.]*!)""")
+
+    def _replace_zone(match: re.Match) -> str:
+        zone = match.group(0)
+        placeholder = f"@@zone{len(zones)}@@"
+        suffix = 0
+        while placeholder in formula or placeholder in zones:
+            suffix += 1
+            placeholder = f"@@zone{len(zones)}_{suffix}@@"
+        zones[placeholder] = zone
+        return placeholder
+
+    sanitized = zone_pattern.sub(_replace_zone, formula)
+
     # Match cell references: optional $, col letters, optional $, row digits
     # Negative lookbehind for alphanumeric to avoid matching inside function names
-    return re.sub(
+    translated = re.sub(
         r"(?<![A-Za-z0-9_])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_\(])",
         _translate_match,
-        formula,
+        sanitized,
     )
+    for placeholder, zone in zones.items():
+        translated = translated.replace(placeholder, zone)
+    return translated
 
 
 def _map_referenced_blank_rows(
@@ -575,9 +772,12 @@ def _find_period_header(
         periods: Dict[int, int] = {}
         quarterly_cols: Set[int] = set()
         annual_cols: Set[int] = set()
+        is_date_header = _row_is_date_period_header(cells, row)
         for col in range(2, 200):
             value = _get_cell_value(cells, row, col)
             parsed = _parse_period_token(value)
+            if parsed is None and is_date_header:
+                parsed = _parse_excel_date_period_token(value)
             if parsed:
                 year, slot, is_quarterly = parsed
                 period = encode_period(year, slot or 5, mode)
@@ -586,6 +786,9 @@ def _find_period_header(
                     quarterly_cols.add(col)
                 else:
                     annual_cols.add(col)
+        if is_date_header and periods and not quarterly_cols:
+            periods = _expand_date_header_periods(cells, row, periods, mode)
+            annual_cols = set(periods)
         rows_data.append((row, periods, quarterly_cols, annual_cols))
 
     rows_data.sort(key=lambda x: -len(x[1]))
@@ -614,10 +817,82 @@ def _find_period_header(
     return merged, all_quarterly, all_annual
 
 
-def _find_year_header(cells: Dict[Tuple[int, int], CellData]) -> Tuple[Dict[int, int], Set[int]]:
-    """Backward-compatible wrapper for legacy tests."""
-    col_to_period, quarterly_cols, _ = _find_period_header(cells, PERIOD_MODE_YEARLY)
-    return col_to_period, quarterly_cols
+def _is_weak_annual_period_header(
+    cells: Dict[Tuple[int, int], CellData],
+    col_to_period: Dict[int, int],
+    quarterly_cols: Set[int],
+) -> bool:
+    if not col_to_period or quarterly_cols:
+        return False
+    if len(col_to_period) >= 3:
+        return False
+    if any(_row_is_date_period_header(cells, row) for row in range(1, 11)):
+        return False
+    return True
+
+
+def _row_is_date_period_header(cells: Dict[Tuple[int, int], CellData], row: int) -> bool:
+    for col in range(1, 4):
+        value = _get_cell_value(cells, row, col)
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if "year ended" in text or "period ended" in text:
+            return True
+    return False
+
+
+def _parse_excel_date_period_token(value: Optional[str]) -> Optional[Tuple[int, Optional[int], bool]]:
+    serial = _coerce_number(value)
+    if serial is None or not serial.is_integer():
+        return None
+    if serial < 25000 or serial > 80000:
+        return None
+    date_value = datetime(1899, 12, 30) + timedelta(days=int(serial))
+    if 1900 <= date_value.year <= 2100:
+        return date_value.year, None, False
+    return None
+
+
+def _expand_date_header_periods(
+    cells: Dict[Tuple[int, int], CellData],
+    row: int,
+    periods: Dict[int, int],
+    mode: str,
+) -> Dict[int, int]:
+    if mode != PERIOD_MODE_YEARLY or not periods:
+        return periods
+    first_col = min(periods)
+    first_year = periods[first_col]
+    max_used_col = max(
+        (
+            col
+            for (_row, col), cell in cells.items()
+            if _row == row and col >= first_col and (cell.value not in (None, "") or cell.formula)
+        ),
+        default=max(periods),
+    )
+    expanded = dict(periods)
+    for col in range(first_col, max_used_col + 1):
+        expanded.setdefault(col, first_year + (col - first_col))
+    return expanded
+
+
+def _sheet_uses_period_columns(
+    cells: Dict[Tuple[int, int], CellData],
+    col_to_period: Dict[int, int],
+) -> bool:
+    if not col_to_period:
+        return False
+    min_col = min(col_to_period)
+    max_col = max(col_to_period)
+    populated = 0
+    for (_row, col), cell in cells.items():
+        if min_col <= col <= max_col and (cell.value not in (None, "") or cell.formula):
+            populated += 1
+            if populated >= 3:
+                return True
+    return False
 
 
 def _build_time_structure(
@@ -671,365 +946,3 @@ def _build_time_structure(
         projection_years=projection_years,
         column_map=column_map,
     )
-
-
-def _choose_formula(
-    formulas_by_year: Dict[int, FormulaSpec],
-    years: List[int],
-) -> Tuple[Optional[FormulaSpec], Dict[int, FormulaSpec]]:
-    """Pick a representative FormulaSpec for the given year set."""
-    if not formulas_by_year:
-        return None, {}
-
-    candidate_years = [year for year in years if year in formulas_by_year] if years else list(formulas_by_year.keys())
-    if not candidate_years:
-        return None, {}
-
-    signature_counts: Dict[Tuple[FormulaType, Optional[str], object], List[int]] = {}
-    for year in candidate_years:
-        spec = formulas_by_year[year]
-        signature = (spec.type, spec.subtype, _param_shape(spec.params))
-        signature_counts.setdefault(signature, []).append(year)
-
-    best_signature = None
-    best_count = -1
-    best_latest_year = -1
-    for signature, sig_years in signature_counts.items():
-        count = len(sig_years)
-        latest_year = max(sig_years)
-        if count > best_count or (count == best_count and latest_year > best_latest_year):
-            best_signature = signature
-            best_count = count
-            best_latest_year = latest_year
-
-    if best_signature is None:
-        return None, {}
-
-    representative_year = max(signature_counts[best_signature])
-    representative_spec = formulas_by_year[representative_year]
-    overrides = {}
-    for year in candidate_years:
-        spec = formulas_by_year[year]
-        signature = (spec.type, spec.subtype, _param_shape(spec.params))
-        if signature != best_signature:
-            overrides[year] = spec
-
-    return representative_spec, overrides
-
-
-def _param_shape(value):
-    """Normalize formula params into a hashable shape."""
-    if isinstance(value, LineItemRef):
-        return ("ref", value.id, value.t, value.resolved)
-    if isinstance(value, bool):
-        return ("bool", value)
-    if isinstance(value, (int, float)):
-        return ("num", round(float(value), 6))
-    if value is None:
-        return ("none",)
-    if isinstance(value, str):
-        return ("str", value)
-    if isinstance(value, dict):
-        if "op" in value and isinstance(value.get("args"), list):
-            op = value.get("op")
-            args = list(value.get("args", []))
-            if op in {"+", "*", "SUM", "AVG"}:
-                args = sorted(args, key=lambda arg: _shape_sort_key(_param_shape(arg)))
-            normalized = dict(value)
-            normalized["args"] = args
-            return ("dict", tuple((key, _param_shape(normalized[key])) for key in sorted(normalized)))
-        if value.get("function") in {"SUM", "AVERAGE"} and isinstance(value.get("items"), list):
-            items = list(value.get("items", []))
-            items = sorted(items, key=lambda item: _shape_sort_key(_param_shape(item)))
-            normalized = dict(value)
-            normalized["items"] = items
-            return ("dict", tuple((key, _param_shape(normalized[key])) for key in sorted(normalized)))
-        return ("dict", tuple((key, _param_shape(value[key])) for key in sorted(value)))
-    if isinstance(value, set):
-        items = sorted(value, key=lambda item: _shape_sort_key(_param_shape(item)))
-        return ("list", tuple(_param_shape(item) for item in items))
-    if isinstance(value, (list, tuple)):
-        return ("list", tuple(_param_shape(item) for item in value))
-    return ("type", type(value).__name__)
-
-
-def _shape_sort_key(value) -> str:
-    return repr(value)
-
-
-def _collect_refs(value, refs: List[LineItemRef]) -> None:
-    if isinstance(value, LineItemRef):
-        refs.append(value)
-        return
-    if isinstance(value, dict):
-        for v in value.values():
-            _collect_refs(v, refs)
-        return
-    if isinstance(value, (list, tuple, set)):
-        for v in value:
-            _collect_refs(v, refs)
-
-
-def _is_self_referencing(spec: Optional[FormulaSpec], line_item_id: str) -> bool:
-    """Check if a formula references its own line item at t=0."""
-    if not spec:
-        return False
-    refs: List[LineItemRef] = []
-    _collect_refs(spec.params, refs)
-    if not refs:
-        return False
-    return any(ref.id == line_item_id and ref.t == 0 for ref in refs)
-
-
-def _dedup_additive_refs(spec: FormulaSpec) -> FormulaSpec:
-    if spec.type != FormulaType.arithmetic:
-        return spec
-
-    params = spec.params if isinstance(spec.params, dict) else {}
-    changed = False
-
-    def _dedup_expr(expr):
-        if not isinstance(expr, dict):
-            return expr
-
-        op = expr.get("op")
-        if op is None:
-            return expr
-
-        if op in {"+", "SUM", "AVG", "AVERAGE"}:
-            args = expr.get("args", [])
-            if not isinstance(args, list):
-                return expr
-            new_args = []
-            for arg in args:
-                new_args.append(_dedup_expr(arg))
-
-            seen: Set[Tuple[str, int]] = set()
-            deduped = []
-            for arg in new_args:
-                if isinstance(arg, LineItemRef):
-                    key = (arg.id, arg.t)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                deduped.append(arg)
-
-            if deduped != args or any(new is not old for new, old in zip(new_args, args)):
-                return {"op": op, "args": deduped}
-            return expr
-
-        if op in {"-", "/", "^"}:
-            left = expr.get("left")
-            right = expr.get("right")
-            new_left = _dedup_expr(left)
-            new_right = _dedup_expr(right)
-            if new_left is not left or new_right is not right:
-                return {"op": op, "left": new_left, "right": new_right}
-            return expr
-
-        if op == "NEG":
-            arg = expr.get("arg")
-            new_arg = _dedup_expr(arg)
-            if new_arg is not arg:
-                return {"op": "NEG", "arg": new_arg}
-            return expr
-
-        if op == "*":
-            args = expr.get("args", [])
-            if not isinstance(args, list):
-                return expr
-            new_args = [_dedup_expr(arg) for arg in args]
-            if any(new is not old for new, old in zip(new_args, args)):
-                return {"op": "*", "args": new_args}
-            return expr
-
-        return expr
-
-    def _dedup_items(items: object) -> object:
-        nonlocal changed
-        if not isinstance(items, list):
-            return items
-
-        seen: Set[Tuple[str, int]] = set()
-        deduped = []
-        for item in items:
-            new_item = _dedup_expr(item) if isinstance(item, dict) else item
-            if isinstance(new_item, LineItemRef):
-                key = (new_item.id, new_item.t)
-                if key in seen:
-                    changed = True
-                    continue
-                seen.add(key)
-            if new_item is not item:
-                changed = True
-            deduped.append(new_item)
-        if len(deduped) != len(items):
-            changed = True
-        return deduped
-
-    new_params = params
-
-    function = params.get("function")
-    if isinstance(function, str) and function.upper() in {"SUM", "AVERAGE", "AVG"} and "items" in params:
-        new_items = _dedup_items(params.get("items"))
-        if new_items is not params.get("items"):
-            new_params = dict(params)
-            new_params["items"] = new_items
-    elif "items" in params and "function" not in params:
-        new_items = _dedup_items(params.get("items"))
-        if new_items is not params.get("items"):
-            new_params = dict(params)
-            new_params["items"] = new_items
-    elif "operands" in params:
-        operands = params.get("operands")
-        if isinstance(operands, list) and operands:
-            operator = operands[0]
-            if operator == "+":
-                seen: Set[Tuple[str, int]] = set()
-                new_operands = [operator]
-                for operand in operands[1:]:
-                    if isinstance(operand, LineItemRef):
-                        key = (operand.id, operand.t)
-                        if key in seen:
-                            changed = True
-                            continue
-                        seen.add(key)
-                    new_operands.append(operand)
-                if len(new_operands) != len(operands):
-                    changed = True
-                if changed:
-                    new_params = dict(params)
-                    new_params["operands"] = new_operands
-    elif "expr" in params:
-        expr = params.get("expr")
-        new_expr = _dedup_expr(expr)
-        if new_expr is not expr:
-            changed = True
-            new_params = dict(params)
-            new_params["expr"] = new_expr
-
-    if not changed:
-        return spec
-    return FormulaSpec(
-        type=spec.type,
-        subtype=spec.subtype,
-        params=new_params,
-        note=spec.note,
-    )
-
-
-def _get_cell_value(cells: Dict[Tuple[int, int], CellData], row: int, col: int) -> Optional[str]:
-    """Return the raw cell value if present."""
-    cell = cells.get((row, col))
-    if cell is None:
-        return None
-    return cell.value
-
-
-def _parse_year(value: Optional[str]) -> Optional[int]:
-    """Backward-compatible wrapper for legacy tests."""
-    parsed = _parse_period_token(value)
-    if not parsed:
-        return None
-    return parsed[0]
-
-
-def _normalize_year_token(token: str) -> Optional[int]:
-    if not token:
-        return None
-    if len(token) == 2:
-        year_suffix = int(token)
-        year = 2000 + year_suffix if year_suffix < 80 else 1900 + year_suffix
-    elif len(token) == 3:
-        trimmed = token.lstrip("0") or "0"
-        if len(trimmed) <= 2:
-            year_suffix = int(trimmed)
-            year = 2000 + year_suffix if year_suffix < 80 else 1900 + year_suffix
-        else:
-            year = int(trimmed)
-    else:
-        year = int(token)
-    if 1900 <= year <= 2100:
-        return year
-    return None
-
-
-def _parse_period_token(value: Optional[str]) -> Optional[Tuple[int, Optional[int], bool]]:
-    """Parse a header token into (year, slot-or-none, is_quarterly-token)."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    m = re.match(r"^([1-4])Q(\d{2,4})[AEae]?$", text)
-    if m:
-        slot = int(m.group(1))
-        year_str = m.group(2)
-        year = _normalize_year_token(year_str)
-        if year is not None:
-            return year, slot, True
-    try:
-        if text and text[-1] in "AEae":
-            text = text[:-1]
-        num = int(float(text))
-        # For non-quarterly tokens, only accept explicit 4-digit years.
-        # 2-digit normalization (e.g. 90→1990, 57→2057) is too aggressive
-        # and misidentifies numeric data as years.
-        if 1900 <= num <= 2100:
-            return num, None, False
-    except ValueError:
-        return None
-    return None
-
-
-def _coerce_number(value: Optional[str]) -> Optional[float]:
-    """Convert a string to float when possible."""
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
-def _split_cell(cell_ref: str) -> Tuple[str, int]:
-    col = ""
-    row = ""
-    for ch in cell_ref:
-        if ch.isalpha():
-            col += ch
-        else:
-            row += ch
-    return col, int(row)
-
-
-def _col_to_index(col: str) -> int:
-    col = col.upper()
-    index = 0
-    for ch in col:
-        if not ch.isalpha():
-            continue
-        index = index * 26 + (ord(ch) - ord("A") + 1)
-    return index
-
-
-def _index_to_col(idx: int) -> str:
-    letters = []
-    while idx > 0:
-        idx, rem = divmod(idx - 1, 26)
-        letters.append(chr(rem + ord("A")))
-    return "".join(reversed(letters))
-
-
-def _slugify(text: str) -> str:
-    text = text.strip().lower()
-    out = []
-    prev_underscore = False
-    for ch in text:
-        if ch.isalnum():
-            out.append(ch)
-            prev_underscore = False
-        else:
-            if not prev_underscore:
-                out.append("_")
-                prev_underscore = True
-    slug = "".join(out).strip("_")
-    return slug or "line_item"

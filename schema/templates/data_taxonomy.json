@@ -1,0 +1,1035 @@
+{
+  "revenue": {
+    "concept_id": "revenue",
+    "statement": "income_statement",
+    "registry_group_id": "revenue.fy_consolidated",
+    "canonical_tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+    "fmp_field": "revenue",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "edgar",
+    "validation_tolerance_pct": 0.05,
+    "notes": "Use EDGAR for segment detail; FMP is the clean consolidated fallback."
+  },
+  "cost_of_revenue": {
+    "concept_id": "cost_of_revenue",
+    "statement": "income_statement",
+    "registry_group_id": "cost_of_revenue.goods_and_services",
+    "canonical_tag": "us-gaap:CostOfGoodsAndServicesSold",
+    "fmp_field": "costOfRevenue",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "gross_profit": {
+    "concept_id": "gross_profit",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "GrossProfit",
+      "RevenueFromContractWithCustomerExcludingAssessedTax",
+      "CostOfRevenue"
+    ],
+    "nonadmissible_reason_code": "computational_fallback",
+    "fmp_field": "grossProfit",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp",
+    "notes": "Direct EDGAR tag exists for many issuers; otherwise derive from revenue and cost of revenue."
+  },
+  "selling_general_and_administrative": {
+    "concept_id": "selling_general_and_administrative",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "SellingGeneralAndAdministrativeExpense",
+      "SellingAndMarketingExpense",
+      "GeneralAndAdministrativeExpense"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "sellingGeneralAndAdministrativeExpenses",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "edgar"
+  },
+  "sales_and_marketing": {
+    "concept_id": "sales_and_marketing",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "SellingAndMarketingExpense",
+      "SellingGeneralAndAdministrativeExpense"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "sellingAndMarketingExpenses",
+    "fallback_fmp_field": "sellingGeneralAndAdministrativeExpenses",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "edgar",
+    "notes": "Falls back to combined SGA when split not available (both FMP and EDGAR)."
+  },
+  "general_and_administrative": {
+    "concept_id": "general_and_administrative",
+    "statement": "income_statement",
+    "registry_group_id": "general_and_administrative.consolidated",
+    "canonical_tag": "us-gaap:GeneralAndAdministrativeExpense",
+    "fmp_field": "generalAndAdministrativeExpenses",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp",
+    "notes": "No fallback - stays blank when only combined SGA available, avoids double-counting."
+  },
+  "research_and_development": {
+    "concept_id": "research_and_development",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "ResearchAndDevelopmentExpense",
+      "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
+      "ResearchAndDevelopmentExpenseSoftwareExcludingAcquiredInProcessCost"
+    ],
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "researchAndDevelopmentExpenses",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "operating_expenses": {
+    "concept_id": "operating_expenses",
+    "statement": "income_statement",
+    "registry_group_id": "operating_expenses.consolidated",
+    "canonical_tag": "us-gaap:OperatingExpenses",
+    "fmp_field": "operatingExpenses",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "operating_income": {
+    "concept_id": "operating_income",
+    "statement": "income_statement",
+    "registry_group_id": "operating_income.consolidated",
+    "canonical_tag": "us-gaap:OperatingIncomeLoss",
+    "fmp_field": "operatingIncome",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "interest_expense": {
+    "concept_id": "interest_expense",
+    "statement": "income_statement",
+    "registry_group_id": "interest_expense.consolidated",
+    "canonical_tag": "us-gaap:InterestExpense",
+    "fmp_field": "interestExpense",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "interest_income": {
+    "concept_id": "interest_income",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "InterestIncomeExpenseNonoperatingNet",
+      "InterestIncomeOther",
+      "InterestAndOtherIncome"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "interestIncome",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "other_income_expense": {
+    "concept_id": "other_income_expense",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "NonoperatingIncomeExpense",
+      "OtherNonoperatingIncomeExpense"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "totalOtherIncomeExpensesNet",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp",
+    "notes": "Captures interest income net of interest expense plus other non-operating items when reported as a combined line."
+  },
+  "pretax_income": {
+    "concept_id": "pretax_income",
+    "statement": "income_statement",
+    "registry_group_id": "pretax_income.continuing_operations",
+    "canonical_tag": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "fmp_field": "incomeBeforeTax",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "income_tax": {
+    "concept_id": "income_tax",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "IncomeTaxExpenseBenefit",
+      "CurrentTaxExpenseBenefit",
+      "DeferredTaxExpenseBenefit"
+    ],
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "incomeTaxExpense",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "net_income": {
+    "concept_id": "net_income",
+    "statement": "income_statement",
+    "registry_group_id": "net_income.attributable_to_parent",
+    "canonical_tag": "us-gaap:NetIncomeLoss",
+    "fmp_field": "netIncome",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "eps_basic": {
+    "concept_id": "eps_basic",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "EarningsPerShareBasic",
+      "IncomeLossFromContinuingOperationsPerBasicShare",
+      "EarningsPerShareBasicAndDiluted"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "eps",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "eps_diluted": {
+    "concept_id": "eps_diluted",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "EarningsPerShareDiluted",
+      "IncomeLossFromContinuingOperationsPerDilutedShare",
+      "EarningsPerShareBasicAndDiluted"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "epsDiluted",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "diluted_shares": {
+    "concept_id": "diluted_shares",
+    "statement": "income_statement",
+    "registry_group_id": "diluted_shares.weighted_average",
+    "canonical_tag": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+    "fmp_field": "weightedAverageShsOutDil",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp"
+  },
+  "ebitda": {
+    "concept_id": "ebitda",
+    "statement": "income_statement",
+    "edgar_tags": [
+      "EarningsBeforeInterestTaxesDepreciationAndAmortization",
+      "AdjustedEBITDA",
+      "OperatingIncomeLoss"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "ebitda",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp",
+    "notes": "EDGAR often requires issuer-specific non-GAAP tags or derivation from GAAP components."
+  },
+  "depreciation_amortization": {
+    "concept_id": "depreciation_amortization",
+    "statement": "cash_flow",
+    "registry_group_id": "depreciation_amortization.income_statement",
+    "canonical_tag": "us-gaap:DepreciationDepletionAndAmortization",
+    "fmp_field": "depreciationAndAmortization",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp"
+  },
+  "stock_based_compensation": {
+    "concept_id": "stock_based_compensation",
+    "statement": "cash_flow",
+    "registry_group_id": "stock_based_compensation.consolidated",
+    "canonical_tag": "us-gaap:ShareBasedCompensation",
+    "fmp_field": "stockBasedCompensation",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp"
+  },
+  "cash_and_equivalents": {
+    "concept_id": "cash_and_equivalents",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "CashAndCashEquivalentsAtCarryingValue",
+      "CashCashEquivalentsAndFederalFundsSold"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "cashAndCashEquivalents",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "cash_flow_cash_end_of_period": {
+    "concept_id": "cash_flow_cash_end_of_period",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "cashAtEndOfPeriod",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "notes": "Cash-flow statement ending cash basis used by the statement rollforward; includes restricted cash when the filer reports cash-flow cash on that basis."
+  },
+  "cash_and_short_term_investments": {
+    "concept_id": "cash_and_short_term_investments",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "CashCashEquivalentsAndShortTermInvestments",
+      "AvailableForSaleSecuritiesCurrent",
+      "ShortTermInvestments"
+    ],
+    "nonadmissible_reason_code": "computational_fallback",
+    "fmp_field": "cashAndShortTermInvestments",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "accounts_receivable": {
+    "concept_id": "accounts_receivable",
+    "statement": "balance_sheet",
+    "registry_group_id": "accounts_receivable.net_current",
+    "canonical_tag": "us-gaap:AccountsReceivableNetCurrent",
+    "fmp_field": "netReceivables",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "FMP normalizes receivables consistently; EDGAR tags vary across filers."
+  },
+  "inventory": {
+    "concept_id": "inventory",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "InventoryNet",
+      "InventoriesNetOfReserves",
+      "InventoryFinishedGoods"
+    ],
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "inventory",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "prepaid_expenses": {
+    "concept_id": "prepaid_expenses",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "PrepaidExpenseAndOtherAssetsCurrent",
+      "PrepaidExpenseCurrent",
+      "PrepaidExpensesAndOtherCurrentAssets"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "prepaids",
+    "fmp_endpoint": "balance_sheet",
+    "treat_zero_as_missing": true,
+    "preferred_source": "fmp",
+    "missing_ok_when_covered_by": [
+      "other_current_assets"
+    ],
+    "notes": "Use FMP's dedicated prepaids field when present; if it is zero/missing, leave this row empty rather than falling back to FMP otherCurrentAssets. A separate catch-all value must come from an explicit OtherAssetsCurrent-style EDGAR tag; when that catch-all is populated, diagnostics treat this row as covered."
+  },
+  "other_current_assets": {
+    "concept_id": "other_current_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "OtherAssetsCurrent",
+      "OtherCurrentAssets"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "preferred_source": "edgar",
+    "optional_if_unreported": true,
+    "notes": "No dedicated FMP field; routes to EDGAR. Owns only the explicit OtherAssetsCurrent-style catch-all bucket; if a filer does not report that catch-all tag, leave the row blank and let balance-sheet subline diagnostics catch any residual section gap. PrepaidExpenseAndOtherAssetsCurrent intentionally is not listed as a fallback tag — see commit a5251a6 + follow-up edgar-tag-collision-prepaid-other-current-task.md."
+  },
+  "total_current_assets": {
+    "concept_id": "total_current_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "AssetsCurrent",
+      "CurrentAssets",
+      "CurrentAssetsExcludingAssetsHeldForSale"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "totalCurrentAssets",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "property_plant_equipment_net": {
+    "concept_id": "property_plant_equipment_net",
+    "statement": "balance_sheet",
+    "registry_group_id": "property_plant_equipment.net",
+    "canonical_tag": "us-gaap:PropertyPlantAndEquipmentNet",
+    "fmp_field": "propertyPlantEquipmentNet",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "edgar"
+  },
+  "operating_lease_right_of_use_assets": {
+    "concept_id": "operating_lease_right_of_use_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "OperatingLeaseRightOfUseAsset"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "edgar_negate": false,
+    "preferred_source": "edgar"
+  },
+  "goodwill": {
+    "concept_id": "goodwill",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "Goodwill",
+      "GoodwillAndIntangibleAssetsNet",
+      "GoodwillGross"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "goodwill",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "intangible_assets": {
+    "concept_id": "intangible_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "IntangibleAssetsNetExcludingGoodwill",
+      "FiniteLivedIntangibleAssetsNet",
+      "IndefiniteLivedIntangibleAssetsExcludingGoodwill"
+    ],
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "intangibleAssets",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "edgar"
+  },
+  "marketable_securities_noncurrent": {
+    "concept_id": "marketable_securities_noncurrent",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "MarketableSecuritiesNoncurrent"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "preferred_source": "edgar",
+    "optional_if_unreported": true,
+    "notes": "Long-term marketable securities filed under us-gaap:MarketableSecuritiesNoncurrent (e.g., AAPL's $91B FY24). EDGAR-only — intentionally NO fmp_field. FMP's `longTermInvestments` has broader scope that includes equity-method investments and other LT items not reported under MarketableSecuritiesNoncurrent; routing through FMP would populate this row for filers that don't actually report long-term marketable securities canonically. EDGAR-only keeps semantics tight: only filers whose 10-K explicitly tags MarketableSecuritiesNoncurrent populate this row. Bound to `tpl.fm.balance_sheet.long_term_asset_1` placeholder per the change_in_inventory precedent (commits d59f8dc..6ccba1e)."
+  },
+  "deferred_tax_assets": {
+    "concept_id": "deferred_tax_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "DeferredIncomeTaxAssetsNet",
+      "DeferredTaxAssetsLiabilitiesNetNoncurrent"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "taxAssets",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "FMP exposes this as taxAssets; values may be zero when deferred taxes net to liabilities."
+  },
+  "other_non_current_assets": {
+    "concept_id": "other_non_current_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "OtherAssetsNoncurrent",
+      "OtherAssets"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "otherNonCurrentAssets",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "edgar",
+    "notes": "Catch-all for non-current assets not broken out (ROU assets, equity investments, etc.)."
+  },
+  "total_assets": {
+    "concept_id": "total_assets",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "Assets",
+      "AssetsFairValueDisclosure",
+      "AssetsCurrent"
+    ],
+    "nonadmissible_reason_code": "disclosure_or_context_mismatch",
+    "fmp_field": "totalAssets",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "accounts_payable": {
+    "concept_id": "accounts_payable",
+    "statement": "balance_sheet",
+    "registry_group_id": "accounts_payable.current",
+    "canonical_tag": "us-gaap:AccountsPayableCurrent",
+    "fmp_field": "accountPayables",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "accrued_expenses": {
+    "concept_id": "accrued_expenses",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "AccruedLiabilitiesCurrent",
+      "AccruedExpensesAndOtherCurrentLiabilities",
+      "AccruedExpensesCurrent"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "accruedExpenses",
+    "fmp_endpoint": "balance_sheet",
+    "treat_zero_as_missing": true,
+    "preferred_source": "fmp",
+    "missing_ok_when_covered_by": [
+      "other_current_liabilities"
+    ],
+    "notes": "Use FMP's dedicated accruedExpenses field when present. If it is zero/missing, leave this row empty rather than falling back to FMP otherCurrentLiabilities. A separate catch-all value must come from the explicit OtherLiabilitiesCurrent EDGAR tag; when that catch-all is populated, diagnostics treat this row as covered. Fallback to `otherCurrentLiabilities` removed 2026-05-06 to fix prepaid-style FMP scope-creep collision."
+  },
+  "other_current_liabilities": {
+    "concept_id": "other_current_liabilities",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "OtherLiabilitiesCurrent"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "preferred_source": "edgar",
+    "optional_if_unreported": true,
+    "notes": "Catch-all current liabilities filed under us-gaap:OtherLiabilitiesCurrent (e.g., AAPL's $78B FY24). EDGAR-only — intentionally NO fmp_field. FMP's `otherCurrentLiabilities` field has DIFFERENT scope: it's typically narrower than EDGAR's `OtherLiabilitiesCurrent` because FMP separately surfaces `taxPayables`, `capitalLeaseObligationsCurrent`, etc. (For AAPL FY24: FMP otherCurrentLiabilities=50,071M, EDGAR OtherLiabilitiesCurrent=78,304M, difference=28,233M ≈ FMP taxPayables 26,601 + FMP capitalLeaseObligationsCurrent 1,632.) Routing through FMP would also risk prepaid-style scope creep when other concepts fall back to FMP otherCurrentLiabilities. EDGAR-only keeps semantics tight: only filers whose 10-K explicitly tags OtherLiabilitiesCurrent populate this row; if unreported, leave it blank and let balance-sheet subline diagnostics catch any residual section gap. Bound to `tpl.fm.balance_sheet.current_liability_2` synthetic row inserted via _insert_other_current_liabilities_row in template_builder.py."
+  },
+  "commercial_paper": {
+    "concept_id": "commercial_paper",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "CommercialPaper"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "preferred_source": "edgar",
+    "optional_if_unreported": true,
+    "notes": "EDGAR-only current financing bucket for filers such as AAPL that present commercial paper separately from current maturities of long-term debt. FMP's shortTermDebt field bundles CommercialPaper with LongTermDebtCurrent, so this concept intentionally has no FMP field and lands in its own generic-template row."
+  },
+  "deferred_revenue": {
+    "concept_id": "deferred_revenue",
+    "statement": "balance_sheet",
+    "registry_group_id": "contract_liability.current",
+    "canonical_tag": "us-gaap:ContractWithCustomerLiabilityCurrent",
+    "fmp_field": "deferredRevenue",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "deferred_revenue_noncurrent": {
+    "concept_id": "deferred_revenue_noncurrent",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "ContractWithCustomerLiabilityNoncurrent",
+      "DeferredRevenueNoncurrent",
+      "DeferredRevenueAndCreditsNoncurrent"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "non_equivalent_after": 2,
+    "fmp_field": "deferredRevenueNonCurrent",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "Non-current deferred revenue / contract liability bucket. Added after MSFT FY2025 exposed a $2.71B balance-sheet imbalance: FMP deferredRevenueNonCurrent and EDGAR us-gaap:ContractWithCustomerLiabilityNoncurrent existed, but the generic template had no non-current deferred revenue row in the total liabilities roll-up."
+  },
+  "total_current_liabilities": {
+    "concept_id": "total_current_liabilities",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "LiabilitiesCurrent",
+      "CurrentLiabilities",
+      "CurrentLiabilitiesExcludingLongTermDebt"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "totalCurrentLiabilities",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "short_term_debt": {
+    "concept_id": "short_term_debt",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "ShortTermBorrowings",
+      "LongTermDebtCurrent",
+      "DebtCurrent"
+    ],
+    "non_equivalent_after": 2,
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "shortTermDebt",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "edgar",
+    "notes": "FMP shortTermDebt typically includes current maturities of long-term debt and other short-term borrowings."
+  },
+  "long_term_debt": {
+    "concept_id": "long_term_debt",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "LongTermDebt",
+      "LongTermDebtNoncurrent",
+      "LongTermDebtAndCapitalLeaseObligations"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "longTermDebt",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "Non-current debt excluding FMP's separate capitalLeaseObligationsNonCurrent bucket. EDGAR tags such as LongTermDebt can be broader for lease-heavy filers, so generic-template non-current-liability decomposition uses the FMP field to stay coherent with FMP-routed total liabilities."
+  },
+  "lease_liability_noncurrent": {
+    "concept_id": "lease_liability_noncurrent",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "OperatingLeaseLiabilityNoncurrent"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "edgar_negate": false,
+    "fmp_field": "capitalLeaseObligationsNonCurrent",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "Canonical non-current lease liability concept for the generic template row. FMP serves the standardized capitalLeaseObligationsNonCurrent bucket; EDGAR serves OperatingLeaseLiabilityNoncurrent when filing detail is available."
+  },
+  "other_non_current_liabilities": {
+    "concept_id": "other_non_current_liabilities",
+    "statement": "balance_sheet",
+    "registry_group_id": "other_non_current_liabilities.consolidated",
+    "canonical_tag": "us-gaap:OtherLiabilitiesNoncurrent",
+    "fmp_field": "otherNonCurrentLiabilities",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "Catch-all non-current liabilities not broken out elsewhere, such as pension or other long-dated obligations. Generic-template non-current-liability decomposition uses the FMP field to stay coherent with FMP-routed total liabilities; EDGAR's OtherLiabilitiesNoncurrent can have broader filer-specific scope."
+  },
+  "deferred_tax_liabilities": {
+    "concept_id": "deferred_tax_liabilities",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "DeferredIncomeTaxLiabilitiesNet",
+      "DeferredTaxLiabilitiesNoncurrent"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "deferredTaxLiabilitiesNonCurrent",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "total_liabilities": {
+    "concept_id": "total_liabilities",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "Liabilities",
+      "LiabilitiesCurrent",
+      "LiabilitiesNoncurrent"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "totalLiabilities",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "total_equity": {
+    "concept_id": "total_equity",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "StockholdersEquity",
+      "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+      "StockholdersEquityAttributableToParent"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "totalStockholdersEquity",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "common_stock": {
+    "concept_id": "common_stock",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "CommonStockValue"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "commonStock",
+    "fmp_endpoint": "balance_sheet",
+    "treat_zero_as_missing": true,
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp",
+    "notes": "FMP commonStock is bundled with APIC for some filers; APIC intentionally does not fall back to EDGAR to avoid double-counting."
+  },
+  "retained_earnings": {
+    "concept_id": "retained_earnings",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "RetainedEarningsAccumulatedDeficit",
+      "RetainedEarningsAppropriated",
+      "RetainedEarningsUnappropriated"
+    ],
+    "nonadmissible_reason_code": "partial_or_combined_concept",
+    "fmp_field": "retainedEarnings",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "additional_paid_in_capital": {
+    "concept_id": "additional_paid_in_capital",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "AdditionalPaidInCapital",
+      "AdditionalPaidInCapitalCommonStock"
+    ],
+    "non_equivalent_after": 1,
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "additionalPaidInCapital",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "Do not opt into zero-as-missing. Bundled-style filers can put common stock plus APIC in commonStock, and EDGAR fallback here could double-count APIC."
+  },
+  "accumulated_other_comprehensive_income": {
+    "concept_id": "accumulated_other_comprehensive_income",
+    "statement": "balance_sheet",
+    "registry_group_id": "accumulated_oci.net_of_tax",
+    "canonical_tag": "us-gaap:AccumulatedOtherComprehensiveIncomeLossNetOfTax",
+    "fmp_field": "accumulatedOtherComprehensiveIncomeLoss",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp"
+  },
+  "operating_cash_flow": {
+    "concept_id": "operating_cash_flow",
+    "statement": "cash_flow",
+    "registry_group_id": "operating_cash_flow.consolidated",
+    "canonical_tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+    "fmp_field": "operatingCashFlow",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "investing_cash_flow": {
+    "concept_id": "investing_cash_flow",
+    "statement": "cash_flow",
+    "registry_group_id": "investing_cash_flow.consolidated",
+    "canonical_tag": "us-gaap:NetCashProvidedByUsedInInvestingActivities",
+    "fmp_field": "netCashProvidedByInvestingActivities",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "financing_cash_flow": {
+    "concept_id": "financing_cash_flow",
+    "statement": "cash_flow",
+    "registry_group_id": "financing_cash_flow.consolidated",
+    "canonical_tag": "us-gaap:NetCashProvidedByUsedInFinancingActivities",
+    "fmp_field": "netCashProvidedByFinancingActivities",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "validation_tolerance_pct": 0.005
+  },
+  "effect_of_exchange_rate_on_cash": {
+    "concept_id": "effect_of_exchange_rate_on_cash",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "EffectOfExchangeRateOnCashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+      "EffectOfExchangeRateOnCashAndCashEquivalents",
+      "EffectOfExchangeRateOnCashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "non_equivalent_after": 2,
+    "fmp_field": "effectOfForexChangesOnCash",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "notes": "Optional foreign-currency translation effect used to reconcile cash-flow subtotals to the period change in cash."
+  },
+  "change_in_accounts_receivable": {
+    "concept_id": "change_in_accounts_receivable",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "IncreaseDecreaseInAccountsReceivable"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "accountsReceivables",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": true,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "change_in_accounts_payable": {
+    "concept_id": "change_in_accounts_payable",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "IncreaseDecreaseInAccountsPayable"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "accountsPayables",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "change_in_inventory": {
+    "concept_id": "change_in_inventory",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "IncreaseDecreaseInInventories"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "inventory",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": true,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "change_in_accrued_expenses": {
+    "concept_id": "change_in_accrued_expenses",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "IncreaseDecreaseInAccruedLiabilities",
+      "IncreaseDecreaseInAccruedLiabilitiesAndOtherOperatingLiabilities"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "edgar_negate": true,
+    "preferred_source": "edgar",
+    "missing_ok_when_covered_by": [
+      "change_in_other_working_capital"
+    ],
+    "notes": "Keep the issuer-specific accrued-liability cash-flow subline EDGAR-only. If the filer does not report it separately but the broader other-working-capital bucket is populated, diagnostics classify this row as covered instead of forcing a broad FMP fallback."
+  },
+  "change_in_other_working_capital": {
+    "concept_id": "change_in_other_working_capital",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "IncreaseDecreaseInOtherOperatingCapitalNet"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "otherWorkingCapital",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": true,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "change_in_deferred_income_taxes": {
+    "concept_id": "change_in_deferred_income_taxes",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "DeferredIncomeTaxExpenseBenefit"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "deferredIncomeTax",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "acquisitions_of_businesses": {
+    "concept_id": "acquisitions_of_businesses",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "PaymentsToAcquireBusinessesNetOfCashAcquired"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "acquisitionsNet",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": true,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "purchases_of_investments": {
+    "concept_id": "purchases_of_investments",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "PaymentsToAcquireInvestments",
+      "PaymentsToAcquireMarketableSecurities",
+      "PaymentsToAcquireAvailableForSaleSecuritiesDebt",
+      "PaymentsToAcquireShortTermInvestments"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "non_equivalent_after": 3,
+    "fmp_field": "purchasesOfInvestments",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": true,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "sales_maturities_of_investments": {
+    "concept_id": "sales_maturities_of_investments",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "ProceedsFromSaleAndMaturityOfMarketableSecurities",
+      "ProceedsFromSaleAndMaturityOfAvailableForSaleSecurities",
+      "ProceedsFromSaleMaturityAndCollectionsOfInvestments"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "non_equivalent_after": 2,
+    "fmp_field": "salesMaturitiesOfInvestments",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp",
+    "notes": "FMP supplies the combined proceeds from investment sales and maturities. EDGAR tags are limited to combined sale-and-maturity concepts because split sale and maturity tags cannot be summed by the direct-tag concept fetcher."
+  },
+  "net_long_term_debt_issuance": {
+    "concept_id": "net_long_term_debt_issuance",
+    "statement": "cash_flow",
+    "edgar_tags": [],
+    "fmp_field": "longTermNetDebtIssuance",
+    "fmp_endpoint": "cash_flow",
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "proceeds_from_stock_plans": {
+    "concept_id": "proceeds_from_stock_plans",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "ProceedsFromStockPlans"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "commonStockIssuance",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "cf_other_non_cash_items": {
+    "concept_id": "cf_other_non_cash_items",
+    "statement": "cash_flow",
+    "edgar_tags": [],
+    "fmp_field": "otherNonCashItems",
+    "fmp_endpoint": "cash_flow",
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "cf_other_investing_activities": {
+    "concept_id": "cf_other_investing_activities",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "PaymentsForProceedsFromOtherInvestingActivities"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "otherInvestingActivities",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "cf_other_financing_activities": {
+    "concept_id": "cf_other_financing_activities",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "ProceedsFromPaymentsForOtherFinancingActivities"
+    ],
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "fmp_field": "otherFinancingActivities",
+    "fmp_endpoint": "cash_flow",
+    "edgar_negate": false,
+    "fmp_negate": false,
+    "preferred_source": "fmp"
+  },
+  "capital_expenditures": {
+    "concept_id": "capital_expenditures",
+    "statement": "cash_flow",
+    "edgar_tags": [
+      "PaymentsToAcquirePropertyPlantAndEquipment",
+      "PropertyPlantAndEquipmentAdditions",
+      "CapitalExpendituresIncurredButNotYetPaid"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "capitalExpenditure",
+    "fmp_endpoint": "cash_flow",
+    "negate": true,
+    "preferred_source": "fmp",
+    "notes": "Normalize to positive capex spend when model rows expect an absolute outflow amount."
+  },
+  "dividends_paid": {
+    "concept_id": "dividends_paid",
+    "statement": "cash_flow",
+    "nonadmissible_reason_code": "broader_or_narrower_scope",
+    "edgar_tags": [
+      "PaymentsOfDividendsCommonStock",
+      "PaymentsOfDividends",
+      "DividendsPaid"
+    ],
+    "non_equivalent_after": 1,
+    "fmp_field": "commonDividendsPaid",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "negate": true
+  },
+  "share_repurchases": {
+    "concept_id": "share_repurchases",
+    "statement": "cash_flow",
+    "registry_group_id": "share_repurchases.common_stock",
+    "canonical_tag": "us-gaap:PaymentsForRepurchaseOfCommonStock",
+    "fmp_field": "commonStockRepurchased",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "negate": true
+  },
+  "shares_outstanding": {
+    "concept_id": "shares_outstanding",
+    "edgar_tags": [
+      "CommonStockSharesOutstanding",
+      "EntityCommonStockSharesOutstanding",
+      "WeightedAverageNumberOfDilutedSharesOutstanding"
+    ],
+    "nonadmissible_reason_code": "different_measurement_level",
+    "fmp_field": "weightedAverageShsOutDil",
+    "fmp_endpoint": "income_statement",
+    "preferred_source": "fmp",
+    "notes": "FMP key_metrics lacks sharesOutstanding; use diluted shares from IS as proxy."
+  },
+  "free_cash_flow": {
+    "concept_id": "free_cash_flow",
+    "statement": "cash_flow",
+    "edgar_tags": [],
+    "fmp_field": "freeCashFlow",
+    "fmp_endpoint": "cash_flow",
+    "preferred_source": "fmp",
+    "notes": "EDGAR usually requires deriving FCF from CFO minus capex."
+  },
+  "stock_price": {
+    "concept_id": "stock_price",
+    "edgar_tags": [],
+    "fmp_field": "price",
+    "fmp_endpoint": "quote",
+    "preferred_source": "fmp",
+    "notes": "Current market price populated from the FMP quote endpoint at build time."
+  },
+  "beta": {
+    "concept_id": "beta",
+    "edgar_tags": [],
+    "fmp_field": "beta",
+    "fmp_endpoint": "profile",
+    "preferred_source": "fmp",
+    "notes": "Equity beta for CAPM; profile is preferred, key metrics may be used as a fallback by the build pipeline."
+  },
+  "total_debt": {
+    "concept_id": "total_debt",
+    "statement": "balance_sheet",
+    "edgar_tags": [],
+    "fmp_field": "totalDebt",
+    "fmp_endpoint": "balance_sheet",
+    "preferred_source": "fmp",
+    "notes": "Total debt for valuation capital-structure checks."
+  },
+  "risk_free_rate": {
+    "concept_id": "risk_free_rate",
+    "edgar_tags": [],
+    "fmp_field": "default",
+    "fmp_endpoint": "manual",
+    "preferred_source": "fmp",
+    "notes": "Analyst-judgment default is 4.0%; intended to represent the 10-year Treasury yield."
+  },
+  "equity_risk_premium": {
+    "concept_id": "equity_risk_premium",
+    "edgar_tags": [],
+    "fmp_field": "default",
+    "fmp_endpoint": "manual",
+    "preferred_source": "fmp",
+    "notes": "Analyst-judgment default is 4.5%."
+  },
+  "sofr_rate": {
+    "concept_id": "sofr_rate",
+    "edgar_tags": [],
+    "fmp_field": "default",
+    "fmp_endpoint": "manual",
+    "preferred_source": "fmp",
+    "notes": "Analyst-judgment default is 5.0%."
+  },
+  "credit_spread": {
+    "concept_id": "credit_spread",
+    "edgar_tags": [],
+    "fmp_field": "default",
+    "fmp_endpoint": "manual",
+    "preferred_source": "fmp",
+    "notes": "Analyst-judgment default is 1.0%."
+  },
+  "working_capital": {
+    "concept_id": "working_capital",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "WorkingCapital",
+      "AssetsCurrent",
+      "LiabilitiesCurrent"
+    ],
+    "nonadmissible_reason_code": "computational_fallback",
+    "fmp_field": "workingCapital",
+    "fmp_endpoint": "key_metrics",
+    "preferred_source": "fmp",
+    "notes": "Direct metric is often cleaner than deriving from current assets and liabilities."
+  }
+}

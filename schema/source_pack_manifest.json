@@ -1,0 +1,41 @@
+{
+  "aliases": {
+    "deal_terms": "deal_status",
+    "earnings_release_guidance": "guidance_actuals",
+    "guidance_vs_actuals": "guidance_actuals",
+    "merger_status": "deal_status",
+    "strategic_transaction": "deal_status",
+    "strategic_transaction_status": "deal_status",
+    "transaction_status": "deal_status"
+  },
+  "canonical_intents": [
+    "acquisition_strategy",
+    "concentration_risk",
+    "deal_status",
+    "debt_terms",
+    "generic_filing_question",
+    "guidance_actuals",
+    "non_gaap_reconciliation",
+    "proxy_governance",
+    "regulatory_risk",
+    "revenue_disaggregation",
+    "risk_factor",
+    "security_offering_terms"
+  ],
+  "edgar_commit_sha": "941f25a60985b074a38ff3a9d85dcd4832480999",
+  "edgar_published_at": "2026-06-16T11:23:17.881235+00:00",
+  "pack_sha256s": {
+    "acquisition_strategy": "4c135aafd806fdbb4d88f88337b48df1a0838de21fd5c639f0e66c13f18d5ea1",
+    "concentration_risk": "d770f2295019ea1e45d04c4b0675989984cc2a848239b4fd22dd2790c45f40bd",
+    "deal_status": "4c61a692891238893f3c2c0b12a777eb71edcf45b0f295a733e8e719f22a667b",
+    "debt_terms": "718eca8e410d90c106791b356a821aeb303a2953c0a67508aebe11df5cc55335",
+    "generic_filing_question": "2d976e16d1ade1de3988dc8ef56bddd5eb1477e2160d050989b38d0e85c28425",
+    "guidance_actuals": "cc1999989d7017e49808e4ae77d49cdeb050fb85ae0522429ffc3857b760afc9",
+    "non_gaap_reconciliation": "21743bc95f12e7450ae871376ad00501c5e9e743e35e569c356782b0bdc0ee63",
+    "proxy_governance": "ab11eec43838a80357f3d65c2678f855fb2dff5fc8eaa9667501fc4fbb162a33",
+    "regulatory_risk": "664443e56838599744f7c0a2850bf52dcb10e33a66dd5709befef8b1bc38b7c6",
+    "revenue_disaggregation": "40e20da6acece16774ca71c0845e41b4f44a17481307fc8a1da7ad2f862d9208",
+    "risk_factor": "dde49e4dc2308531984eb674eb30de20f9b31d2f85f42f2b7b14dad4df976a11",
+    "security_offering_terms": "91c67b818eb82ed45bae3c1e8ec969022b13560d2ce1e690b9779002b96ddea1"
+  }
+}
