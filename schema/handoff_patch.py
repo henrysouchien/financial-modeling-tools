@@ -397,6 +397,7 @@ class UpdateDataGapValue(BaseModel):
     workaround: str | None = None
     severity: Literal["blocking", "approximate", "minor"] | None = None
     status: Literal["open", "resolved", "superseded", "retained"] | None = None
+    remediation: dict[str, object] | None = None
     resolution_note: str | None = Field(default=None, min_length=1)
     resolution_source_refs: list[SourceId] | None = None
     resolved_at: str | None = Field(default=None, min_length=1)

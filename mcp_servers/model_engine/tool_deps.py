@@ -340,6 +340,31 @@ def build_model_find_scenario_anchor_deps_function(
   )
 
 
+def build_model_scenario_topology_deps_function(
+  *,
+  parent_namespace: ParentNamespaceProvider,
+) -> Callable[[], Any]:
+  def _model_scenario_topology_deps() -> Any:
+    ns = parent_namespace()
+    return ns["_ModelScenarioTopologyDeps"](
+      current_year=lambda: ns["datetime"].now().year,
+      bridge_model_bundle=ns["_bridge_model_bundle"],
+      bridge_recovery=ns["_bridge_recovery"],
+      coerce_json_list_arg=ns["_coerce_json_list_arg"],
+      compute_scenario_bridge_readiness=ns["compute_model_scenario_bridge_readiness"],
+      readiness_owner_anchor_payload=ns["_readiness_owner_anchor_payload"],
+      find_scenario_anchor=ns["find_scenario_anchor"],
+      anchor_recovery=ns["_anchor_recovery"],
+      model_tool_error_payload=ns["_model_tool_error_payload"],
+    )
+
+  return _bind_parent_private(
+    _model_scenario_topology_deps,
+    parent_namespace,
+    annotations={"return": parent_namespace()["_ModelScenarioTopologyDeps"]},
+  )
+
+
 def build_model_bridge_scenarios_deps_function(
   *,
   parent_namespace: ParentNamespaceProvider,
@@ -398,6 +423,7 @@ __all__ = [
   "build_model_bridge_scenarios_deps_function",
   "build_model_build_deps_function",
   "build_model_find_scenario_anchor_deps_function",
+  "build_model_scenario_topology_deps_function",
   "build_model_modify_deps_function",
   "build_model_override_deps_function",
   "build_reconcile_subtotal_integrity_deps_function",

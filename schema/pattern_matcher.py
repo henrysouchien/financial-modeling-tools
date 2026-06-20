@@ -31,6 +31,7 @@ Schema:  FormulaSpec(type=valuation, subtype="dcf_discount",
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Dict, List, Optional, Tuple
 
 from .formula_ast import (
@@ -82,7 +83,7 @@ class FormulaPatternMatcher:
             parser = FormulaParser(formula)
             ast = parser.parse()
         except FormulaParseError:
-            return FormulaSpec(type=FormulaType.raw, params={"formula": formula})
+            return self._raw_spec(formula)
 
         # Strip unary plus — legacy Excel convention (=+Cell) common in institutional models
         while isinstance(ast, UnaryOp) and ast.op == "+":
@@ -90,7 +91,11 @@ class FormulaPatternMatcher:
 
         constant_value = self._constant_value(ast)
         if constant_value is not None:
-            return FormulaSpec(type=FormulaType.constant, params={"value": constant_value})
+            return FormulaSpec(
+                type=FormulaType.constant,
+                subtype="hardcoded_value",
+                params={"value": constant_value},
+            )
 
         ref_spec = self._match_ref(ast, context)
         if ref_spec:
@@ -121,7 +126,24 @@ class FormulaPatternMatcher:
             return arithmetic_spec
 
         # Note: Some models still surface raw formulas (e.g., IF/IFERROR wrappers or #REF! broken links).
-        return FormulaSpec(type=FormulaType.raw, params={"formula": formula})
+        return self._raw_spec(formula)
+
+    def _raw_spec(self, formula: str) -> FormulaSpec:
+        params = {"formula": formula}
+        subtype = self._raw_subtype(formula)
+        if subtype == "data_table":
+            params["feature"] = "data_table"
+        return FormulaSpec(type=FormulaType.raw, subtype=subtype, params=params)
+
+    def _raw_subtype(self, formula: str) -> Optional[str]:
+        text = str(formula or "").strip()
+        if "f_type=dataTable" in text:
+            return "data_table"
+        if "#REF!" in text.upper():
+            return "broken_ref"
+        if "&" in text:
+            return "string_concat"
+        return None
 
     def _match_ref(self, ast: Node, context: CellContext) -> Optional[FormulaSpec]:
         """Match a direct reference (with optional adjustment/negation).
@@ -135,13 +157,21 @@ class FormulaPatternMatcher:
             ref = self._to_line_item_ref(ast, context)
             if ref is None:
                 return None
-            return FormulaSpec(type=FormulaType.ref, params={"source": ref})
+            return FormulaSpec(
+                type=FormulaType.ref,
+                subtype=self._ref_subtype(ast, context),
+                params={"source": ref},
+            )
 
         if isinstance(ast, UnaryOp) and ast.op == "-" and isinstance(ast.expr, Ref):
             ref = self._to_line_item_ref(ast.expr, context)
             if ref is None:
                 return None
-            return FormulaSpec(type=FormulaType.ref, params={"source": ref, "negate": True})
+            return FormulaSpec(
+                type=FormulaType.ref,
+                subtype=self._ref_subtype(ast.expr, context, negated=True),
+                params={"source": ref, "negate": True},
+            )
 
         if isinstance(ast, BinaryOp) and ast.op in {"+", "-"}:
             left_ref = ast.left if isinstance(ast.left, Ref) else None
@@ -153,7 +183,11 @@ class FormulaPatternMatcher:
                 if ref is None:
                     return None
                 adjustment = right_num.value if ast.op == "+" else -right_num.value
-                return FormulaSpec(type=FormulaType.ref, params={"source": ref, "adjustment": adjustment})
+                return FormulaSpec(
+                    type=FormulaType.ref,
+                    subtype=self._ref_subtype(left_ref, context, adjusted=True),
+                    params={"source": ref, "adjustment": adjustment},
+                )
             if right_ref and left_num:
                 if ast.op == "-":
                     # Number - Ref is NOT a ref+adjustment pattern.
@@ -165,8 +199,40 @@ class FormulaPatternMatcher:
                     if ref is None:
                         return None
                     adjustment = left_num.value
-                    return FormulaSpec(type=FormulaType.ref, params={"source": ref, "adjustment": adjustment})
+                    return FormulaSpec(
+                        type=FormulaType.ref,
+                        subtype=self._ref_subtype(right_ref, context, adjusted=True),
+                        params={"source": ref, "adjustment": adjustment},
+                    )
         return None
+
+    def _ref_subtype(
+        self,
+        node: Ref,
+        context: CellContext,
+        *,
+        adjusted: bool = False,
+        negated: bool = False,
+    ) -> str:
+        if adjusted:
+            return "ref_with_adjustment"
+        if negated:
+            return "negated_ref"
+
+        source_col = _col_to_index(node.col)
+        if node.sheet is not None:
+            if context.col == 1 and source_col == 1:
+                return "label_mirror"
+            return "cross_sheet_ref"
+
+        if node.row == context.row and source_col == context.col - 1:
+            # In the canonical model H is the first projection/input-default
+            # column copied from the last historical column; later columns are
+            # true prior-period carry-forward formulas.
+            if context.col > 8:
+                return "carry_forward"
+            return "cell_ref"
+        return "cell_ref"
 
     def _match_growth(self, ast: Node, context: CellContext) -> Optional[FormulaSpec]:
         """Match growth compound patterns: base * (1 + rate)."""
@@ -184,7 +250,11 @@ class FormulaPatternMatcher:
         if base_ref is None or rate_ref is None:
             return None
 
-        return FormulaSpec(type=FormulaType.growth, params={"base": base_ref, "rate": rate_ref})
+        return FormulaSpec(
+            type=FormulaType.growth,
+            subtype="compound",
+            params={"base": base_ref, "rate": rate_ref},
+        )
 
     def _extract_growth_operands(self, base_candidate: Node, rate_candidate: Node) -> Tuple[Optional[Ref], Optional[Ref]]:
         """Extract base and rate from base * (1 + rate) pattern.
@@ -227,10 +297,48 @@ class FormulaPatternMatcher:
                     subtype = "incremental_margin"
                 return FormulaSpec(
                     type=FormulaType.ratio,
-                    subtype=subtype,
+                    subtype=subtype or self._ratio_subtype(ast.left, ast.right, context),
                     params={"numerator": numerator, "denominator": denominator},
                 )
         return None
+
+    def _ratio_subtype(self, numerator_node: Node, denominator_node: Node, context: CellContext) -> str:
+        if self._is_share_denominator(denominator_node, context):
+            return "per_share"
+        return "divide"
+
+    def _is_share_denominator(self, node: Node, context: CellContext) -> bool:
+        if not isinstance(node, Ref):
+            return False
+        ref = self._to_line_item_ref(node, context)
+        if ref is None:
+            return False
+        return self._is_share_count_id(ref.id)
+
+    def _is_share_count_id(self, line_item_id: str) -> bool:
+        tokens = self._id_tokens(line_item_id)
+        if self._has_token_sequence(tokens, ("diluted", "shares")):
+            return True
+        if self._has_token_sequence(tokens, ("dilutive", "shares")):
+            return True
+        if self._has_token_sequence(tokens, ("weighted", "average", "diluted", "shares")):
+            return True
+        if self._has_token_sequence(tokens, ("shares", "outstanding")):
+            return True
+        if self._has_token_sequence(tokens, ("shares", "issued")):
+            return True
+        if self._has_token_sequence(tokens, ("share", "count")):
+            return True
+        return any(token == "shares" and idx + 1 < len(tokens) and tokens[idx + 1].startswith("fy") for idx, token in enumerate(tokens))
+
+    def _id_tokens(self, line_item_id: str) -> List[str]:
+        return [token for token in re.split(r"[^a-z0-9]+", line_item_id.lower()) if token]
+
+    def _has_token_sequence(self, tokens: List[str], sequence: Tuple[str, ...]) -> bool:
+        if len(tokens) < len(sequence):
+            return False
+        end = len(tokens) - len(sequence) + 1
+        return any(tuple(tokens[idx : idx + len(sequence)]) == sequence for idx in range(end))
 
     def _match_roll_forward(self, ast: Node, context: CellContext) -> Optional[FormulaSpec]:
         """Match roll-forward schedules: beginning + adds - subs.
@@ -261,6 +369,7 @@ class FormulaPatternMatcher:
                 return None
             return FormulaSpec(
                 type=FormulaType.roll_forward,
+                subtype="schedule",
                 params={"beginning": beginning, "additions": additions, "subtractions": subtractions},
             )
         return None
@@ -279,6 +388,7 @@ class FormulaPatternMatcher:
             if base_ref and rate_ref:
                 return FormulaSpec(
                     type=FormulaType.driver,
+                    subtype="base_x_rate",
                     params={
                         "base": base_ref,
                         "rate": rate_ref,
@@ -292,6 +402,7 @@ class FormulaPatternMatcher:
             if base_ref and rate_ref:
                 return FormulaSpec(
                     type=FormulaType.driver,
+                    subtype="base_x_rate",
                     params={
                         "base": base_ref,
                         "rate": rate_ref,
@@ -304,11 +415,29 @@ class FormulaPatternMatcher:
         right_num = ast.right.value if isinstance(ast.right, Number) else None
 
         if left_ref and right_ref:
-            return FormulaSpec(type=FormulaType.driver, params={"base": left_ref, "rate": right_ref})
+            if self._is_rate_x_base(ast.left, ast.right, context):
+                return FormulaSpec(
+                    type=FormulaType.driver,
+                    subtype="rate_x_base",
+                    params={"base": right_ref, "rate": left_ref},
+                )
+            return FormulaSpec(
+                type=FormulaType.driver,
+                subtype="base_x_rate",
+                params={"base": left_ref, "rate": right_ref},
+            )
         if left_ref and right_num is not None:
-            return FormulaSpec(type=FormulaType.driver, params={"base": left_ref, "rate": right_num})
+            return FormulaSpec(
+                type=FormulaType.driver,
+                subtype="base_x_rate",
+                params={"base": left_ref, "rate": right_num},
+            )
         if right_ref and left_num is not None:
-            return FormulaSpec(type=FormulaType.driver, params={"base": right_ref, "rate": left_num})
+            return FormulaSpec(
+                type=FormulaType.driver,
+                subtype="base_x_rate",
+                params={"base": right_ref, "rate": left_num},
+            )
 
         left_expr = self._expr_from_node(ast.left, context)
         right_expr = self._expr_from_node(ast.right, context)
@@ -316,7 +445,26 @@ class FormulaPatternMatcher:
             return None
         if not (self._contains_ref(left_expr) or self._contains_ref(right_expr)):
             return None
-        return FormulaSpec(type=FormulaType.driver, params={"base": left_expr, "rate": right_expr})
+        return FormulaSpec(
+            type=FormulaType.driver,
+            subtype="base_x_rate",
+            params={"base": left_expr, "rate": right_expr},
+        )
+
+    def _is_rate_x_base(self, left_node: Node, right_node: Node, context: CellContext) -> bool:
+        if not isinstance(left_node, Ref) or not isinstance(right_node, Ref):
+            return False
+
+        left_ref = self._to_line_item_ref(left_node, context)
+        right_ref = self._to_line_item_ref(right_node, context)
+        if left_ref is None or right_ref is None:
+            return False
+
+        return self._is_rate_like_id(left_ref.id) and not self._is_rate_like_id(right_ref.id)
+
+    def _is_rate_like_id(self, line_item_id: str) -> bool:
+        rate_tokens = {"rate", "pct", "percent", "percentage", "margin", "ratio", "yield"}
+        return bool(rate_tokens & set(self._id_tokens(line_item_id)))
 
     def _match_arithmetic(self, ast: Node, context: CellContext) -> Optional[FormulaSpec]:
         """Match arithmetic patterns (SUM/AVERAGE, add/sub/mul/div chains).
@@ -343,9 +491,14 @@ class FormulaPatternMatcher:
                     return None
                 items.append(expr)
             if items:
-                return FormulaSpec(type=FormulaType.arithmetic, params={"function": ast.name, "items": items})
+                return FormulaSpec(
+                    type=FormulaType.arithmetic,
+                    subtype=self._function_arithmetic_subtype(ast),
+                    params={"function": ast.name, "items": items},
+                )
 
         if isinstance(ast, BinaryOp) and ast.op in {"+", "-", "*", "/"}:
+            subtype = self._binary_arithmetic_subtype(ast, context)
             values = self._flatten_binary(ast, ast.op)
             if values is None:
                 values = None
@@ -359,13 +512,39 @@ class FormulaPatternMatcher:
                         break
                     operands.append(ref)
                 if ok:
-                    return FormulaSpec(type=FormulaType.arithmetic, params={"operands": operands})
+                    return FormulaSpec(
+                        type=FormulaType.arithmetic,
+                        subtype=subtype,
+                        params={"operands": operands},
+                    )
 
         expr = self._expr_from_node(ast, context)
         if expr is not None and not isinstance(expr, (LineItemRef, int, float)):
-            return FormulaSpec(type=FormulaType.arithmetic, params={"expr": expr})
+            subtype = self._binary_arithmetic_subtype(ast, context) if isinstance(ast, BinaryOp) else None
+            return FormulaSpec(type=FormulaType.arithmetic, subtype=subtype, params={"expr": expr})
 
         return None
+
+    def _function_arithmetic_subtype(self, ast: FuncCall) -> Optional[str]:
+        if ast.name != "SUM":
+            return None
+        if any(isinstance(arg, Range) for arg in ast.args):
+            return "sum_range"
+        return "sum_list"
+
+    def _binary_arithmetic_subtype(self, ast: BinaryOp, context: CellContext) -> Optional[str]:
+        if ast.op not in {"+", "-"}:
+            return None
+        terms = self._flatten_add_sub(ast)
+        if not terms or len(terms) < 2:
+            return None
+        for _sign, node in terms:
+            ref = self._to_line_item_ref(node, context)
+            if ref is None or not ref.resolved:
+                return None
+        if len(terms) > 2 and all(sign == "+" for sign, _node in terms):
+            return "multi_term"
+        return "add_subtract"
 
     def _match_valuation(self, ast: Node, context: CellContext) -> Optional[FormulaSpec]:
         """Match valuation-specific patterns (DCF, terminal value, CAPM, WACC, multiples).

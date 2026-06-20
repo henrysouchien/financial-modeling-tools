@@ -157,6 +157,7 @@ class DataGap(_ContractModel):
     workaround: str | None = None
     severity: Literal["blocking", "approximate", "minor"] | None = None
     status: DataGapStatus = "open"
+    remediation: dict[str, Any] | None = None
     resolution_note: str | None = None
     resolution_source_refs: list[SourceId] = Field(default_factory=list)
     resolved_at: str | None = None

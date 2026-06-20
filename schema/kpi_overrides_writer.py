@@ -196,6 +196,7 @@ def business_model_to_ticker_overrides(
         file_meta=file_meta,
         projections=dict(existing.projections or {}),
         semantic_rows=dict(existing.semantic_rows or {}),
+        valuation=dict(existing.valuation or {}),
     )
 
     report.exit_status = 1 if report.conflicts else 0

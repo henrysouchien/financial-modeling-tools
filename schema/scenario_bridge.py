@@ -84,6 +84,7 @@ _INTENTIONAL_FORMULA_OVERRIDE_PREFIXES = (
     "tpl.a.scenario_tables.",
     "tpl.s.thesis_snapshot.",
 )
+_SCENARIO_ORDERING_EPS = 1e-12
 
 
 def _is_intentional_formula_override(item_id: str) -> bool:
@@ -353,34 +354,41 @@ def _base_values_by_period(
     base_id: str | None,
     projection_periods: list[int],
 ) -> dict[int, float]:
-    if base_id is not None:
-        base_curve = factor_values_by_period(
-            factor_payload,
-            "base",
-            projection_periods,
-            allow_scalar=True,
-        )
-        if base_curve:
-            return {
-                int(period): percent_normalize_via_formatter(
-                    model,
-                    base_id,
-                    value,
-                    decimal_passthrough=True,
-                )
-                for period, value in base_curve.items()
-            }
-
     if base_id is None:
         return {}
+    periods = [int(period) for period in projection_periods]
+    base_curve = factor_values_by_period(
+        factor_payload,
+        "base",
+        projection_periods,
+        allow_scalar=True,
+    )
+    explicit_base = (
+        {
+            int(period): percent_normalize_via_formatter(
+                model,
+                base_id,
+                value,
+                decimal_passthrough=True,
+            )
+            for period, value in base_curve.items()
+        }
+        if base_curve
+        else {}
+    )
+    if explicit_base and all(period in explicit_base for period in periods):
+        return explicit_base
+
     graph = DependencyGraph()
     graph.build(model)
     results = graph.compute({})
-    return {
+    graph_base = {
         int(period): float(value)
-        for period in projection_periods
+        for period in periods
         if (value := results.get(base_id, {}).get(int(period))) is not None
     }
+    graph_base.update(explicit_base)
+    return graph_base
 
 
 def _scenario_ordering_issues(
@@ -390,19 +398,26 @@ def _scenario_ordering_issues(
     bear_values: dict[int, float],
 ) -> list[str]:
     issues: list[str] = []
-    for period in sorted(set(bull_values) & set(base_values) & set(bear_values)):
+    for period in sorted(set(bull_values) & set(bear_values)):
         bull = bull_values[period]
-        base = base_values[period]
         bear = bear_values[period]
-        if bull >= bear:
-            if not (bull >= base >= bear):
-                issues.append(
-                    f"{period}:bull={bull:g},base={base:g},bear={bear:g},expected=bull>=base>=bear"
-                )
-        elif not (bull <= base <= bear):
-            issues.append(
-                f"{period}:bull={bull:g},base={base:g},bear={bear:g},expected=bull<=base<=bear"
-            )
+        base = base_values.get(period)
+        if base is None:
+            issues.append(f"{period}:bull={bull:g},base=missing,bear={bear:g},expected=base_value_present")
+            continue
+        detail = f"{period}:bull={bull:g},base={base:g},bear={bear:g}"
+        if abs(bull - bear) <= _SCENARIO_ORDERING_EPS:
+            issues.append(f"{detail},expected=bull/base/bear_distinct")
+        elif bull > bear:
+            if bull <= base + _SCENARIO_ORDERING_EPS:
+                issues.append(f"{detail},expected=bull>base")
+            if bear >= base - _SCENARIO_ORDERING_EPS:
+                issues.append(f"{detail},expected=bear<base")
+        else:
+            if bull >= base - _SCENARIO_ORDERING_EPS:
+                issues.append(f"{detail},expected=bull<base")
+            if bear <= base + _SCENARIO_ORDERING_EPS:
+                issues.append(f"{detail},expected=bear>base")
     return issues
 
 

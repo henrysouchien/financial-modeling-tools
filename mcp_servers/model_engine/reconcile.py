@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 import inspect
+import json
 import os
 from pathlib import Path
 import statistics
 from typing import Any
+import urllib.parse
+import urllib.request
 
 from schema.overrides import TickerOverrides
 from mcp_servers.model_engine.reconcile_candidates import (
@@ -606,6 +609,50 @@ def override_conflict_response(
   }
 
 
+def list_metrics(
+  ticker: str,
+  year: int,
+  quarter: int = 4,
+  *,
+  date_type: str = "FY",
+  include_values: bool = True,
+  limit: int = 1000,
+  os_module=os,
+  urllib_parse_module=urllib.parse,
+  urllib_request_module=urllib.request,
+  json_module=json,
+) -> list[dict]:
+  api_key = os_module.getenv("EDGAR_API_KEY", "")
+  base_url = os_module.getenv("EDGAR_API_URL", "https://www.edgarparser.com").rstrip("/")
+  endpoint = f"{base_url}/api/financials/list_metrics"
+  params = {
+    "ticker": str(ticker).upper(),
+    "year": str(int(year)),
+    "quarter": str(int(quarter)),
+    "date_type": str(date_type),
+    "include_values": str(bool(include_values)).lower(),
+    "limit": str(int(limit)),
+    "key": api_key,
+  }
+  request = urllib_request_module.Request(
+    f"{endpoint}?{urllib_parse_module.urlencode(params)}",
+    headers={"User-Agent": "model-engine-mcp"},
+  )
+  with urllib_request_module.urlopen(request, timeout=120) as response:
+    payload = json_module.loads(response.read().decode("utf-8"))
+  if isinstance(payload, list):
+    metrics = payload
+  elif isinstance(payload, dict):
+    if str(payload.get("status") or "").lower() == "error":
+      raise RuntimeError(str(payload.get("message") or payload.get("error") or "list_metrics failed"))
+    metrics = payload.get("metrics") or payload.get("data") or payload.get("results")
+  else:
+    metrics = None
+  if not isinstance(metrics, list):
+    raise RuntimeError("list_metrics response did not include a metrics list")
+  return [dict(entry) for entry in metrics if isinstance(entry, dict)]
+
+
 def metrics_by_tag_for_concept(
   entries: list[dict],
   concept_id: str,
@@ -715,6 +762,7 @@ __all__ = [
   "flagged_reconcile_entries",
   "group_payload",
   "group_reconcile_entries",
+  "list_metrics",
   "merged_ticker_overrides",
   "metric_value_for_concept",
   "metrics_by_tag_for_concept",

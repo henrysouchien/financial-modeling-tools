@@ -220,6 +220,7 @@ from mcp_servers.model_engine.reconcile import (  # noqa: E402
   flagged_reconcile_entries as _flagged_reconcile_entries_impl,
   group_payload as _group_payload_impl,
   group_reconcile_entries as _group_reconcile_entries,
+  list_metrics as _list_metrics_impl,
   merged_ticker_overrides as _merged_ticker_overrides,
   metric_value_for_concept as _metric_value_for_concept,
   metrics_by_tag_for_concept as _metrics_by_tag_for_concept_impl,
@@ -292,9 +293,11 @@ from mcp_servers.model_engine.tools.bridge import (  # noqa: E402
   BridgeToolFunctions as _BridgeToolFunctions,
   ModelBridgeScenariosDeps as _ModelBridgeScenariosDeps,
   ModelFindScenarioAnchorDeps as _ModelFindScenarioAnchorDeps,
+  ModelScenarioTopologyDeps as _ModelScenarioTopologyDeps,
   build_bridge_tool_functions as _build_bridge_tool_functions,
   model_bridge_scenarios_handler as _model_bridge_scenarios_handler,
   model_find_scenario_anchor_handler as _model_find_scenario_anchor_handler,
+  model_scenario_topology_handler as _model_scenario_topology_handler,
   register_bridge_tools as _register_bridge_tools,
 )
 from mcp_servers.model_engine.tools.business_model import (  # noqa: E402
@@ -572,35 +575,18 @@ def _list_metrics(
   include_values: bool = True,
   limit: int = 1000,
 ) -> list[dict]:
-  api_key = os.getenv("EDGAR_API_KEY", "")
-  base_url = os.getenv("EDGAR_API_URL", "https://www.edgarparser.com").rstrip("/")
-  endpoint = f"{base_url}/api/financials/list_metrics"
-  params = {
-    "ticker": str(ticker).upper(),
-    "year": str(int(year)),
-    "quarter": str(int(quarter)),
-    "date_type": str(date_type),
-    "include_values": str(bool(include_values)).lower(),
-    "limit": str(int(limit)),
-    "key": api_key,
-  }
-  request = urllib.request.Request(
-    f"{endpoint}?{urllib.parse.urlencode(params)}",
-    headers={"User-Agent": "model-engine-mcp"},
+  return _list_metrics_impl(
+    ticker,
+    year,
+    quarter,
+    date_type=date_type,
+    include_values=include_values,
+    limit=limit,
+    os_module=os,
+    urllib_parse_module=urllib.parse,
+    urllib_request_module=urllib.request,
+    json_module=json,
   )
-  with urllib.request.urlopen(request, timeout=120) as response:
-    payload = json.loads(response.read().decode("utf-8"))
-  if isinstance(payload, list):
-    metrics = payload
-  elif isinstance(payload, dict):
-    if str(payload.get("status") or "").lower() == "error":
-      raise RuntimeError(str(payload.get("message") or payload.get("error") or "list_metrics failed"))
-    metrics = payload.get("metrics") or payload.get("data") or payload.get("results")
-  else:
-    metrics = None
-  if not isinstance(metrics, list):
-    raise RuntimeError("list_metrics response did not include a metrics list")
-  return [dict(entry) for entry in metrics if isinstance(entry, dict)]
 
 
 def _metrics_by_tag_for_concept(
@@ -954,6 +940,10 @@ _model_find_scenario_anchor_deps = _tool_deps.build_model_find_scenario_anchor_d
   parent_namespace=lambda: globals(),
 )
 
+_model_scenario_topology_deps = _tool_deps.build_model_scenario_topology_deps_function(
+  parent_namespace=lambda: globals(),
+)
+
 _model_bridge_scenarios_deps = _tool_deps.build_model_bridge_scenarios_deps_function(
   parent_namespace=lambda: globals(),
 )
@@ -963,6 +953,7 @@ _bridge_tool_functions = _register_bridge_tools(
   mcp,
   parent_namespace=lambda: globals(),
 )
+model_scenario_topology = _bridge_tool_functions.model_scenario_topology
 model_find_scenario_anchor = _bridge_tool_functions.model_find_scenario_anchor
 model_bridge_scenarios = _bridge_tool_functions.model_bridge_scenarios
 

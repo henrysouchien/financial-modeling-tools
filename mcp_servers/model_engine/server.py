@@ -16,6 +16,7 @@ Use these tools to analyze Excel-based financial models:
 - model_scenario: Apply overrides to inputs and compare resulting metrics
 - model_presentation_fingerprint: Inventory workbook presentation/style primitives
 - model_presentation_compare: Compare observed workbook presentation primitives against a reference
+- model_scenario_topology: List scenario owner, anchor, and bull/base/bear case rows
 - model_find_scenario_anchor: Resolve thesis factors to workbook scenario anchors
 - model_bridge_scenarios: Write thesis scenarios into workbook scenario rows
 - model_discover_segments: Discover all validated EDGAR segment axes before building
