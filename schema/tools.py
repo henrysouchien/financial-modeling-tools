@@ -83,6 +83,9 @@ from .tools_sensitivity import (
     _resolve_candidate_filter,
     _resolve_max_candidates,
     _resolve_sensitivity_semantics,
+    _apply_scenario_case_selection,
+    _scenario_case_recompute_ids,
+    _scenario_case_selection_for_overrides,
     _same_period_ref_source,  # noqa: F401 - compatibility alias for schema.tools imports
     _scenario_recompute_ids,
     _sensitivity_representative_rank,  # noqa: F401 - compatibility alias for schema.tools imports
@@ -848,6 +851,8 @@ def scenario(
         if item_id not in model_obj._index:
             raise _unknown_item_error(model_obj, item_id, "override item_id")
         normalized[item_id] = {int(period): float(value) for period, value in values.items()}
+    scenario_case_selection = _scenario_case_selection_for_overrides(model_obj, normalized)
+    normalized = _apply_scenario_case_selection(normalized, scenario_case_selection)
 
     if compare_items is None:
         compare_ids = [item.id for item in _find_key_metrics(bundle.all_items)]
@@ -858,12 +863,19 @@ def scenario(
                 raise _unknown_item_error(model_obj, item_id, "compare item_id")
 
     recompute_ids = _scenario_recompute_ids(bundle, normalized, recompute_policy=recompute_policy)
+    recompute_ids |= _scenario_case_recompute_ids(bundle, scenario_case_selection)
+    propagate_roots = (
+        set(scenario_case_selection.get("owner_ids") or [])
+        if scenario_case_selection and scenario_case_selection.get("status") == "auto_selected"
+        else None
+    )
 
     scenario_results = _compute_scenario_results(
         bundle,
         normalized,
         recompute_ids,
         recompute_policy=recompute_policy,
+        propagate_roots=propagate_roots,
     )
     period = _default_period(model_obj)
     all_periods = _all_periods(model_obj)
@@ -871,8 +883,10 @@ def scenario(
     comparisons = []
     for item_id in compare_ids:
         item = model_obj.get_item(item_id)
-        base_val = bundle.base_results.get(item_id, {}).get(period)
-        scenario_val = scenario_results.get(item_id, {}).get(period)
+        base_item_values = bundle.base_results.get(item_id, {})
+        scenario_item_values = scenario_results.get(item_id, {})
+        base_val = base_item_values.get(period)
+        scenario_val = scenario_item_values.get(period)
         delta = None
         pct_change = None
         if base_val is not None and scenario_val is not None:
@@ -889,17 +903,22 @@ def scenario(
                 "scenario": scenario_val,
                 "delta": delta,
                 "pct_change": pct_change,
-                "base_sample_values": _sample_values(bundle.base_results.get(item_id, {}), all_periods),
-                "scenario_sample_values": _sample_values(scenario_results.get(item_id, {}), all_periods),
+                "base_values": {value_period: base_item_values.get(value_period) for value_period in all_periods},
+                "scenario_values": {value_period: scenario_item_values.get(value_period) for value_period in all_periods},
+                "base_sample_values": _sample_values(base_item_values, all_periods),
+                "scenario_sample_values": _sample_values(scenario_item_values, all_periods),
             }
         )
 
-    return {
+    result = {
         "period": period,
         "recompute_policy": recompute_policy,
         "overrides": normalized,
         "comparisons": comparisons,
     }
+    if scenario_case_selection is not None:
+        result["scenario_case_selection"] = scenario_case_selection
+    return result
 
 
 def period_guidance(

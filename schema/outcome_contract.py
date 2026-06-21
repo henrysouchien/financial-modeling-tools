@@ -332,6 +332,7 @@ class PredictionTarget(BaseModel):
     confidence: Confidence | None = None
     scoreability: Literal["scoreable", "needs_threshold", "prose_only"]
     derived_from: ThesisDerivedRef | None = None
+    derivation_metadata: dict[str, Any] | None = None
     produced_by: ProducedBy | None = None
     source_refs: tuple[SourceId, ...] = ()
 

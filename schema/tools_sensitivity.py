@@ -9,6 +9,11 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .analysis import _downstream_nodes
 from .dependency_graph import DependencyGraph
+from .model_readiness_scenario_bridge import (
+    _scenario_bridge_anchor_id,
+    _scenario_bridge_case_row_ids,
+    _scenario_bridge_owners,
+)
 from .models import (
     PERIOD_MODE_QUARTERLY5,
     FinancialModel,
@@ -400,18 +405,188 @@ def _scenario_recompute_ids(
     return recompute_ids
 
 
+def _offset_scenario_selector_id(owner: LineItem) -> Optional[str]:
+    spec = owner.projected
+    if spec is None or spec.type != FormulaType.valuation or spec.subtype != "offset_scenario":
+        return None
+    selector_ref = line_item_ref_from_obj((spec.params or {}).get("selector"))
+    return selector_ref.id if selector_ref is not None else None
+
+
+def _scenario_case_selection_for_overrides(
+    model: FinancialModel,
+    overrides: Dict[str, Dict[int, float]],
+) -> Optional[Dict[str, Any]]:
+    if not overrides:
+        return None
+    if not model._index:
+        model.build_index()
+
+    matches: List[Dict[str, str]] = []
+    for owner in _scenario_bridge_owners(model):
+        anchor_id = _scenario_bridge_anchor_id(owner)
+        selector_id = _offset_scenario_selector_id(owner)
+        if anchor_id is None or selector_id is None:
+            continue
+        case_rows = _scenario_bridge_case_row_ids(model, anchor_id)
+        for case, row_id in case_rows.items():
+            if row_id and row_id in overrides:
+                matches.append(
+                    {
+                        "case": case,
+                        "case_row_id": row_id,
+                        "owner_id": owner.id,
+                        "anchor_id": anchor_id,
+                        "selector_id": selector_id,
+                    }
+                )
+    if not matches:
+        return None
+
+    cases = {match["case"] for match in matches}
+    if len(cases) != 1:
+        return {
+            "status": "ambiguous_case_rows",
+            "cases": sorted(cases),
+            "matches": matches,
+            "owner_overrides": {},
+            "selector_ids": [],
+            "owner_ids": sorted({match["owner_id"] for match in matches}),
+        }
+
+    case = next(iter(cases))
+    selector_conflicts = sorted(
+        {
+            match["selector_id"]
+            for match in matches
+            if match["selector_id"] in overrides
+        }
+    )
+    owner_overrides = {
+        match["owner_id"]: {
+            int(period): float(value)
+            for period, value in overrides.get(match["case_row_id"], {}).items()
+        }
+        for match in matches
+    }
+    owner_conflicts = [
+        {
+            "owner_id": owner_id,
+            "case_row_id": match["case_row_id"],
+            "case": match["case"],
+            "conflicting_periods": sorted(
+                int(period)
+                for period in by_period
+                if period in overrides.get(owner_id, {})
+            ),
+        }
+        for match in matches
+        for owner_id, by_period in [(match["owner_id"], owner_overrides.get(match["owner_id"], {}))]
+        if owner_id in overrides
+        and any(period in overrides.get(owner_id, {}) for period in by_period)
+    ]
+    if selector_conflicts or owner_conflicts:
+        raise _scenario_case_override_conflict_error(
+            case=case,
+            selector_conflicts=selector_conflicts,
+            owner_conflicts=owner_conflicts,
+        )
+    return {
+        "status": "auto_selected",
+        "case": case,
+        "matches": matches,
+        "owner_overrides": owner_overrides,
+        "selector_ids": sorted({match["selector_id"] for match in matches}),
+        "owner_ids": sorted({match["owner_id"] for match in matches}),
+    }
+
+
+def _scenario_case_override_conflict_error(
+    *,
+    case: str,
+    selector_conflicts: List[str],
+    owner_conflicts: List[Dict[str, Any]],
+) -> Exception:
+    error_type = _compat("ModelToolError", None)
+    message = (
+        "Conflicting scenario overrides: when a topology case row is supplied, "
+        "model_scenario maps that row to its owning economic row internally. "
+        "Do not also pass selector/header rows or the same owner row."
+    )
+    details = {
+        "case": case,
+        "selector_conflicts": selector_conflicts,
+        "owner_conflicts": owner_conflicts,
+    }
+    recovery = {
+        "next_actions": [
+            "Retry with only the returned bull/base/bear case-row ids for the selected factors.",
+            "Do not include tpl.a.header.scenario_value or owner-row bm/tpl.a driver overrides in the same model_scenario call.",
+            "If you need a custom owner-row sensitivity instead, omit the topology case rows and pass owner-row overrides directly.",
+        ]
+    }
+    if error_type is None:
+        return ValueError(message)
+    return error_type(
+        "conflicting_scenario_case_overrides",
+        message,
+        details=details,
+        recovery=recovery,
+    )
+
+
+def _apply_scenario_case_selection(
+    overrides: Dict[str, Dict[int, float]],
+    selection: Optional[Dict[str, Any]],
+) -> Dict[str, Dict[int, float]]:
+    if not selection or selection.get("status") != "auto_selected":
+        return overrides
+    expanded = {item_id: dict(period_values) for item_id, period_values in overrides.items()}
+    owner_overrides = selection.get("owner_overrides")
+    if not isinstance(owner_overrides, dict):
+        return expanded
+    for owner_id, by_period in owner_overrides.items():
+        if not isinstance(by_period, dict):
+            continue
+        normalized = expanded.setdefault(str(owner_id), {})
+        for raw_period, raw_value in by_period.items():
+            period = int(raw_period)
+            normalized[period] = float(raw_value)
+    return expanded
+
+
+def _scenario_case_recompute_ids(
+    bundle: Any,
+    selection: Optional[Dict[str, Any]],
+) -> Set[str]:
+    if not selection or selection.get("status") != "auto_selected":
+        return set()
+    downstream_nodes = _compat("_downstream_nodes", _downstream_nodes)
+    recompute_ids: Set[str] = set()
+    owner_ids = selection.get("owner_ids")
+    if not isinstance(owner_ids, list):
+        return recompute_ids
+    for owner_id in owner_ids:
+        if not isinstance(owner_id, str) or owner_id not in bundle.graph.nodes:
+            continue
+        recompute_ids.add(owner_id)
+        recompute_ids |= downstream_nodes(bundle.graph, owner_id)
+    return recompute_ids
+
+
 def _compute_scenario_results(
     bundle: Any,
     overrides: Dict[str, Dict[int, float]],
     recompute_ids: Set[str],
     *,
     recompute_policy: str = "projection_safe",
+    propagate_roots: Optional[Set[str]] = None,
 ) -> Dict[str, Dict[int, float]]:
     model = bundle.model
     graph = bundle.graph
     period_mode = model.time_structure.period_mode
     compute_kwargs: Dict[str, Any] = (
-        {"propagate_roots": set()}
+        {"propagate_roots": set() if propagate_roots is None else set(propagate_roots)}
         if recompute_policy == "projection_safe"
         else {}
     )
@@ -532,6 +707,9 @@ _ORIGINALS = {
     "_resolve_max_candidates": _resolve_max_candidates,
     "_resolve_sensitivity_semantics": _resolve_sensitivity_semantics,
     "_same_period_ref_source": _same_period_ref_source,
+    "_apply_scenario_case_selection": _apply_scenario_case_selection,
+    "_scenario_case_recompute_ids": _scenario_case_recompute_ids,
+    "_scenario_case_selection_for_overrides": _scenario_case_selection_for_overrides,
     "_scenario_recompute_ids": _scenario_recompute_ids,
     "_sensitivity_representative_rank": _sensitivity_representative_rank,
 }
@@ -563,6 +741,9 @@ __all__ = [
     "_resolve_max_candidates",
     "_resolve_sensitivity_semantics",
     "_same_period_ref_source",
+    "_apply_scenario_case_selection",
+    "_scenario_case_recompute_ids",
+    "_scenario_case_selection_for_overrides",
     "_scenario_recompute_ids",
     "_sensitivity_representative_rank",
 ]

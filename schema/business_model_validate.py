@@ -49,6 +49,128 @@ def _walk_business_model_nodes(parsed: BusinessModel):
             yield from _walk(segment, node, (node.id,))
 
 
+_REVENUE_KPI_SOURCE_LOCAL_TOKENS = frozenset({
+    "netsales",
+    "revenue",
+    "revenuefromcontractwithcustomerexcludingassessedtax",
+    "revenues",
+    "revenuenotfromcontractwithcustomer",
+    "sales",
+    "salesrevenuegoodsnet",
+    "salesrevenuenet",
+})
+_NON_DIRECT_REVENUE_SOURCE_WORDS = frozenset({
+    "arpu",
+    "average",
+    "avg",
+    "change",
+    "count",
+    "counts",
+    "growth",
+    "margin",
+    "per",
+    "percent",
+    "percentage",
+    "price",
+    "quantity",
+    "rate",
+    "unit",
+    "units",
+    "volume",
+    "yield",
+})
+_REVENUE_SOURCE_FORBIDDEN_NODE_TOKENS = frozenset({
+    "account_count",
+    "arpu",
+    "asp",
+    "average_revenue_per",
+    "balance",
+    "client_count",
+    "count",
+    "customer_count",
+    "employee_count",
+    "per_account",
+    "per_client",
+    "per_customer",
+    "per_employee",
+    "per_user",
+    "price",
+    "subscriber_count",
+    "take_rate",
+    "user_count",
+    "yield",
+})
+_CAMEL_WORD_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _node_unit_value(node: Any) -> str:
+    return str(getattr(getattr(node, "unit", None), "value", getattr(node, "unit", "")) or "").strip().lower()
+
+
+def _is_revenue_kpi_source(value: object | None) -> bool:
+    local = _tag_local_name(value)
+    if local in _REVENUE_KPI_SOURCE_LOCAL_TOKENS:
+        return True
+    words = set(_tag_local_words(value))
+    if words & _NON_DIRECT_REVENUE_SOURCE_WORDS:
+        return False
+    return bool(words & {"revenue", "revenues", "sales"})
+
+
+def _node_identity_tokens(node: Any, path: tuple[str, ...]) -> set[str]:
+    values = [getattr(node, "id", ""), getattr(node, "label", ""), *path]
+    tokens: set[str] = set()
+    for value in values:
+        text = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+        if not text:
+            continue
+        tokens.add(text)
+        parts = [part for part in text.split("_") if part]
+        tokens.update(parts)
+        for size in (2, 3):
+            tokens.update("_".join(parts[index : index + size]) for index in range(len(parts) - size + 1))
+    return tokens
+
+
+def _node_has_non_direct_revenue_metric_identity(identity: set[str]) -> bool:
+    if identity & _REVENUE_SOURCE_FORBIDDEN_NODE_TOKENS:
+        return True
+    if "per" in identity:
+        return True
+    return "average" in identity and "revenue" in identity
+
+
+def _revenue_kpi_source_metric_mismatch(segment: Any, node: Any, path: tuple[str, ...]) -> dict[str, Any] | None:
+    if not _is_revenue_kpi_source(getattr(node, "kpi_source", None)):
+        return None
+    unit = _node_unit_value(node)
+    identity = _node_identity_tokens(node, path)
+    if unit == "dollars" and not _node_has_non_direct_revenue_metric_identity(identity):
+        return None
+    return {
+        "code": "kpi_source_metric_mismatch",
+        "reason": "revenue_source_for_non_revenue_node",
+        "segment_id": segment.id,
+        "node_id": node.id,
+        "qualified_id": f"{segment.id}.{'.'.join(path)}",
+        "unit": unit or None,
+        "kpi_source": node.kpi_source,
+        "loc": [
+            "segments",
+            segment.id,
+            "revenue_model",
+            "decomposition",
+            *path,
+            "kpi_source",
+        ],
+        "message": (
+            "Revenue XBRL concepts can source direct revenue nodes only; use a KPI "
+            "source for this node's own metric, set kpi=false, or collapse to a "
+            "source-backed direct segment_revenue node."
+        ),
+    }
+
+
 def contract_checks(
     parsed: BusinessModel,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -59,6 +181,9 @@ def contract_checks(
             continue
         ok, reason = validate_kpi_source_reference(node.kpi_source)
         if ok:
+            semantic_issue = _revenue_kpi_source_metric_mismatch(segment, node, path)
+            if semantic_issue is not None:
+                errors.append(semantic_issue)
             continue
         issue = {
             "code": "missing_kpi_source" if reason == "missing" else "invalid_kpi_source",
@@ -93,6 +218,13 @@ def _normalize_segment_name(value: object | None) -> str:
 
 def _tag_local_name(value: object | None) -> str:
     return str(value or "").strip().split(":", 1)[-1].lower()
+
+
+def _tag_local_words(value: object | None) -> tuple[str, ...]:
+    local = str(value or "").strip().split(":", 1)[-1]
+    local = _CAMEL_WORD_BOUNDARY_RE.sub("_", local)
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", local).strip("_").lower()
+    return tuple(part for part in normalized.split("_") if part)
 
 
 def _tag_namespace(value: object | None) -> str | None:

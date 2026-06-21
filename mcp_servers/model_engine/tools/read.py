@@ -84,6 +84,73 @@ def _projection_periods_for_scenario_table_item(
   return [int(period) for period in values]
 
 
+def _is_number(value: Any) -> bool:
+  return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _scenario_no_effect_warning(
+  *,
+  result: dict[str, Any],
+  overrides: dict[str, dict[int, float]],
+) -> dict[str, Any] | None:
+  comparisons = result.get("comparisons")
+  if not overrides or not isinstance(comparisons, list) or not comparisons:
+    return None
+  numeric_comparisons = [
+    comparison
+    for comparison in comparisons
+    if isinstance(comparison, dict)
+    and _is_number(comparison.get("base"))
+    and _is_number(comparison.get("scenario"))
+  ]
+  if not numeric_comparisons:
+    return None
+  if any(
+    abs(float(comparison["scenario"]) - float(comparison["base"])) > 1e-9
+    for comparison in numeric_comparisons
+  ):
+    return None
+  return {
+    "code": "scenario_no_effect",
+    "kind": "scenario_no_effect",
+    "message": (
+      "Scenario override completed but every numeric comparison was unchanged; "
+      "the override rows may not be decision-usable scenario anchors."
+    ),
+    "override_item_ids": list(overrides.keys())[:20],
+    "compare_item_ids": [
+      str(comparison.get("id") or comparison.get("item_id") or "")
+      for comparison in numeric_comparisons[:20]
+      if comparison.get("id") or comparison.get("item_id")
+    ],
+  }
+
+
+def _attach_scenario_no_effect_guidance(
+  *,
+  result: dict[str, Any],
+  overrides: dict[str, dict[int, float]],
+) -> dict[str, Any]:
+  warning = _scenario_no_effect_warning(result=result, overrides=overrides)
+  if warning is None:
+    return result
+  guided = dict(result)
+  warnings = guided.get("warnings")
+  warning_rows = list(warnings) if isinstance(warnings, list) else []
+  warning_rows.append(warning)
+  guided["warnings"] = warning_rows
+  next_actions = guided.get("next_actions")
+  action_rows = list(next_actions) if isinstance(next_actions, list) else []
+  action_rows.extend(
+    [
+      "Call model_scenario_topology before the next model_scenario attempt and override returned bull/base/bear case row IDs for one scenario case at a time; model_scenario maps each case row to its owning economic row internally.",
+      "If topology is unresolved or auto-selected case-row overrides still produce zero output deltas, persist INSUFFICIENT_DATA through FMS instead of continuing exploratory reads.",
+    ]
+  )
+  guided["next_actions"] = action_rows
+  return guided
+
+
 def _model_quality_readiness_for_valuation_summary(
   *,
   deps: ModelReadDeps,
@@ -545,6 +612,10 @@ def model_scenario_handler(
       recompute_policy=recompute_policy,
       historical_cutoff_year=historical_cutoff_year,
     )
+    result = _attach_scenario_no_effect_guidance(
+      result=result,
+      overrides=normalized,
+    )
     return {"status": "ok", **result}
   except Exception as exc:
     return deps.model_tool_error_payload(exc)
@@ -826,7 +897,9 @@ def build_model_read_tool_functions(
 
     Discovery: file_path comes from model_build output. Use model_find or
     model_summarize(include_items=True) to choose override item ids and
-    compare_items before running the scenario.
+    compare_items before running the scenario. Each comparison includes
+    base_values/scenario_values by period; use those instead of a follow-up
+    model_values call after a successful scenario readback.
     """
     return _parent_handler(parent_namespace, "_model_scenario_handler")(
       deps=_parent_read_deps(parent_namespace),

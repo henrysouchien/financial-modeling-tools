@@ -105,7 +105,7 @@ def _topology_next_actions() -> list[str]:
   return [
     "Use topology.owners[].owner_id as the factor_anchor_hints value for model_bridge_scenarios after confirming the economic factor.",
     "Use topology.owners[].bull_id/base_id/bear_id with model_values to inspect seeded scenario rows.",
-    "For one-off model_scenario sensitivity, override the case row IDs returned here; do not override the scalar selector/header row.",
+    "For one-off model_scenario sensitivity, override returned bull/base/bear case row IDs for one scenario case at a time; model_scenario maps each case row to its owning economic row internally.",
     "Use model_find_scenario_anchor(file_path=..., factor=..., hint=owner_id) only when you need to bind one thesis factor or disambiguate a candidate owner.",
     "Use model_find only for non-scenario workbook rows; scenario owner topology is authoritative here.",
   ]

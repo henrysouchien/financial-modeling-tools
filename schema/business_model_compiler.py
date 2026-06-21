@@ -58,9 +58,11 @@ class CompiledDriverRegistry:
 
 @dataclass(frozen=True)
 class _SegmentCompilePlan:
-    segment: Any
+    segment: Any | None
     segment_index: int
     info: SegmentInfo
+    segment_id: str | None = None
+    unmanaged_snapshot: bool = False
 
 
 def compile_business_model(
@@ -124,6 +126,45 @@ def compile_business_model(
     primary_plan: _SegmentCompilePlan | None = None
 
     for plan in plans:
+        if plan.segment is None:
+            revenue_id = f"bm.{plan.segment_id}.__rev"
+            growth_id = f"bm.{plan.segment_id}.__growth"
+            revenue_fm_id = f"tpl.fm.income_statement.business_segment_{plan.segment_index}_revenue"
+            margin_fm_id = f"tpl.fm.margins.business_segment_{plan.segment_index}_pct_revenue"
+            growth_fm_id = f"tpl.fm.growth_rates.business_segment_{plan.segment_index}_growth"
+            fm_rows_for_segment = {
+                "income_statement": fm_base_rows["income_statement"] + plan.segment_index - 1,
+                "margins": fm_base_rows["margins"] + plan.segment_index - 1,
+                "growth_rates": fm_base_rows["growth_rates"] + plan.segment_index - 1,
+            }
+            segment_revenue_ids.append(revenue_id)
+            segment_fm_revenue_ids.append(revenue_fm_id)
+            current_row = _materialize_unmanaged_snapshot_segment(
+                plan=plan,
+                prototypes=prototypes,
+                all_periods=all_periods,
+                projection_periods=projection_periods,
+                assumptions_items=assumptions_items,
+                income_statement_items=income_statement_items,
+                margin_items=margin_items,
+                growth_items=growth_items,
+                current_row=current_row,
+                revenue_id=revenue_id,
+                growth_id=growth_id,
+                revenue_fm_id=revenue_fm_id,
+                margin_fm_id=margin_fm_id,
+                growth_fm_id=growth_fm_id,
+                fm_rows_for_segment=fm_rows_for_segment,
+            )
+            plan.info.item_ids = {
+                "revenue": revenue_id,
+                "growth": growth_id,
+                "revenue_fm": revenue_fm_id,
+                "margin_fm": margin_fm_id,
+                "growth_fm": growth_fm_id,
+            }
+            continue
+
         if plan.segment_index == 1:
             primary_plan = plan
 
@@ -408,6 +449,7 @@ def _reconcile_segments(
     plans: list[_SegmentCompilePlan] = []
     matched_snapshot_names: set[str] = set()
     segment_mapping: dict[str, int] = {}
+    used_segment_ids = {str(segment.id) for segment in business_model.segments}
     next_supplemental_index = max(snapshot_by_index) + 1 if snapshot_by_index else 1
 
     for segment in business_model.segments:
@@ -431,6 +473,7 @@ def _reconcile_segments(
                         name=segment.label,
                         edgar_member=None,
                     ),
+                    segment_id=segment.id,
                 )
             )
             continue
@@ -456,14 +499,48 @@ def _reconcile_segments(
                     volume_label=snapshot_segment.volume_label,
                     price_label=snapshot_segment.price_label,
                 ),
+                segment_id=segment.id,
             )
         )
 
-    unmatched_snapshot_names = sorted(
-        snapshot_segment.name
+    unmatched_snapshot_segments = [
+        snapshot_segment
         for snapshot_segment in edgar_snapshot.segments
         if _normalize_name(snapshot_segment.name) not in matched_snapshot_names
+    ]
+    residual_snapshot_segments = [
+        snapshot_segment
+        for snapshot_segment in unmatched_snapshot_segments
+        if _is_unmanaged_residual_snapshot_segment(snapshot_segment)
+    ]
+    residual_snapshot_segment_ids = {id(snapshot_segment) for snapshot_segment in residual_snapshot_segments}
+    blocking_unmatched_snapshot_names = sorted(
+        snapshot_segment.name
+        for snapshot_segment in unmatched_snapshot_segments
+        if id(snapshot_segment) not in residual_snapshot_segment_ids
     )
+    for snapshot_segment in residual_snapshot_segments:
+        segment_id = _unmanaged_snapshot_segment_id(
+            snapshot_segment.name,
+            int(snapshot_segment.segment_index),
+            used_segment_ids,
+        )
+        plans.append(
+            _SegmentCompilePlan(
+                segment=None,
+                segment_index=int(snapshot_segment.segment_index),
+                info=SegmentInfo(
+                    name=snapshot_segment.name,
+                    edgar_member=None,
+                    revenue_observations=segment_revenue_observations_from_snapshot(snapshot_segment),
+                    volume_label=snapshot_segment.volume_label,
+                    price_label=snapshot_segment.price_label,
+                ),
+                segment_id=segment_id,
+                unmanaged_snapshot=True,
+            )
+        )
+    unmatched_snapshot_names = blocking_unmatched_snapshot_names
     if unmatched_snapshot_names:
         raise BusinessModelCompileError(
             f"EDGAR snapshot has unmatched segments: {unmatched_snapshot_names}"
@@ -486,9 +563,157 @@ def _reconcile_segments(
     )
 
 
+def _is_unmanaged_residual_snapshot_segment(snapshot_segment: Any) -> bool:
+    if str(getattr(snapshot_segment, "edgar_member", "") or "").strip():
+        return False
+    if _normalize_name(getattr(snapshot_segment, "name", "")) not in {
+        "other",
+        "other segments",
+        "all other",
+    }:
+        return False
+    observations = list(getattr(snapshot_segment, "revenue_observations", None) or [])
+    if not observations:
+        return False
+    return all(str(getattr(observation, "source", "") or "") == "derived_other" for observation in observations)
+
+
+def _unmanaged_snapshot_segment_id(name: str, segment_index: int, used_segment_ids: set[str]) -> str:
+    normalized = _NORMALIZE_NAME_RE.sub("_", str(name or "").strip().casefold()).strip("_")
+    normalized = "_".join(part for part in normalized.split("_") if part) or "segment"
+    base = f"unmodeled_{normalized}_{int(segment_index)}"
+    candidate = base
+    suffix = 2
+    while candidate in used_segment_ids:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used_segment_ids.add(candidate)
+    return candidate
+
+
+def _materialize_unmanaged_snapshot_segment(
+    *,
+    plan: _SegmentCompilePlan,
+    prototypes: dict[str, LineItem],
+    all_periods: list[int],
+    projection_periods: list[int],
+    assumptions_items: list[LineItem],
+    income_statement_items: list[LineItem],
+    margin_items: list[LineItem],
+    growth_items: list[LineItem],
+    current_row: int,
+    revenue_id: str,
+    growth_id: str,
+    revenue_fm_id: str,
+    margin_fm_id: str,
+    growth_fm_id: str,
+    fm_rows_for_segment: dict[str, int],
+) -> int:
+    revenue = prototypes["segment_revenue"].model_copy(
+        deep=True,
+        update={
+            "id": revenue_id,
+            "label": plan.info.name,
+            "row": current_row,
+            "item_type": ItemType.derived,
+            "historical": _ref_formula(revenue_fm_id),
+            "projected": _carry_forward_formula(revenue_id),
+            "formula_periods": list(all_periods),
+            "overrides": None,
+            "values": None,
+            "template_token": None,
+            "build_notes": (
+                "Unmodeled residual segment from source snapshot; projected flat unless "
+                "the analyst replaces it with a modeled BusinessModel segment."
+            ),
+        },
+    )
+    assumptions_items.append(revenue)
+    current_row += 1
+
+    growth = prototypes["segment_growth"].model_copy(
+        deep=True,
+        update={
+            "id": growth_id,
+            "label": " y/y % chg.",
+            "row": current_row,
+            "item_type": ItemType.derived,
+            "historical": _yoy_formula(revenue_id),
+            "projected": _yoy_formula(revenue_id),
+            "formula_periods": list(all_periods),
+            "overrides": None,
+            "values": None,
+            "template_token": None,
+            "build_notes": "Derived from the unmodeled residual revenue row.",
+        },
+    )
+    assumptions_items.append(growth)
+    current_row += 1
+
+    income_statement_items.append(
+        prototypes["revenue_fm"].model_copy(
+            deep=True,
+            update={
+                "id": revenue_fm_id,
+                "label": f" {plan.info.name}",
+                "row": fm_rows_for_segment["income_statement"],
+                "item_type": ItemType.derived,
+                "historical": None,
+                "projected": _ref_formula(revenue_id),
+                "formula_periods": list(projection_periods),
+                "data_concept_id": None,
+                "overrides": None,
+                "values": None,
+                "template_token": None,
+                "build_notes": None,
+            },
+        )
+    )
+    margin_items.append(
+        prototypes["margin_fm"].model_copy(
+            deep=True,
+            update={
+                "id": margin_fm_id,
+                "label": f" {plan.info.name}",
+                "row": fm_rows_for_segment["margins"],
+                "item_type": ItemType.derived,
+                "historical": _ratio_formula(revenue_fm_id, "tpl.fm.income_statement.total_revenue"),
+                "projected": _ratio_formula(revenue_fm_id, "tpl.fm.income_statement.total_revenue"),
+                "formula_periods": list(all_periods),
+                "overrides": None,
+                "values": None,
+                "template_token": None,
+                "build_notes": None,
+            },
+        )
+    )
+    growth_items.append(
+        prototypes["growth_fm"].model_copy(
+            deep=True,
+            update={
+                "id": growth_fm_id,
+                "label": f" {plan.info.name}",
+                "row": fm_rows_for_segment["growth_rates"],
+                "item_type": ItemType.derived,
+                "historical": _yoy_formula(revenue_fm_id),
+                "projected": _yoy_formula(revenue_fm_id),
+                "formula_periods": list(all_periods),
+                "overrides": None,
+                "values": None,
+                "template_token": None,
+                "build_notes": None,
+            },
+        )
+    )
+    return current_row
+
+
 def _count_bm_rows(plans: list[_SegmentCompilePlan]) -> int:
     rows = 0
     for plan in plans:
+        if plan.segment is None:
+            rows += 2
+            continue
         rows += _count_tree_rows(plan.segment.revenue_model.decomposition)
         rows += 2
     return rows

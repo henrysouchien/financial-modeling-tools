@@ -5,27 +5,115 @@ import re
 from typing import Any, Callable
 import uuid
 
+from schema.overrides_projections import ProjectionEntry
 from schema.scenario_bridge import BridgeWarning, factor_values_by_period
 
 from .bridge import empty_bridge_projection_persistence
+
+
+_SCENARIO_ORDERING_EPS = 1e-9
 
 
 def bridge_factor_values_by_period(
   factor_payload: dict,
   case: str,
   projection_periods: list[int],
+  *,
+  allow_scalar: bool = False,
 ) -> dict[str, float] | None:
   values = factor_values_by_period(
     factor_payload,
     case,
     projection_periods,
-    allow_scalar=False,
+    allow_scalar=allow_scalar,
   )
   if values is None:
     return None
   if any(int(period) not in values for period in projection_periods):
     return None
   return {str(int(period)): float(value) for period, value in values.items()}
+
+
+def bridge_projection_scenarios(entry: Any) -> dict[str, Any]:
+  if isinstance(entry, dict):
+    scenarios = entry.get("scenarios")
+    return dict(scenarios) if isinstance(scenarios, dict) else {}
+  scenarios = getattr(entry, "scenarios", None)
+  return dict(scenarios) if isinstance(scenarios, dict) else {}
+
+
+def bridge_existing_base_values(
+  *,
+  ticker: str,
+  owner_id: str,
+  projection_periods: list[int],
+  model_override_fn: Callable[..., dict],
+) -> tuple[dict[str, float] | None, str | None]:
+  result = model_override_fn(
+    ticker=ticker,
+    action="get_projection",
+    rate_key=owner_id,
+  )
+  if result.get("status") != "success":
+    return None, str(result.get("error") or result)
+
+  projection = result.get("data")
+  scenarios = bridge_projection_scenarios(projection)
+  base_scenario = scenarios.get("base")
+  if base_scenario is None:
+    return None, None
+  try:
+    ProjectionEntry.model_validate({"scenarios": {"base": base_scenario}})
+  except Exception as exc:
+    return None, f"invalid_existing_base_projection:{exc}"
+
+  values = base_scenario.get("values") if isinstance(base_scenario, dict) else getattr(base_scenario, "values", None)
+  if not isinstance(values, dict):
+    return None, "invalid_existing_base_projection:missing values"
+  base_values: dict[str, float] = {}
+  for period in projection_periods:
+    period_key = str(int(period))
+    raw_value = values.get(period_key)
+    if raw_value is None:
+      raw_value = values.get(int(period))
+    if raw_value is None:
+      return None, None
+    try:
+      base_values[period_key] = float(raw_value)
+    except (TypeError, ValueError):
+      return None, f"invalid_existing_base_projection:non-numeric value for {period_key}"
+  return base_values, None
+
+
+def bridge_scenario_ordering_issues(
+  *,
+  bull_values: dict[str, float],
+  base_values: dict[str, float],
+  bear_values: dict[str, float],
+) -> list[str]:
+  issues: list[str] = []
+  for period in sorted(set(bull_values) & set(bear_values)):
+    bull = float(bull_values[period])
+    bear = float(bear_values[period])
+    base = base_values.get(period)
+    if base is None:
+      issues.append(f"{period}:bull={bull:g},base=missing,bear={bear:g},expected=base_value_present")
+      continue
+    base = float(base)
+    detail = f"{period}:bull={bull:g},base={base:g},bear={bear:g}"
+    if abs(bull - bear) <= _SCENARIO_ORDERING_EPS:
+      issues.append(f"{detail},expected=bull/base/bear_distinct")
+    elif bull > bear:
+      if bull <= base + _SCENARIO_ORDERING_EPS:
+        issues.append(f"{detail},expected=bull>base")
+      if bear >= base - _SCENARIO_ORDERING_EPS:
+        issues.append(f"{detail},expected=bear<base")
+    else:
+      if bull >= base - _SCENARIO_ORDERING_EPS:
+        issues.append(f"{detail},expected=bull<base")
+      if bear <= base + _SCENARIO_ORDERING_EPS:
+        issues.append(f"{detail},expected=bear>base")
+  return issues
 
 
 def bridge_source_id_slug(value: str) -> str:
@@ -266,6 +354,12 @@ def bridge_projection_persistence(
       continue
     bull_values = bridge_factor_values_by_period(factor_payload, "bull", projection_periods)
     bear_values = bridge_factor_values_by_period(factor_payload, "bear", projection_periods)
+    base_values = bridge_factor_values_by_period(
+      factor_payload,
+      "base",
+      projection_periods,
+      allow_scalar=True,
+    )
     if not bull_values or not bear_values:
       continue
 
@@ -281,7 +375,57 @@ def bridge_projection_persistence(
       )
       continue
 
-    entry = {
+    if getattr(resolution, "owner_id", None) and base_values:
+      existing_base_values, existing_base_error = bridge_existing_base_values(
+        ticker=ticker_upper,
+        owner_id=resolution.owner_id,
+        projection_periods=projection_periods,
+        model_override_fn=model_override_fn,
+      )
+      if existing_base_error:
+        persistence["failures"] += 1
+        failure_details.append(
+          {
+            "factor": factor_name,
+            "rate_key": resolution.anchor_id,
+            "owner_key": resolution.owner_id,
+            "error": existing_base_error,
+          }
+        )
+        continue
+      if not existing_base_values:
+        persistence["failures"] += 1
+        failure_details.append(
+          {
+            "factor": factor_name,
+            "rate_key": resolution.anchor_id,
+            "owner_key": resolution.owner_id,
+            "error": (
+              "base projection missing for direct bridge persistence; run the FMS "
+              "earnings-scenarios path or seed the owner base projection first"
+            ),
+          }
+        )
+        continue
+      ordering_issues = bridge_scenario_ordering_issues(
+        bull_values=bull_values,
+        base_values=existing_base_values,
+        bear_values=bear_values,
+      )
+      if ordering_issues:
+        persistence["failures"] += 1
+        failure_details.append(
+          {
+            "factor": factor_name,
+            "rate_key": resolution.anchor_id,
+            "owner_key": resolution.owner_id,
+            "error": "scenario_ordering_violation_against_persisted_base",
+            "detail": ";".join(ordering_issues[:5]),
+          }
+        )
+        continue
+
+    anchor_entry = {
       "scenarios": {
         "bull": bridge_scenario_entry(
           factor_payload=factor_payload,
@@ -307,7 +451,7 @@ def bridge_projection_persistence(
       ticker=ticker_upper,
       action="set_projection",
       rate_key=resolution.anchor_id,
-      entry=entry,
+      entry=anchor_entry,
       expected_scenarios=["bull", "bear"],
     )
     if result.get("status") != "success":
@@ -320,6 +464,7 @@ def bridge_projection_persistence(
         }
       )
       continue
+
     persistence["successes"] += 1
     persistence["schema_version_bumped"] = (
       persistence["schema_version_bumped"] or bool(result.get("schema_version_bumped"))
@@ -333,9 +478,12 @@ def bridge_projection_persistence(
 
 __all__ = [
   "bridge_confidence",
+  "bridge_existing_base_values",
   "bridge_factor_values_by_period",
   "bridge_normalize_sources",
+  "bridge_projection_scenarios",
   "bridge_projection_persistence",
+  "bridge_scenario_ordering_issues",
   "bridge_scenario_entry",
   "bridge_source_id_slug",
   "bridge_source_provider",
