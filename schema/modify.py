@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime
-import hashlib
 import os
 from enum import Enum
 from pathlib import Path
@@ -21,11 +20,28 @@ from schema.models import (
     FormulaType,
     ItemType,
     LineItem,
-    LineItemRef,
+    LineItemRef,  # noqa: F401 - compatibility alias for schema.modify imports
     SheetType,
     ValueProvenance,  # noqa: F401
 )
-from schema.refs import line_item_ref_from_obj
+from schema.modify_layout import (
+    _assert_layout_integrity,
+    _collect_sheet_items,
+    _extract_formula_refs,
+    _find_item_location,
+    _iter_item_formula_specs,  # noqa: F401 - compatibility alias for schema.modify imports
+    _iter_model_items,
+    _matches_custom_concept_target,
+    _replace_refs,  # noqa: F401 - compatibility alias for schema.modify imports
+    _replace_refs_in_item,
+)
+from schema.modify_persistence import (
+    _MissingFile,
+    _read_optional_bytes,
+    _restore_optional_bytes,
+    _sha256,
+)
+from schema.refs import line_item_ref_from_obj  # noqa: F401 - compatibility alias for schema.modify imports
 from schema.renderer import (
     _fixed_cell_anchor_period,
     _spec_for_period,  # noqa: F401
@@ -33,6 +49,7 @@ from schema.renderer import (
     render_plan_to_addin_payload,
 )
 from schema.segments import _shift_rows
+from schema import serialization
 from schema.tools import _cache, load as _load_model_cache
 
 
@@ -123,19 +140,14 @@ def _counts(results: List[OperationResult]) -> tuple[int, int]:
         sum(1 for result in results if result.status == "error"),
     )
 
-
-def _sha256(path: str) -> Optional[str]:
-    """Return a file's SHA-256 hex digest, or None if the file does not exist."""
-
-    file_path = Path(path)
-    if not file_path.is_file():
-        return None
-
-    digest = hashlib.sha256()
-    with file_path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _schema_sidecar_matches(file_path: str, expected_model: FinancialModel) -> tuple[bool, str]:
+    loaded = serialization.try_load_sidecar(file_path)
+    if loaded is None:
+        return False, "schema_sidecar_unavailable"
+    loaded_model, _base_results = loaded
+    if loaded_model.model_dump(mode="json") != expected_model.model_dump(mode="json"):
+        return False, "schema_sidecar_model_mismatch"
+    return True, "ok"
 
 
 def apply_modify_request(
@@ -229,6 +241,9 @@ def apply_modify_request(
 
     output_path: Optional[str] = None
     file_write_succeeded = False
+    original_file_bytes: bytes | object = _MissingFile
+    original_sidecar_bytes: bytes | object = _MissingFile
+    sidecar_path = serialization.sidecar_path(file_path)
     if target in {"file", "both"}:
         current_sha = _sha256(file_path)
         if current_sha != expected_sha and not force_overwrite:
@@ -241,6 +256,8 @@ def apply_modify_request(
                 results=results,
             )
 
+        original_file_bytes = _read_optional_bytes(Path(file_path))
+        original_sidecar_bytes = _read_optional_bytes(sidecar_path)
         tmp_path = file_path + ".tmp"
         try:
             write_xlsx(new_plan, tmp_path)
@@ -275,6 +292,34 @@ def apply_modify_request(
             historical_cutoff_year=cutoff,
             persist=file_write_succeeded,
         )
+        if file_write_succeeded:
+            sidecar_ok, sidecar_reason = _schema_sidecar_matches(file_path, snapshot)
+            if not sidecar_ok:
+                _restore_optional_bytes(Path(file_path), original_file_bytes)
+                _restore_optional_bytes(sidecar_path, original_sidecar_bytes)
+                _cache.pop(key, None)
+                results.append(
+                    OperationResult(
+                        op_type=OperationType.set_value,
+                        item_id=None,
+                        status="error",
+                        reason=sidecar_reason,
+                        details={
+                            "hint": (
+                                "Workbook writes must persist a matching .schema.json sidecar; "
+                                "without it, future model tools lose canonical template item ids."
+                            ),
+                            "sidecar_path": str(sidecar_path),
+                        },
+                    )
+                )
+                applied, failed = _counts(results)
+                return ModifyResult(
+                    operations_applied=applied,
+                    operations_failed=failed,
+                    rolled_back=True,
+                    results=results,
+                )
 
     applied, failed = _counts(results)
     return ModifyResult(
@@ -795,158 +840,3 @@ def _apply_reorder_items(
     model.build_index()
 
     return OperationResult(op_type=op.type, item_id=op.item_id, status="ok")
-
-
-def _assert_layout_integrity(model: FinancialModel) -> None:
-    """Validate row/coordinate integrity after mutation."""
-
-    for sheet_name, sheet in model.sheets.items():
-        items = [item for section in sheet.sections for item in section.line_items]
-        is_fixed_cell_sheet = sheet.sheet_type in {SheetType.valuation, SheetType.scenarios}
-
-        if is_fixed_cell_sheet:
-            occupied: Dict[tuple[int, str], str] = {}
-            for item in items:
-                if item.column is None:
-                    continue
-                key = (int(item.row), item.column.upper())
-                if key in occupied:
-                    raise LayoutError(
-                        f"coordinate collision in {sheet_name}: "
-                        f"({item.row}, {item.column}) used by {occupied[key]} and {item.id}"
-                    )
-                occupied[key] = item.id
-            continue
-
-        seen_rows: Dict[int, str] = {}
-        for item in items:
-            row = int(item.row)
-            if row in seen_rows:
-                raise LayoutError(
-                    f"row collision in {sheet_name}: row {row} used by "
-                    f"{seen_rows[row]} and {item.id}"
-                )
-            seen_rows[row] = item.id
-
-
-def _collect_sheet_items(model: FinancialModel, sheet_name: str) -> List[LineItem]:
-    sheet = model.sheets[sheet_name]
-    return [item for section in sheet.sections for item in section.line_items]
-
-
-def _matches_custom_concept_target(model: FinancialModel, item_id: str) -> bool:
-    """Return True if item_id matches a custom_concept target for this model's ticker.
-
-    False on any ambiguity, including a missing ticker, missing override file, or
-    parse/load error.
-    """
-
-    from schema.overrides import load_ticker_overrides
-
-    ticker = getattr(model.company, "ticker", None) if model.company else None
-    if not ticker:
-        return False
-
-    try:
-        overrides = load_ticker_overrides(ticker)
-    except Exception:
-        return False
-    if overrides is None:
-        return False
-
-    try:
-        for _concept_id, entry in (overrides.custom_concepts or {}).items():
-            if entry.get("target_item_id") == item_id:
-                return True
-    except Exception:
-        return False
-    return False
-
-
-def _extract_formula_refs(obj: Any) -> List[LineItemRef]:
-    if obj is None:
-        return []
-    if isinstance(obj, LineItemRef):
-        return [obj]
-    if isinstance(obj, FormulaSpec):
-        return _extract_formula_refs(obj.params)
-
-    coerced = line_item_ref_from_obj(obj)
-    if coerced is not None:
-        return [coerced]
-
-    refs: List[LineItemRef] = []
-    if isinstance(obj, dict):
-        for value in obj.values():
-            refs.extend(_extract_formula_refs(value))
-    elif isinstance(obj, (list, tuple, set)):
-        for value in obj:
-            refs.extend(_extract_formula_refs(value))
-    return refs
-
-
-def _iter_model_items(model: FinancialModel) -> List[LineItem]:
-    return [
-        item
-        for sheet in model.sheets.values()
-        for section in sheet.sections
-        for item in section.line_items
-    ]
-
-
-def _iter_item_formula_specs(item: LineItem) -> List[FormulaSpec]:
-    specs: List[FormulaSpec] = []
-    if item.historical is not None:
-        specs.append(item.historical)
-    if item.projected is not None:
-        specs.append(item.projected)
-    if item.overrides:
-        specs.extend(item.overrides.values())
-    return specs
-
-
-def _replace_refs_in_item(item: LineItem, old_id: str, new_id: str) -> None:
-    for spec in _iter_item_formula_specs(item):
-        spec.params = _replace_refs(spec.params, old_id, new_id)
-
-
-def _replace_refs(obj: Any, old_id: str, new_id: str) -> Any:
-    if isinstance(obj, LineItemRef):
-        if obj.id == old_id:
-            return LineItemRef(
-                id=new_id,
-                t=obj.t,
-                resolved=obj.resolved,
-                period_anchor=obj.period_anchor,
-            )
-        return obj
-
-    coerced = line_item_ref_from_obj(obj)
-    if coerced is not None and isinstance(obj, dict):
-        if coerced.id != old_id:
-            return obj
-        replacement = coerced.model_dump()
-        replacement["id"] = new_id
-        return replacement
-
-    if isinstance(obj, dict):
-        return {key: _replace_refs(value, old_id, new_id) for key, value in obj.items()}
-    if isinstance(obj, list):
-        return [_replace_refs(value, old_id, new_id) for value in obj]
-    if isinstance(obj, tuple):
-        return tuple(_replace_refs(value, old_id, new_id) for value in obj)
-    if isinstance(obj, set):
-        return {_replace_refs(value, old_id, new_id) for value in obj}
-    return obj
-
-
-def _find_item_location(
-    model: FinancialModel,
-    item_id: str,
-) -> Optional[tuple[str, Any, Any, int]]:
-    for sheet_name, sheet in model.sheets.items():
-        for section in sheet.sections:
-            for index, item in enumerate(section.line_items):
-                if item.id == item_id:
-                    return sheet_name, sheet, section, index
-    return None

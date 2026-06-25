@@ -40,6 +40,7 @@ def build_model_build_deps_function(
       logger=ns["logging"],
       historical_sources_touch_fmp=ns["_historical_sources_touch_fmp"],
       historical_sources_touch_edgar=ns["_historical_sources_touch_edgar"],
+      fmp_zero_missing_edgar_fallback_needed=ns["_fmp_zero_missing_edgar_fallback_needed"],
       asyncio_run=ns["asyncio"].run,
       fetch_fmp_financials=ns["fetch_fmp_financials"],
       build_valuation_comps_fallback=ns["_build_valuation_comps_fallback"],

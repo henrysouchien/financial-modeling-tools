@@ -26,6 +26,28 @@ SegmentRevenueObservationSource = Literal["edgar_fact", "caller_override", "deri
 SegmentRevenueComparability = Literal["comparable", "not_comparable", "unknown", "not_applicable"]
 
 
+def _segment_observation_structural_basis_key(
+    *,
+    source: str | None,
+    axis: str | None,
+    member: str | None,
+    tag: str | None,
+) -> str | None:
+    if source != "edgar_fact":
+        return None
+    parts = [_segment_basis_component(value) for value in (axis, member, tag)]
+    if any(part is None for part in parts):
+        return None
+    return "edgar_fact:" + "|".join(part for part in parts if part is not None)
+
+
+def _segment_basis_component(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _normalize_mapping_keys(value: object, *, field_name: str) -> dict[str, Any]:
     if value is None:
         return {}
@@ -83,7 +105,16 @@ class SegmentRevenueObservation(_ContractModel):
     comparability_note: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
-    def _not_comparable_requires_note(self) -> "SegmentRevenueObservation":
+    def _normalize_basis_and_comparability(self) -> "SegmentRevenueObservation":
+        if not self.basis_key:
+            basis_key = _segment_observation_structural_basis_key(
+                source=self.source,
+                axis=self.axis,
+                member=self.member,
+                tag=self.tag,
+            )
+            if basis_key:
+                self.basis_key = basis_key
         if self.comparable_with_prior == "not_comparable" and not self.comparability_note:
             raise ValueError("not_comparable segment observations require comparability_note")
         return self

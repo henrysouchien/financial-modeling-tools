@@ -235,7 +235,8 @@
     "canonical_tag": "us-gaap:ShareBasedCompensation",
     "fmp_field": "stockBasedCompensation",
     "fmp_endpoint": "cash_flow",
-    "preferred_source": "fmp"
+    "preferred_source": "fmp",
+    "treat_zero_as_missing": true
   },
   "cash_and_equivalents": {
     "concept_id": "cash_and_equivalents",
@@ -618,6 +619,22 @@
     "fmp_endpoint": "balance_sheet",
     "preferred_source": "fmp",
     "validation_tolerance_pct": 0.005
+  },
+  "treasury_stock": {
+    "concept_id": "treasury_stock",
+    "statement": "balance_sheet",
+    "edgar_tags": [
+      "TreasuryStockCommonValue",
+      "TreasuryStockValue",
+      "TreasuryStockPreferredValue"
+    ],
+    "nonadmissible_reason_code": "disclosure_or_context_mismatch",
+    "fmp_field": "treasuryStock",
+    "fmp_endpoint": "balance_sheet",
+    "edgar_negate": true,
+    "fmp_negate": true,
+    "preferred_source": "fmp",
+    "notes": "Contra-equity row. Normalize provider values to negative so equity subline reconciliation includes treasury stock in the same sign convention as total equity."
   },
   "common_stock": {
     "concept_id": "common_stock",

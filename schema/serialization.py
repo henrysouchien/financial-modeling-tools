@@ -17,6 +17,10 @@ import pydantic
 
 from .models import MODELS_SCHEMA_VERSION, FinancialModel
 from .reader import READER_VERSION
+from .valuation_schema_invariant import (
+    assert_valuation_template_schema,
+    should_enforce_valuation_template_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +282,18 @@ def save_sidecar(
     try:
         source_hash = _sha256_file(os.path.abspath(file_path))
         schema_path = sidecar_path(file_path)
+        enforce_valuation_schema = should_enforce_valuation_template_schema(
+            model,
+            workbook_path=file_path,
+        )
+        if enforce_valuation_schema:
+            assert_valuation_template_schema(
+                model,
+                origin="serialization.save_sidecar.pre",
+                workbook_path=file_path,
+                sidecar_path=schema_path,
+                module_path=__file__,
+            )
         schema_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "kind": _SIDECAR_KIND,
@@ -315,6 +331,15 @@ def save_sidecar(
                 os.close(dir_fd)
         except OSError as exc:
             logger.debug("Parent-dir fsync skipped for %s: %s", schema_path.parent, exc)
+        if enforce_valuation_schema:
+            assert_valuation_template_schema(
+                model,
+                origin="serialization.save_sidecar.post",
+                workbook_path=file_path,
+                sidecar_path=schema_path,
+                sidecar_hash=_sha256_file(str(schema_path)),
+                module_path=__file__,
+            )
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("Schema sidecar save failed for %s: %s", file_path, exc)
 

@@ -288,7 +288,7 @@ def model_semantics_forecast_plan_issues(
         if submitted_unit:
             accepted_units = _accepted_units_for_plan_entry(
                 plan_entry,
-                submitted_key=_unit_driver_key_candidate(entry, resolved),
+                submitted_key=_unit_driver_key_candidate(entry, resolved, plan_entry=plan_entry),
             )
             if submitted_unit not in accepted_units:
                 issues.append(
@@ -421,10 +421,17 @@ def _behavior_for_forecast_entry(
 def _unit_driver_key_candidate(
     entry: ForecastArtifactEntry,
     resolved: list[tuple[str, str, str]],
+    *,
+    plan_entry: Any | None = None,
 ) -> str:
+    canonical_entry_key = str(getattr(plan_entry, "driver_key", "") or "").strip()
     for suffix, value, _canonical in resolved:
-        if suffix == "item_id":
+        if suffix == "item_id" and str(value or "").strip() != canonical_entry_key:
             return value
+    if plan_entry is not None:
+        for _suffix, value, _canonical in resolved:
+            if str(value or "").strip() != canonical_entry_key and _is_growth_rate_alias(plan_entry, value):
+                return value
     return entry.item_id or entry.driver_key
 
 
@@ -439,11 +446,22 @@ def _is_growth_rate_alias(plan_entry: Any, submitted_key: str) -> bool:
     key = str(submitted_key or "").strip()
     if not key:
         return False
+    aliases = {str(value or "").strip() for value in getattr(plan_entry, "aliases", []) or []}
+    if key in aliases and _looks_like_growth_rate_key(key):
+        return True
     segment_id = str(getattr(plan_entry, "segment_id", "") or "").strip()
     node_id = str(getattr(plan_entry, "driver_node_id", "") or "").strip()
     if not (segment_id and node_id):
         return False
     return key.startswith(f"{segment_id}.{node_id}.") or key.startswith(f"bm.{segment_id}.{node_id}__")
+
+
+def _looks_like_growth_rate_key(key: str) -> bool:
+    text = str(key or "").strip().lower()
+    if not text:
+        return False
+    suffix = text.rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    return "growth" in suffix or "rate" in suffix or suffix.endswith("_pct")
 
 
 def _unit_value(value: Any) -> str:

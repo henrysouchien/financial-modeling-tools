@@ -1,14 +1,35 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Discriminator, Field, field_validator, model_validator
 
+from .business_model_driver_plan import (
+    _TEMPLATE_DRIVER_KEY_ALIASES,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _business_model_id,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _consolidated_driver_assumption_entries,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _driver_assumption_aliases,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _driver_assumption_entry,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _existing_driver_key_resolves_to_input,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _iter_driver_nodes,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _normal_existing_driver_key,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _plan_node_id,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _resolved_existing_driver_alias,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _template_driver_aliases,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _template_driver_assumption_entry,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _template_input_item_ids,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _unique_nonempty,
+    derive_driver_assumption_plan,
+    driver_assumption_key,
+)
+from .business_model_driver_specs import (
+    _capital_source_driver_specs,  # noqa: F401 - compatibility alias for schema.business_model imports
+    _working_capital_driver_specs,  # noqa: F401 - compatibility alias for schema.business_model imports
+)
 from .models import Unit
 from .thesis_shared_slice import (
     _ContractModel,
-    _normalize_optional_identifier,
     _normalize_ticker,
 )
 
@@ -534,135 +555,6 @@ class DriverAssumptionPlan(_ContractModel):
 
     def accepted_driver_keys(self) -> list[str]:
         return sorted({*self.driver_keys, *self.alias_map})
-
-
-def driver_assumption_key(
-    *,
-    business_model_id: str,
-    revision: str,
-    segment_id: str,
-    driver_node_id: str,
-) -> str:
-    return f"bm:{business_model_id}@{revision}:{segment_id}:{driver_node_id}"
-
-
-def derive_driver_assumption_plan(
-    business_model: BusinessModel,
-    *,
-    business_model_id: str | None = None,
-) -> DriverAssumptionPlan:
-    normalized_business_model_id = _business_model_id(business_model, business_model_id)
-    revision = str(business_model.metadata.revision or "").strip()
-    if not revision:
-        raise ValueError("BusinessModel metadata.revision is required to derive DriverAssumptionPlan")
-
-    entries: list[DriverAssumptionPlanEntry] = []
-    for segment in business_model.segments:
-        segment_id = segment.id or "consolidated"
-        for node in _iter_driver_nodes(segment.revenue_model.decomposition):
-            entries.append(
-                _driver_assumption_entry(
-                    business_model_id=normalized_business_model_id,
-                    revision=revision,
-                    segment_id=segment_id,
-                    node=node,
-                )
-            )
-
-    return DriverAssumptionPlan(
-        business_model_id=normalized_business_model_id,
-        revision=revision,
-        entries=entries,
-    )
-
-
-def _business_model_id(business_model: BusinessModel, business_model_id: str | None) -> str:
-    normalized = str(business_model_id or "").strip()
-    if normalized:
-        return normalized
-    return f"{business_model.company.ticker}_business_model"
-
-
-def _iter_driver_nodes(nodes: list[DriverNode]):
-    for node in nodes:
-        yield node
-        if node.children:
-            yield from _iter_driver_nodes(node.children)
-
-
-def _driver_assumption_entry(
-    *,
-    business_model_id: str,
-    revision: str,
-    segment_id: str,
-    node: DriverNode,
-) -> DriverAssumptionPlanEntry:
-    key = driver_assumption_key(
-        business_model_id=business_model_id,
-        revision=revision,
-        segment_id=segment_id,
-        driver_node_id=node.id,
-    )
-    return DriverAssumptionPlanEntry(
-        driver_key=key,
-        business_model_id=business_model_id,
-        revision=revision,
-        segment_id=segment_id,
-        driver_node_id=node.id,
-        label=node.label,
-        unit=node.unit,
-        factors=list(node.factors or []),
-        behavior=node.behavior,
-        management_target=node.management_target,
-        compile_target_type=node.compile_to.target_type,
-        existing_driver_key=node.compile_to.existing_driver_key,
-        base_case_required=node.compile_to.target_type in {"assumption_row", "existing_row"},
-        aliases=_driver_assumption_aliases(segment_id, node),
-    )
-
-
-def _driver_assumption_aliases(segment_id: str, node: DriverNode) -> list[str]:
-    legacy_driver_key = f"{segment_id}.{node.id}"
-    existing_driver_key = node.compile_to.existing_driver_key
-    aliases = [
-        legacy_driver_key,
-        f"bm.{segment_id}.{node.id}",
-        existing_driver_key,
-        _resolved_existing_driver_alias(existing_driver_key),
-    ]
-    if node.driver is not None and node.driver.type == "growth":
-        rate_key = node.driver.params.rate_key
-        aliases.extend(
-            [
-                f"{legacy_driver_key}.{rate_key}",
-                f"bm.{segment_id}.{node.id}__{rate_key}",
-            ]
-        )
-    return _unique_nonempty(aliases)
-
-
-def _resolved_existing_driver_alias(existing_driver_key: str | None) -> str | None:
-    if not existing_driver_key:
-        return None
-    try:
-        from .driver_resolver import resolve_driver_key
-
-        resolved = resolve_driver_key(existing_driver_key)
-    except Exception:
-        return None
-    return resolved if resolved != existing_driver_key else None
-
-
-def _unique_nonempty(values: list[str | None]) -> list[str]:
-    seen: set[str] = set()
-    normalized: list[str] = []
-    for value in values:
-        text = str(value or "").strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        normalized.append(text)
-    return normalized
 
 
 DriverNode.model_rebuild()

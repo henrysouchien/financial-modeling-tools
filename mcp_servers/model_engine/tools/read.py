@@ -1,21 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any
 
+from mcp_servers.model_engine.tools import read_scenario as _read_scenario
+from mcp_servers.model_engine.tools import read_valuation as _read_valuation
 
-_SCENARIO_TABLE_PREFIX = "tpl.a.scenario_tables."
-_SCENARIO_TABLE_SCALAR_KEYS = {
-  "all",
-  "model_value",
-  "override",
-  "projection",
-  "scenario_value",
-  "value",
-}
-_MISSING = object()
+
+_SCENARIO_TABLE_PREFIX = _read_scenario.SCENARIO_TABLE_PREFIX
+_SCENARIO_TABLE_SCALAR_KEYS = _read_scenario.SCENARIO_TABLE_SCALAR_KEYS
+_MISSING = _read_scenario.MISSING
 
 
 @dataclass(frozen=True)
@@ -44,21 +39,11 @@ class ModelReadDeps:
 
 
 def _is_scenario_table_value_item(item_id: str) -> bool:
-  if not item_id.startswith(_SCENARIO_TABLE_PREFIX):
-    return False
-  return not item_id.rsplit(".", 1)[-1].startswith("scenario_")
+  return _read_scenario.is_scenario_table_value_item(item_id)
 
 
 def _scenario_table_scalar_value(period_values: Any) -> Any:
-  if not isinstance(period_values, dict):
-    return period_values
-  if len(period_values) != 1:
-    return _MISSING
-  raw_key, raw_value = next(iter(period_values.items()))
-  key = str(raw_key).strip().lower()
-  if key in _SCENARIO_TABLE_SCALAR_KEYS:
-    return raw_value
-  return _MISSING
+  return _read_scenario.scenario_table_scalar_value(period_values)
 
 
 def _projection_periods_for_scenario_table_item(
@@ -68,24 +53,16 @@ def _projection_periods_for_scenario_table_item(
   item_id: str,
   historical_cutoff_year: int | None,
 ) -> list[int]:
-  result = deps.values(
-    file_path,
-    [item_id],
-    periods="projection",
+  return _read_scenario.projection_periods_for_scenario_table_item(
+    deps=deps,
+    file_path=file_path,
+    item_id=item_id,
     historical_cutoff_year=historical_cutoff_year,
   )
-  rows = result.get("items") if isinstance(result, dict) else None
-  first_row = rows[0] if isinstance(rows, list) and rows else None
-  if isinstance(first_row, dict) and first_row.get("error_code"):
-    raise KeyError(first_row.get("error") or f"Unknown item_id: {item_id}")
-  values = first_row.get("values") if isinstance(first_row, dict) else None
-  if not isinstance(values, dict) or not values:
-    return []
-  return [int(period) for period in values]
 
 
 def _is_number(value: Any) -> bool:
-  return isinstance(value, (int, float)) and not isinstance(value, bool)
+  return _read_scenario.is_number(value)
 
 
 def _scenario_no_effect_warning(
@@ -93,37 +70,11 @@ def _scenario_no_effect_warning(
   result: dict[str, Any],
   overrides: dict[str, dict[int, float]],
 ) -> dict[str, Any] | None:
-  comparisons = result.get("comparisons")
-  if not overrides or not isinstance(comparisons, list) or not comparisons:
-    return None
-  numeric_comparisons = [
-    comparison
-    for comparison in comparisons
-    if isinstance(comparison, dict)
-    and _is_number(comparison.get("base"))
-    and _is_number(comparison.get("scenario"))
-  ]
-  if not numeric_comparisons:
-    return None
-  if any(
-    abs(float(comparison["scenario"]) - float(comparison["base"])) > 1e-9
-    for comparison in numeric_comparisons
-  ):
-    return None
-  return {
-    "code": "scenario_no_effect",
-    "kind": "scenario_no_effect",
-    "message": (
-      "Scenario override completed but every numeric comparison was unchanged; "
-      "the override rows may not be decision-usable scenario anchors."
-    ),
-    "override_item_ids": list(overrides.keys())[:20],
-    "compare_item_ids": [
-      str(comparison.get("id") or comparison.get("item_id") or "")
-      for comparison in numeric_comparisons[:20]
-      if comparison.get("id") or comparison.get("item_id")
-    ],
-  }
+  return _read_scenario.scenario_no_effect_warning(
+    result=result,
+    overrides=overrides,
+    is_number_fn=_is_number,
+  )
 
 
 def _attach_scenario_no_effect_guidance(
@@ -131,24 +82,11 @@ def _attach_scenario_no_effect_guidance(
   result: dict[str, Any],
   overrides: dict[str, dict[int, float]],
 ) -> dict[str, Any]:
-  warning = _scenario_no_effect_warning(result=result, overrides=overrides)
-  if warning is None:
-    return result
-  guided = dict(result)
-  warnings = guided.get("warnings")
-  warning_rows = list(warnings) if isinstance(warnings, list) else []
-  warning_rows.append(warning)
-  guided["warnings"] = warning_rows
-  next_actions = guided.get("next_actions")
-  action_rows = list(next_actions) if isinstance(next_actions, list) else []
-  action_rows.extend(
-    [
-      "Call model_scenario_topology before the next model_scenario attempt and override returned bull/base/bear case row IDs for one scenario case at a time; model_scenario maps each case row to its owning economic row internally.",
-      "If topology is unresolved or auto-selected case-row overrides still produce zero output deltas, persist INSUFFICIENT_DATA through FMS instead of continuing exploratory reads.",
-    ]
+  return _read_scenario.attach_scenario_no_effect_guidance(
+    result=result,
+    overrides=overrides,
+    scenario_no_effect_warning_fn=_scenario_no_effect_warning,
   )
-  guided["next_actions"] = action_rows
-  return guided
 
 
 def _model_quality_readiness_for_valuation_summary(
@@ -158,163 +96,45 @@ def _model_quality_readiness_for_valuation_summary(
   historical_cutoff_year: int | None,
   valuation_input_readiness: dict[str, Any],
 ) -> dict[str, Any]:
-  try:
-    summary_result = deps.summarize(
-      file_path,
-      historical_cutoff_year=historical_cutoff_year,
-      include_items=False,
-    )
-    readiness = summary_result.get("model_quality_readiness")
-  except Exception as exc:
-    readiness = {
-      "status": "incomplete",
-      "scope": "model_quality",
-      "projection_periods": [],
-      "domains": {},
-      "issues": [
-        {
-          "code": "model_quality_readiness_unavailable",
-          "severity": "warning",
-          "domain": "valuation",
-          "detail": (
-            "model_summarize could not compute model_quality_readiness "
-            f"for this valuation summary: {exc}"
-          ),
-        }
-      ],
-      "summary": "incomplete: model_quality_readiness unavailable",
-    }
-  if not isinstance(readiness, dict):
-    readiness = {
-      "status": "incomplete",
-      "scope": "model_quality",
-      "projection_periods": [],
-      "domains": {},
-      "issues": [
-        {
-          "code": "model_quality_readiness_unavailable",
-          "severity": "warning",
-          "domain": "valuation",
-          "detail": "model_summarize did not return model_quality_readiness",
-        }
-      ],
-      "summary": "incomplete: model_quality_readiness unavailable",
-    }
-  return _merge_valuation_input_readiness(readiness, valuation_input_readiness)
+  return _read_valuation.model_quality_readiness_for_valuation_summary(
+    deps=deps,
+    file_path=file_path,
+    historical_cutoff_year=historical_cutoff_year,
+    valuation_input_readiness=valuation_input_readiness,
+    merge_valuation_input_readiness_fn=_merge_valuation_input_readiness,
+  )
 
 
 def _merge_valuation_input_readiness(
   readiness: dict[str, Any],
   valuation_input_readiness: dict[str, Any],
 ) -> dict[str, Any]:
-  result = deepcopy(readiness)
-  result.setdefault("scope", "model_quality")
-  result.setdefault("projection_periods", [])
-  domains = result.setdefault("domains", {})
-  if not isinstance(domains, dict):
-    domains = {}
-    result["domains"] = domains
-  issues = result.setdefault("issues", [])
-  if not isinstance(issues, list):
-    issues = []
-    result["issues"] = issues
-
-  input_issue = _valuation_input_quality_issue(valuation_input_readiness)
-  if input_issue is not None:
-    valuation_domain = domains.get("valuation")
-    if not isinstance(valuation_domain, dict):
-      valuation_domain = {
-        "status": "ready",
-        "required_items": [
-          "tpl.v.current_valuation.stock_price",
-          "tpl.v.current_valuation.shares_outstanding",
-          "tpl.v.current_valuation.net_debt",
-          "tpl.v.dcf.dcf_price",
-        ],
-        "missing_periods": [],
-        "issues": [],
-      }
-      domains["valuation"] = valuation_domain
-    domain_issues = valuation_domain.get("issues")
-    if not isinstance(domain_issues, list):
-      domain_issues = []
-      valuation_domain["issues"] = domain_issues
-    _upsert_quality_issue(domain_issues, input_issue)
-    _upsert_quality_issue(issues, input_issue)
-    valuation_domain["status"] = _quality_status(domain_issues)
-
-    result["status"] = _quality_status(
-      issues,
-      fallback=str(result.get("status") or "unknown"),
-    )
-    result["summary"] = _model_quality_summary(result["status"], domains)
-    return result
-
-  status = str(result.get("status") or "unknown")
-  if status not in {"ready", "incomplete", "blocked", "unknown"}:
-    status = _quality_status(issues, fallback="unknown")
-    result["status"] = status
-  if not isinstance(result.get("summary"), str) or not result.get("summary"):
-    result["summary"] = _model_quality_summary(status, domains)
-  return result
+  return _read_valuation.merge_valuation_input_readiness(
+    readiness,
+    valuation_input_readiness,
+    valuation_input_quality_issue_fn=_valuation_input_quality_issue,
+    upsert_quality_issue_fn=_upsert_quality_issue,
+    quality_status_fn=_quality_status,
+    model_quality_summary_fn=_model_quality_summary,
+  )
 
 
 def _valuation_input_quality_issue(
   valuation_input_readiness: dict[str, Any],
 ) -> dict[str, Any] | None:
-  if valuation_input_readiness.get("status") != "incomplete":
-    return None
-  missing = [str(item) for item in valuation_input_readiness.get("missing") or []]
-  severity = "blocking" if missing else "warning"
-  detail = (
-    f"valuation_input_readiness is incomplete; missing inputs: {', '.join(missing)}"
-    if missing
-    else "valuation_input_readiness is incomplete; only placeholder/staleness flags may be present"
-  )
-  return {
-    "code": "valuation_inputs_incomplete",
-    "severity": severity,
-    "domain": "valuation",
-    "detail": detail,
-    "item_id": None,
-    "missing_periods": [],
-    "related_item_ids": missing,
-  }
+  return _read_valuation.valuation_input_quality_issue(valuation_input_readiness)
 
 
 def _upsert_quality_issue(issues: list[Any], issue: dict[str, Any]) -> None:
-  key = (issue.get("domain"), issue.get("code"))
-  for index, existing in enumerate(issues):
-    if (
-      isinstance(existing, dict)
-      and (existing.get("domain"), existing.get("code")) == key
-    ):
-      issues[index] = issue
-      return
-  issues.append(issue)
+  return _read_valuation.upsert_quality_issue(issues, issue)
 
 
 def _quality_status(issues: list[Any], *, fallback: str = "ready") -> str:
-  fallback = fallback if fallback in {"ready", "incomplete", "blocked", "unknown"} else "unknown"
-  if any(
-    isinstance(issue, dict) and issue.get("severity") == "blocking"
-    for issue in issues
-  ) or fallback == "blocked":
-    return "blocked"
-  if issues or fallback == "incomplete":
-    return "incomplete"
-  return fallback
+  return _read_valuation.quality_status(issues, fallback=fallback)
 
 
 def _model_quality_summary(status: str, domains: dict[str, Any]) -> str:
-  if status == "ready":
-    return "share count, working capital, valuation, and segment-basis quality checks are ready"
-  pieces = [
-    f"{domain}={readiness.get('status')}"
-    for domain, readiness in domains.items()
-    if isinstance(readiness, dict) and readiness.get("status") != "ready"
-  ]
-  return f"{status}: " + ", ".join(pieces) if pieces else f"{status}: model quality readiness unavailable"
+  return _read_valuation.model_quality_summary(status, domains)
 
 
 def model_summarize_handler(
@@ -927,6 +747,18 @@ __all__ = [
   "ModelReadDeps",
   "ModelReadToolFunctions",
   "build_model_read_tool_functions",
+  "_attach_scenario_no_effect_guidance",
+  "_is_number",
+  "_is_scenario_table_value_item",
+  "_merge_valuation_input_readiness",
+  "_model_quality_readiness_for_valuation_summary",
+  "_model_quality_summary",
+  "_projection_periods_for_scenario_table_item",
+  "_scenario_no_effect_warning",
+  "_scenario_table_scalar_value",
+  "_quality_status",
+  "_upsert_quality_issue",
+  "_valuation_input_quality_issue",
   "model_drivers_handler",
   "model_find_handler",
   "model_presentation_compare_handler",

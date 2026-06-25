@@ -113,7 +113,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.header.millions_except_per_share_data",
@@ -128,7 +128,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.header.millions_except_per_share_data",
@@ -190,7 +190,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.a.header.year_header",
@@ -206,7 +206,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.a.header.year_header",
@@ -226,7 +226,7 @@
               "overrides": {
                 "2034": {
                   "type": "ref",
-                  "subtype": null,
+                  "subtype": "ref_with_adjustment",
                   "params": {
                     "source": {
                       "id": "tpl.a.header.year_header",
@@ -406,7 +406,7 @@
               "historical": null,
               "projected": {
                 "type": "growth",
-                "subtype": null,
+                "subtype": "compound",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.volume_driver_1",
@@ -543,7 +543,7 @@
               "historical": null,
               "projected": {
                 "type": "growth",
-                "subtype": null,
+                "subtype": "compound",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.volume_driver_2",
@@ -627,7 +627,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.volume_2_growth",
@@ -686,7 +686,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.volume_driver_2",
@@ -707,7 +707,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.volume_driver_2",
@@ -732,7 +732,7 @@
               "overrides": {
                 "2024": {
                   "type": "driver",
-                  "subtype": null,
+                  "subtype": "base_x_rate",
                   "params": {
                     "base": {
                       "id": "tpl.a.revenue_drivers.volume_driver_1",
@@ -866,7 +866,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "op": "*",
@@ -893,7 +893,7 @@
               },
               "projected": {
                 "type": "growth",
-                "subtype": null,
+                "subtype": "compound",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.price_driver_1",
@@ -973,7 +973,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.price_1_growth",
@@ -1107,7 +1107,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.business_segment_1_revenue",
@@ -1122,7 +1122,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "op": "*",
@@ -1261,7 +1261,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.current_asset_4",
@@ -1276,7 +1276,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "op": "AVG",
@@ -1371,7 +1371,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_volume_growth",
@@ -1420,7 +1420,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_revenue",
@@ -1452,7 +1452,7 @@
               },
               "projected": {
                 "type": "growth",
-                "subtype": null,
+                "subtype": "compound",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_price_driver_1",
@@ -1508,7 +1508,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_price_growth",
@@ -1555,7 +1555,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.business_segment_2_revenue",
@@ -1570,7 +1570,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_volume_driver_1",
@@ -1707,7 +1707,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.total_revenue",
@@ -1722,7 +1722,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -1930,7 +1930,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -1955,7 +1955,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -2011,7 +2011,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.gross_profit",
@@ -2026,7 +2026,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -2170,7 +2170,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.unit_economics.gross_profit",
@@ -2321,7 +2321,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.sales_and_marketing",
@@ -2336,7 +2336,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -2392,7 +2392,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.research_and_development",
@@ -2407,7 +2407,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -2463,7 +2463,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.general_and_administrative",
@@ -2478,7 +2478,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -2534,7 +2534,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -2564,7 +2564,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -2656,7 +2656,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.sales_and_marketing",
@@ -2677,7 +2677,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.sales_and_marketing_pct_revenue",
@@ -2693,7 +2693,24 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "ref_with_adjustment",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.operating_leverage.sales_and_marketing_pct_revenue",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    },
+                    "adjustment": 0.006
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2020,
                 2023,
@@ -2727,7 +2744,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.research_and_development",
@@ -2748,7 +2765,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.research_and_development_pct_revenue",
@@ -2764,7 +2781,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.operating_leverage.research_and_development_pct_revenue",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2023,
                 2024,
@@ -2795,7 +2828,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.general_and_administrative",
@@ -2816,14 +2849,15 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.general_and_administrative_pct_revenue",
                     "t": -1,
                     "resolved": true,
                     "period_anchor": "first"
-                  }
+                  },
+                  "adjustment": -0.001
                 },
                 "note": null,
                 "edgar_provenance": null,
@@ -2832,7 +2866,24 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "ref_with_adjustment",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.operating_leverage.general_and_administrative_pct_revenue",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    },
+                    "adjustment": 0.015
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2020,
                 2023,
@@ -2866,7 +2917,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.total_operating_expenses",
@@ -2887,7 +2938,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.total_operating_expenses",
@@ -2940,7 +2991,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.operating_income",
@@ -2955,7 +3006,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.operating_income",
@@ -3103,7 +3154,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.operating_income",
@@ -3124,7 +3175,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.operating_income",
@@ -3206,7 +3257,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -3230,7 +3281,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -3286,7 +3337,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -3310,7 +3361,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -3366,7 +3417,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.incremental_operating_income",
@@ -3387,7 +3438,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.operating_leverage.incremental_operating_income",
@@ -3482,7 +3533,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -3497,7 +3548,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -3557,7 +3608,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.interest_expense",
@@ -3572,7 +3623,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.interest_expense",
@@ -3619,7 +3670,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -3634,7 +3685,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -3694,7 +3745,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.depreciation_and_amortization_m",
@@ -3709,7 +3760,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.depreciation_and_amortization_m",
@@ -3755,7 +3806,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -3791,7 +3842,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -3860,7 +3911,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.stock_based_compensation_and_related_payroll_taxes",
@@ -3875,7 +3926,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.stock_based_compensation_and_related_payroll_taxes",
@@ -3935,7 +3986,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.other_items",
@@ -3984,7 +4035,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -4014,7 +4065,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -4077,7 +4128,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_ebitda.adjusted_ebitda",
@@ -4098,7 +4149,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_ebitda.adjusted_ebitda",
@@ -4180,7 +4231,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -4204,7 +4255,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -4259,7 +4310,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -4283,7 +4334,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -4338,7 +4389,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_ebitda.incremental_adj_ebitda",
@@ -4359,7 +4410,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_ebitda.incremental_adj_ebitda",
@@ -4425,7 +4476,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.depreciation_amortization.depreciation_as_of_beginning_property_and_equipment",
@@ -4479,7 +4530,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.property_and_equipment_net",
@@ -4494,7 +4545,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.property_and_equipment_net",
@@ -4552,7 +4603,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.property_and_equipment_net",
@@ -4567,7 +4618,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.property_and_equipment_net",
@@ -4707,7 +4758,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.depreciation_amortization.depreciation",
@@ -4728,7 +4779,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.depreciation_as_of_beginning_property_and_equipment",
@@ -4744,7 +4795,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.depreciation_amortization.depreciation_as_of_beginning_property_and_equipment",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2022,
                 2023,
@@ -4777,7 +4844,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.depreciation_amortization.depreciation",
@@ -4798,7 +4865,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.depreciation_amortization.depreciation",
@@ -4930,7 +4997,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.depreciation_amortization.amortization_of_beginning_capitalized_internal_use_software",
@@ -4984,7 +5051,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.software_investment_if_applicable",
@@ -4999,7 +5066,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.software_investment_if_applicable",
@@ -5057,7 +5124,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.software_investment_if_applicable",
@@ -5072,7 +5139,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.software_investment_if_applicable",
@@ -5221,7 +5288,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.depreciation_amortization.amortization_of_capitalized_internal_use_software",
@@ -5242,7 +5309,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.amortization_of_beginning_capitalized_internal_use_software",
@@ -5258,7 +5325,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.depreciation_amortization.amortization_of_beginning_capitalized_internal_use_software",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2022,
                 2023,
@@ -5291,7 +5374,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.amortization_of_acquired_intangibles",
@@ -5340,7 +5423,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.intangible_assets_net",
@@ -5355,7 +5438,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.intangible_assets_net",
@@ -5406,7 +5489,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.intangible_assets_net",
@@ -5421,7 +5504,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.intangible_assets_net",
@@ -5552,7 +5635,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.depreciation_amortization.amortization_expense_for_acquired_intangible_assets",
@@ -5573,7 +5656,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.depreciation_amortization.amortization_expense_for_acquired_intangible_assets",
@@ -5626,7 +5709,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.depreciation_and_amortization",
@@ -5641,7 +5724,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_list",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -5718,7 +5801,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.share_based_compensation",
@@ -5733,7 +5816,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.stock_based_compensation.total",
@@ -5890,7 +5973,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.stock_based_compensation.cost_of_revenues_pct_line_item",
@@ -5943,7 +6026,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.stock_based_compensation.sales_and_marketing_pct_line_item",
@@ -5996,7 +6079,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.stock_based_compensation.research_and_development_pct_line_item",
@@ -6049,7 +6132,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.stock_based_compensation.general_and_administrative_pct_line_item",
@@ -6101,7 +6184,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -6137,7 +6220,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -6239,7 +6322,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.stock_based_compensation.cost_of_revenues",
@@ -6260,7 +6343,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.stock_based_compensation.cost_of_revenues_pct_line_item",
@@ -6276,7 +6359,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.stock_based_compensation.cost_of_revenues_pct_line_item",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -6310,7 +6409,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.stock_based_compensation.sales_and_marketing",
@@ -6331,7 +6430,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.stock_based_compensation.sales_and_marketing_pct_line_item",
@@ -6347,7 +6446,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.stock_based_compensation.sales_and_marketing_pct_line_item",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2024,
@@ -6380,7 +6495,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.stock_based_compensation.research_and_development_pct_line_item",
@@ -6396,7 +6511,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.stock_based_compensation.research_and_development_pct_line_item",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2024,
                 2034
@@ -6427,7 +6558,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.stock_based_compensation.general_and_administrative_pct_line_item",
@@ -6443,7 +6574,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.stock_based_compensation.general_and_administrative_pct_line_item",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2024,
                 2034
@@ -6484,7 +6631,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_operating_income",
@@ -6638,7 +6785,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_operating_income.adjusted_operating_income",
@@ -6659,7 +6806,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_operating_income.adjusted_operating_income",
@@ -6742,7 +6889,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -6766,7 +6913,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -6822,7 +6969,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -6846,7 +6993,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -6902,7 +7049,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_operating_income.incremental_adj_operating_income",
@@ -6923,7 +7070,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.adj_operating_income.incremental_adj_operating_income",
@@ -6988,7 +7135,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.other_income_expense",
@@ -7003,7 +7150,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.interest_expense",
@@ -7054,7 +7201,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.other_income_expense",
@@ -7069,16 +7216,16 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "rate_x_base",
                 "params": {
                   "base": {
-                    "id": "tpl.a.other_income_interest.interest_rate",
+                    "id": "tpl.a.other_income_interest.average",
                     "t": 0,
                     "resolved": true,
                     "period_anchor": "first"
                   },
                   "rate": {
-                    "id": "tpl.a.other_income_interest.average",
+                    "id": "tpl.a.other_income_interest.interest_rate",
                     "t": 0,
                     "resolved": true,
                     "period_anchor": "first"
@@ -7124,7 +7271,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_debt",
@@ -7139,7 +7286,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_debt",
@@ -7199,7 +7346,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_debt",
@@ -7214,7 +7361,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_debt",
@@ -7356,7 +7503,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.interest_rate",
@@ -7416,7 +7563,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_before_income_taxes",
@@ -7431,7 +7578,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_before_income_taxes",
@@ -7491,7 +7638,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -7506,7 +7653,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.tax_net_income.income_before_income_taxes",
@@ -7562,7 +7709,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.tax_net_income.income_tax_expense_benefit",
@@ -7583,7 +7730,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.tax_net_income.tax_rate",
@@ -7634,7 +7781,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.diluted_shares_outstanding_m",
@@ -7649,7 +7796,7 @@
               },
               "projected": {
                 "type": "growth",
-                "subtype": null,
+                "subtype": "compound",
                 "params": {
                   "base": {
                     "id": "tpl.a.tax_net_income.diluted_shares_outstanding",
@@ -7729,7 +7876,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.tax_net_income.y_y_chg",
@@ -7745,7 +7892,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.tax_net_income.y_y_chg",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -7809,7 +7972,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.net_income",
@@ -7824,7 +7987,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.net_income",
@@ -7870,7 +8033,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.stock_based_compensation_and_related_payroll_taxes",
@@ -7885,7 +8048,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.stock_based_compensation_and_related_payroll_taxes",
@@ -7931,7 +8094,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.intangibles_goodwill.less_amortization_for_acquired_intangible_assets",
@@ -7946,7 +8109,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.intangibles_goodwill.less_amortization_for_acquired_intangible_assets",
@@ -7996,7 +8159,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.other_items",
@@ -8011,7 +8174,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.other_items",
@@ -8057,7 +8220,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.income_tax_effect_on_adjustments",
@@ -8072,7 +8235,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "op": "SUM",
@@ -8147,7 +8310,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -8189,7 +8352,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -8265,7 +8428,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "op": "NEG",
@@ -8306,11 +8469,11 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
-                    "id": "tpl.a.tax_net_income.effective_tax_rate",
-                    "t": -1,
+                    "id": "tpl.a.tax_net_income.tax_rate",
+                    "t": 0,
                     "resolved": true,
                     "period_anchor": "first"
                   }
@@ -8327,7 +8490,16 @@
                 2021,
                 2022,
                 2023,
+                2024,
                 2025,
+                2026,
+                2027,
+                2028,
+                2029,
+                2030,
+                2031,
+                2032,
+                2033,
                 2034,
                 2035
               ],
@@ -8356,7 +8528,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -8412,7 +8584,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.tax_net_income.adjusted_net_income",
@@ -8433,7 +8605,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.tax_net_income.adjusted_net_income",
@@ -8635,7 +8807,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.accounts_receivable_net",
@@ -8650,7 +8822,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.revenue_drivers.total_revenue",
@@ -8707,7 +8879,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.accounts_receivable_net",
@@ -8728,7 +8900,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.accounts_receivable_net",
@@ -8782,7 +8954,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.accounts_receivable_net",
@@ -8807,7 +8979,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.days_sales_outstanding_dso",
@@ -8823,7 +8995,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.balance_sheet_wc.days_sales_outstanding_dso",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2023,
@@ -8857,7 +9045,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.current_asset_1",
@@ -8872,7 +9060,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.balance_sheet_wc.of_operating_line_adjust_link_as_neccesary",
@@ -8929,7 +9117,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.current_asset_1",
@@ -8950,7 +9138,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.of_operating_line_adjust_link_as_neccesary",
@@ -8966,7 +9154,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.balance_sheet_wc.of_operating_line_adjust_link_as_neccesary",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -9000,7 +9204,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.current_asset_2",
@@ -9015,7 +9219,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.balance_sheet_wc.of_cogs_and_sg_a",
@@ -9081,7 +9285,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.current_asset_2",
@@ -9113,7 +9317,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.of_cogs_and_sg_a",
@@ -9129,7 +9333,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.balance_sheet_wc.of_cogs_and_sg_a",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2023,
@@ -9161,7 +9381,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.accounts_payable",
@@ -9176,7 +9396,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "op": "/",
@@ -9247,7 +9467,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.accounts_payable",
@@ -9279,7 +9499,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.accounts_payable",
@@ -9353,7 +9573,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "op": "/",
@@ -9389,7 +9609,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.days_payable_outstanding_dpo",
@@ -9405,7 +9625,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.balance_sheet_wc.days_payable_outstanding_dpo",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -9440,7 +9676,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.accrued_expenses",
@@ -9455,7 +9691,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.balance_sheet_wc.accrued_expenses_pct_cogs_and_sga",
@@ -9523,7 +9759,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.balance_sheet_wc.accrued_expenses",
@@ -9555,7 +9791,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.accrued_expenses_pct_cogs_and_sga",
@@ -9571,7 +9807,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.balance_sheet_wc.accrued_expenses_pct_cogs_and_sga",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -9706,7 +9958,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.software_investment_if_applicable",
@@ -9721,7 +9973,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.capital_investments.software_investment_if_applicable",
@@ -9787,7 +10039,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.capitalized_software_costs_if_applicable",
@@ -9803,7 +10055,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.capital_investments.of_revenue",
@@ -9868,7 +10120,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_investments.add_capitalized_software_costs_if_applicable",
@@ -9889,7 +10141,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.of_revenue",
@@ -9905,7 +10157,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.capital_investments.of_revenue",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -10017,7 +10285,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.amortization_of_capitalized_internal_use_software",
@@ -10064,7 +10332,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.property_and_equipment_net",
@@ -10079,7 +10347,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.capital_investments.property_and_equipment_net",
@@ -10145,7 +10413,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.purchases_of_property_and_equipment",
@@ -10161,7 +10429,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.capital_investments.property_and_equipment_pct_revenue",
@@ -10226,7 +10494,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_investments.add_purchases_of_property_and_equipment",
@@ -10247,7 +10515,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.property_and_equipment_pct_revenue",
@@ -10263,7 +10531,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.capital_investments.property_and_equipment_pct_revenue",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -10375,7 +10659,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.depreciation",
@@ -10453,7 +10737,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.add_capitalized_software_costs_if_applicable",
@@ -10499,7 +10783,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.research_and_development",
@@ -10514,7 +10798,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.research_and_development",
@@ -10560,7 +10844,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -10584,7 +10868,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -10642,7 +10926,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_investments.total_research_and_development",
@@ -10663,7 +10947,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_investments.total_research_and_development",
@@ -10715,7 +10999,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_investments.capitalized_portion_of_research_and_development",
@@ -10736,7 +11020,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_investments.capitalized_portion_of_research_and_development",
@@ -10799,7 +11083,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.intangible_assets_net",
@@ -10814,7 +11098,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.intangibles_goodwill.intangible_assets_net",
@@ -10881,7 +11165,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.purchases_of_property_and_equipment",
@@ -10931,7 +11215,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.amortization_of_acquired_intangibles",
@@ -10980,7 +11264,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.goodwill",
@@ -10995,7 +11279,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.intangibles_goodwill.goodwill",
@@ -11126,7 +11410,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_asset_1",
@@ -11141,7 +11425,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.other_assets.of_operating_line_adjust_link_as_neccesary",
@@ -11199,7 +11483,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.other_assets.long_term_asset_1",
@@ -11220,7 +11504,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.of_operating_line_adjust_link_as_neccesary",
@@ -11236,7 +11520,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.other_assets.of_operating_line_adjust_link_as_neccesary",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -11269,7 +11569,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_asset_2",
@@ -11284,7 +11584,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.other_assets.long_term_asset_2_pct_operating_line",
@@ -11340,7 +11640,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.other_assets.long_term_asset_2",
@@ -11361,7 +11661,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.long_term_asset_2_pct_operating_line",
@@ -11377,7 +11677,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.other_assets.long_term_asset_2_pct_operating_line",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -11411,7 +11727,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.deferred_income_tax_assets",
@@ -11426,7 +11742,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.other_assets.of_operating_expense",
@@ -11484,7 +11800,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.other_assets.deferred_income_tax_assets",
@@ -11505,7 +11821,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.of_operating_expense",
@@ -11521,7 +11837,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.other_assets.of_operating_expense",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -11555,7 +11887,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.operating_lease_right_of_use_assets",
@@ -11570,7 +11902,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.other_assets.of_general_and_administrative",
@@ -11627,7 +11959,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.other_assets.operating_lease_right_of_use_assets",
@@ -11648,7 +11980,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.of_general_and_administrative",
@@ -11664,7 +11996,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.other_assets.of_general_and_administrative",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -11698,7 +12046,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.current_asset_4",
@@ -11713,7 +12061,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_volume_driver_1",
@@ -11762,7 +12110,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.funds_held_for_client_s_cash_and_cash_equivalents",
@@ -11777,7 +12125,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.other_assets.funds_held_for_clients",
@@ -11833,7 +12181,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.other_assets.funds_held_for_client_s_cash_and_cash_equivalents",
@@ -11854,7 +12202,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.cash_equivalents",
@@ -11870,7 +12218,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.other_assets.cash_equivalents",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -11945,7 +12309,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.current_portion_of_long_term_debt",
@@ -11993,7 +12357,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_debt",
@@ -12008,7 +12372,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.capital_sources.long_term_debt",
@@ -12097,7 +12461,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.long_term_operating_lease_liabilities",
@@ -12112,7 +12476,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.capital_sources.of_general_and_administrative",
@@ -12168,7 +12532,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_sources.long_term_operating_lease_liabilities",
@@ -12189,7 +12553,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.of_general_and_administrative",
@@ -12205,7 +12569,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.capital_sources.of_general_and_administrative",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -12240,7 +12620,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.other_long_term_liabilities",
@@ -12255,7 +12635,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.capital_sources.other_long_term_liabilities_pct_general_and_administrative",
@@ -12312,7 +12692,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_sources.other_long_term_liabilities",
@@ -12333,7 +12713,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.other_long_term_liabilities_pct_general_and_administrative",
@@ -12349,7 +12729,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.capital_sources.other_long_term_liabilities_pct_general_and_administrative",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -12383,7 +12779,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.deferred_income_tax_liabilities",
@@ -12398,7 +12794,7 @@
               },
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.capital_sources.of_operating_expense",
@@ -12453,7 +12849,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.capital_sources.deferred_income_tax_liabilities",
@@ -12474,7 +12870,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.of_operating_expense",
@@ -12490,7 +12886,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.capital_sources.of_operating_expense",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -12716,7 +13128,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.common_stock",
@@ -12731,7 +13143,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.common_stock",
@@ -12747,7 +13159,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.dividends_shares.common_stock",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -12781,7 +13209,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.additional_paid_in_capital",
@@ -12796,7 +13224,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.dividends_shares.additional_paid_in_capital",
@@ -12885,7 +13313,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.retained_earnings",
@@ -12900,7 +13328,7 @@
               },
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.dividends_shares.retained_earnings",
@@ -12928,7 +13356,7 @@
               "overrides": {
                 "2024": {
                   "type": "roll_forward",
-                  "subtype": null,
+                  "subtype": "schedule",
                   "params": {
                     "beginning": {
                       "id": "tpl.a.dividends_shares.retained_earnings",
@@ -12958,7 +13386,7 @@
                 },
                 "2027": {
                   "type": "roll_forward",
-                  "subtype": null,
+                  "subtype": "schedule",
                   "params": {
                     "beginning": {
                       "id": "tpl.a.dividends_shares.retained_earnings",
@@ -13024,7 +13452,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.accumulated_other_comprehensive_income_loss",
@@ -13039,7 +13467,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.accumulated_other_comprehensive_income_loss",
@@ -13055,7 +13483,23 @@
               "unit": "dollars",
               "format": "",
               "values": null,
-              "overrides": null,
+              "overrides": {
+                "2024": {
+                  "type": "ref",
+                  "subtype": "cell_ref",
+                  "params": {
+                    "source": {
+                      "id": "tpl.a.dividends_shares.accumulated_other_comprehensive_income_loss",
+                      "t": -1,
+                      "resolved": true,
+                      "period_anchor": "first"
+                    }
+                  },
+                  "note": null,
+                  "edgar_provenance": null,
+                  "fmp_provenance": null
+                }
+              },
               "formula_periods": [
                 2021,
                 2022,
@@ -13089,7 +13533,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.diluted_shares_outstanding_m",
@@ -13104,7 +13548,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.diluted_shares_outstanding_m",
@@ -13165,7 +13609,7 @@
               "historical": null,
               "projected": {
                 "type": "driver",
-                "subtype": null,
+                "subtype": "base_x_rate",
                 "params": {
                   "base": {
                     "id": "tpl.a.dividends_shares.shares_issued",
@@ -13217,7 +13661,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -13241,7 +13685,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -13299,7 +13743,7 @@
               "historical": null,
               "projected": {
                 "type": "growth",
-                "subtype": null,
+                "subtype": "compound",
                 "params": {
                   "base": {
                     "id": "tpl.a.dividends_shares.expected_average_share_price",
@@ -13381,7 +13825,7 @@
               "historical": null,
               "projected": {
                 "type": "roll_forward",
-                "subtype": null,
+                "subtype": "schedule",
                 "params": {
                   "beginning": {
                     "id": "tpl.a.dividends_shares.end_of_period_shares_outstanding",
@@ -13466,7 +13910,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.diluted_shares_outstanding_m",
@@ -13885,7 +14329,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -13900,7 +14344,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -13959,7 +14403,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.free_cash_flow.free_cash_flow",
@@ -13980,7 +14424,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.a.free_cash_flow.free_cash_flow",
@@ -14105,7 +14549,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.volume_1_growth",
@@ -14120,7 +14564,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.scenario_tables.volume_bull",
@@ -14179,7 +14623,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.volume_1_growth",
@@ -14194,7 +14638,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.scenario_tables.volume_base",
@@ -14253,7 +14697,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.volume_1_growth",
@@ -14268,7 +14712,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.scenario_tables.volume_bear",
@@ -14357,7 +14801,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.unit_economics.gross_margin",
@@ -14372,7 +14816,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.a.scenario_tables.margin_bull",
@@ -14392,7 +14836,7 @@
               "overrides": {
                 "2024": {
                   "type": "ref",
-                  "subtype": null,
+                  "subtype": "cell_ref",
                   "params": {
                     "source": {
                       "id": "tpl.a.scenario_tables.margin_bull",
@@ -14448,7 +14892,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.unit_economics.gross_margin",
@@ -14463,7 +14907,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.a.scenario_tables.margin_base",
@@ -14483,7 +14927,7 @@
               "overrides": {
                 "2024": {
                   "type": "ref",
-                  "subtype": null,
+                  "subtype": "cell_ref",
                   "params": {
                     "source": {
                       "id": "tpl.a.scenario_tables.margin_base",
@@ -14539,7 +14983,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.unit_economics.gross_margin",
@@ -14554,7 +14998,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "carry_forward",
                 "params": {
                   "source": {
                     "id": "tpl.a.scenario_tables.margin_bear",
@@ -14573,7 +15017,7 @@
               "overrides": {
                 "2024": {
                   "type": "ref",
-                  "subtype": null,
+                  "subtype": "ref_with_adjustment",
                   "params": {
                     "source": {
                       "id": "tpl.a.scenario_tables.margin_bear",
@@ -14589,7 +15033,7 @@
                 },
                 "2025": {
                   "type": "ref",
-                  "subtype": null,
+                  "subtype": "ref_with_adjustment",
                   "params": {
                     "source": {
                       "id": "tpl.a.scenario_tables.margin_bear",
@@ -14673,7 +15117,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.header.scenario_value",
@@ -14749,7 +15193,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.fm.header.millions_except_per_share_data",
@@ -14765,7 +15209,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "ref_with_adjustment",
                 "params": {
                   "source": {
                     "id": "tpl.fm.header.millions_except_per_share_data",
@@ -14855,7 +15299,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.business_segment_1_revenue",
@@ -14912,7 +15356,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.revenue_drivers.business_segment_2_revenue",
@@ -14968,7 +15412,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -14992,7 +15436,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -15050,7 +15494,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -15105,7 +15549,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -15129,7 +15573,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.unit_economics.gross_profit",
@@ -15220,7 +15664,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.sales_and_marketing",
@@ -15277,7 +15721,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.research_and_development",
@@ -15334,7 +15778,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.operating_leverage.general_and_administrative",
@@ -15390,7 +15834,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -15420,7 +15864,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -15482,7 +15926,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -15506,7 +15950,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -15563,7 +16007,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.other_income_expense",
@@ -15619,7 +16063,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -15643,7 +16087,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -15701,7 +16145,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.tax_net_income.income_tax_expense_benefit",
@@ -15757,7 +16201,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -15781,7 +16225,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -15837,7 +16281,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -15858,7 +16302,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -15912,7 +16356,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.tax_net_income.diluted_shares_outstanding",
@@ -16009,7 +16453,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -16024,7 +16468,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -16075,7 +16519,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_income_interest.interest_expense",
@@ -16131,7 +16575,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -16146,7 +16590,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -16196,7 +16640,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.depreciation_and_amortization",
@@ -16211,7 +16655,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.depreciation_and_amortization",
@@ -16260,7 +16704,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -16296,7 +16740,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -16451,7 +16895,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.adj_ebitda.other_items",
@@ -16513,7 +16957,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -16543,7 +16987,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -16605,7 +17049,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "expr": {
                     "op": "+",
@@ -16709,7 +17153,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.net_income_base",
@@ -16724,7 +17168,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.net_income_base",
@@ -16774,7 +17218,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.stock_based_compensation_and_related_payroll_taxes",
@@ -16789,7 +17233,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.stock_based_compensation_and_related_payroll_taxes",
@@ -16849,7 +17293,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.tax_net_income.amortization_of_acquired_intangibles",
@@ -16911,7 +17355,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.other_items",
@@ -16926,7 +17370,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.adjusted_earnings.other_items",
@@ -16986,7 +17430,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.tax_net_income.income_tax_effect_on_adjustments",
@@ -17048,7 +17492,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -17090,7 +17534,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -17165,7 +17609,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_net_income",
@@ -17186,7 +17630,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_net_income",
@@ -17283,7 +17727,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.business_segment_1_revenue",
@@ -17304,7 +17748,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.business_segment_1_revenue",
@@ -17356,7 +17800,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.business_segment_2_revenue",
@@ -17377,7 +17821,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.business_segment_2_revenue",
@@ -17429,7 +17873,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.gross_profit",
@@ -17450,7 +17894,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.gross_profit",
@@ -17502,7 +17946,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_ebitda",
@@ -17523,7 +17967,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_ebitda",
@@ -17575,7 +18019,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_operating_income",
@@ -17596,7 +18040,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.adjusted_earnings.adjusted_operating_income",
@@ -17649,7 +18093,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.operating_income",
@@ -17670,7 +18114,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.operating_income",
@@ -17722,7 +18166,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.income_before_income_taxes",
@@ -17743,7 +18187,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.income_before_income_taxes",
@@ -17795,7 +18239,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -17816,7 +18260,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.income_tax_expense_benefit",
@@ -17869,7 +18313,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -17890,7 +18334,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -18709,7 +19153,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.header.millions_except_per_share_data",
@@ -18724,7 +19168,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.header.millions_except_per_share_data",
@@ -18832,7 +19276,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.cash_and_cash_equivalents_end_of_period",
@@ -18881,7 +19325,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.accounts_receivable_net",
@@ -18938,7 +19382,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.current_asset_1",
@@ -18995,7 +19439,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.current_asset_2",
@@ -19081,7 +19525,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -19123,7 +19567,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -19226,7 +19670,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_list",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -19255,7 +19699,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_list",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -19359,7 +19803,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.software_investment_if_applicable",
@@ -19422,7 +19866,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.property_and_equipment_net",
@@ -19479,7 +19923,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.operating_lease_right_of_use_assets",
@@ -19536,7 +19980,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.intangibles_goodwill.intangible_assets_net",
@@ -19593,7 +20037,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.intangibles_goodwill.goodwill",
@@ -19650,7 +20094,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.long_term_asset_1",
@@ -19707,7 +20151,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.long_term_asset_2",
@@ -19764,7 +20208,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.deferred_income_tax_assets",
@@ -20062,7 +20506,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.accounts_payable",
@@ -20119,7 +20563,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.balance_sheet_wc.accrued_expenses",
@@ -20175,7 +20619,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -20199,7 +20643,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -20374,7 +20818,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -20416,7 +20860,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -20533,7 +20977,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.long_term_operating_lease_liabilities",
@@ -20590,7 +21034,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.other_long_term_liabilities",
@@ -20647,7 +21091,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.deferred_income_tax_liabilities",
@@ -20956,7 +21400,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.balance_sheet.common_stock",
@@ -20971,7 +21415,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.common_stock",
@@ -21029,7 +21473,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.additional_paid_in_capital",
@@ -21086,7 +21530,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.retained_earnings",
@@ -21143,7 +21587,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.accumulated_other_comprehensive_income_loss",
@@ -21199,7 +21643,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -21226,6 +21670,12 @@
                       "t": 0,
                       "resolved": true,
                       "period_anchor": "first"
+                    },
+                    {
+                      "id": "tpl.a.dividends_shares.treasury_stock",
+                      "t": 0,
+                      "resolved": true,
+                      "period_anchor": "first"
                     }
                   ]
                 },
@@ -21235,7 +21685,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -21305,7 +21755,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -21329,7 +21779,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -21386,7 +21836,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -21449,7 +21899,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "op": "*",
@@ -21689,7 +22139,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -21779,7 +22229,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.balance_sheet.long_term_debt",
@@ -21831,7 +22281,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.balance_sheet.total_equity",
@@ -21961,7 +22411,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.balance_sheet.cash_and_marketable_securities",
@@ -22100,7 +22550,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -22121,7 +22571,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -22272,7 +22722,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -22398,7 +22848,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.income_statement.net_income",
@@ -22471,7 +22921,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.stock_based_compensation.stock_based_compensation",
@@ -22528,7 +22978,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.depreciation_amortization.depreciation_and_amortization_m",
@@ -22585,7 +23035,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "expr": {
                     "op": "+",
@@ -22708,7 +23158,7 @@
               "overrides": {
                 "2024": {
                   "type": "arithmetic",
-                  "subtype": null,
+                  "subtype": "sum_range",
                   "params": {
                     "function": "SUM",
                     "items": [
@@ -22805,7 +23255,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -22860,7 +23310,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -22917,7 +23367,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -22972,7 +23422,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23027,7 +23477,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23091,7 +23541,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23163,7 +23613,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23220,7 +23670,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "expr": {
                     "op": "+",
@@ -23313,7 +23763,7 @@
               "overrides": {
                 "2024": {
                   "type": "arithmetic",
-                  "subtype": null,
+                  "subtype": "sum_range",
                   "params": {
                     "function": "SUM",
                     "items": [
@@ -23398,7 +23848,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23453,7 +23903,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23508,7 +23958,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23563,7 +24013,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23618,7 +24068,7 @@
               "historical": null,
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "-",
@@ -23672,7 +24122,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -23756,7 +24206,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -23873,7 +24323,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.add_capitalized_software_costs_if_applicable",
@@ -23937,7 +24387,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_investments.add_purchases_of_property_and_equipment",
@@ -24119,7 +24569,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -24167,7 +24617,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -24246,7 +24696,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -24276,7 +24726,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -24428,7 +24878,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.capital_sources.change",
@@ -24488,7 +24938,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -24524,7 +24974,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_range",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -24596,7 +25046,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.proceeds_from_employee_stock_purchase_plan",
@@ -24654,7 +25104,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.total_amount",
@@ -24711,7 +25161,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.dividends_shares.dividend_paid",
@@ -24769,7 +25219,7 @@
               "historical": null,
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "negated_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.share_based_compensation",
@@ -24849,7 +25299,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_list",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -24885,7 +25335,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "sum_list",
                 "params": {
                   "function": "SUM",
                   "items": [
@@ -25016,7 +25466,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -25052,7 +25502,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "multi_term",
                 "params": {
                   "operands": [
                     "+",
@@ -25119,7 +25569,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.cash_and_cash_equivalents_end_of_period",
@@ -25134,7 +25584,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cell_ref",
                 "params": {
                   "source": {
                     "id": "tpl.fm.cash_flow.cash_and_cash_equivalents_end_of_period",
@@ -25153,7 +25603,7 @@
               "overrides": {
                 "2024": {
                   "type": "arithmetic",
-                  "subtype": null,
+                  "subtype": "add_subtract",
                   "params": {
                     "expr": {
                       "op": "-",
@@ -25243,7 +25693,7 @@
               },
               "projected": {
                 "type": "arithmetic",
-                "subtype": null,
+                "subtype": "add_subtract",
                 "params": {
                   "operands": [
                     "+",
@@ -25343,7 +25793,7 @@
               },
               "projected": {
                 "type": "ref",
-                "subtype": null,
+                "subtype": "cross_sheet_ref",
                 "params": {
                   "source": {
                     "id": "tpl.a.other_assets.funds_held_for_client_s_cash_and_cash_equivalents",
@@ -25435,7 +25885,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -25456,7 +25906,7 @@
               },
               "projected": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "per_share",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -25617,7 +26067,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",
@@ -25669,7 +26119,7 @@
               "xbrl_tag": null,
               "historical": {
                 "type": "ratio",
-                "subtype": null,
+                "subtype": "divide",
                 "params": {
                   "numerator": {
                     "id": "tpl.fm.cash_flow.free_cash_flow",

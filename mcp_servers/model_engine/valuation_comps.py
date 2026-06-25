@@ -8,7 +8,10 @@ import re
 import statistics
 from typing import Any
 
-import fmp
+try:
+  import fmp
+except ModuleNotFoundError:  # pragma: no cover - depends on optional package env
+  fmp = None
 
 
 FMP_PRICE_FIELDS = ("price", "currentPrice", "previousClose")
@@ -89,6 +92,15 @@ def fetch_fmp_records(
       exc,
     )
     return []
+
+
+def default_fmp_fetch() -> Any:
+  if fmp is None:
+    raise RuntimeError(
+      "FMP fallback data requires the optional fmp-mcp package. "
+      "Install financial-model-engine[fmp] or pass an explicit fetcher."
+    )
+  return fmp.fetch
 
 
 def financials_records(financials: dict | None, endpoint_name: str) -> list[dict[str, Any]]:
@@ -275,7 +287,7 @@ def build_valuation_comps_fallback(
   """
 
   ticker_upper = ticker.upper()
-  fetcher = fetcher or fmp.fetch
+  fetcher = fetcher or default_fmp_fetch()
   peer_records = fetch_fmp_records("stock_peers", fetcher=fetcher, symbol=ticker_upper)
   peers = extract_peer_symbols(peer_records, ticker_upper, max_peers=max_peers)
   symbols = [ticker_upper, *peers]

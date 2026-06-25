@@ -14,6 +14,7 @@ from .business_model_artifacts import (
 )
 from .build_helpers import (
   axis_priority,
+  fmp_zero_missing_edgar_fallback_needed,
   historical_sources_touch_edgar,
   historical_sources_touch_fmp,
   model_build_error_payload,
@@ -286,6 +287,7 @@ __all__ = [
   "financials_records",
   "first_numeric",
   "fmp_frame_records",
+  "fmp_zero_missing_edgar_fallback_needed",
   "fy1_eps_avg",
   "get_projection_data",
   "graph_downstream_ids",

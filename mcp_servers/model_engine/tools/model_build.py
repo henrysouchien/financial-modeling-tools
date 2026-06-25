@@ -16,6 +16,7 @@ class ModelBuildDeps:
   logger: Any
   historical_sources_touch_fmp: Callable[[Any], bool]
   historical_sources_touch_edgar: Callable[[Any], bool]
+  fmp_zero_missing_edgar_fallback_needed: Callable[..., bool]
   asyncio_run: Callable[[Any], Any]
   fetch_fmp_financials: Callable[[str], Any]
   build_valuation_comps_fallback: Callable[..., Any]
@@ -162,7 +163,17 @@ def model_build_handler(
       parsed_valuation_comps = deps.build_valuation_comps_fallback(ticker, financials)
 
     routing_touches_edgar = deps.historical_sources_touch_edgar(parsed_historical_sources)
-    needs_edgar_fetcher = normalized_source == "edgar" or routing_touches_edgar or validation_mode
+    zero_missing_edgar_fallback = deps.fmp_zero_missing_edgar_fallback_needed(
+      source=normalized_source,
+      financials=financials,
+      historical_sources=parsed_historical_sources,
+    )
+    needs_edgar_fetcher = (
+      normalized_source == "edgar"
+      or routing_touches_edgar
+      or zero_missing_edgar_fallback
+      or validation_mode
+    )
     edgar_fetcher = deps.make_edgar_fetcher() if needs_edgar_fetcher else None
     edgar_financials_fetcher = deps.make_edgar_financials_fetcher() if segment_mode else None
     warm_fetcher = (

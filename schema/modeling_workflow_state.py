@@ -63,7 +63,7 @@ PENDING_ACTION_REMEDIATION_ADAPTERS: dict[str, dict[str, Any]] = {
     },
     "persist_forecast_assumptions": {
         "directive": "driver_plan_gap",
-        "recommended_skill": "business-model-construction",
+        "recommended_skill": "forecast-assumptions",
         "input_kind": "judgment",
     },
     "persist_valuation_inputs": {
@@ -72,12 +72,20 @@ PENDING_ACTION_REMEDIATION_ADAPTERS: dict[str, dict[str, Any]] = {
         "inputs": {
             "tpl.v.cost_of_equity.risk_free_rate": "deterministic",
             "tpl.v.wacc.sofr_rate": "deterministic",
-            # valuation-inputs sources/computes these rows; it does not invent
-            # analyst judgment. Analyst overrides are a separate explicit path.
+            # ERP and beta-floor rows are dispatched through valuation-inputs,
+            # but their args below mark the explicit source/carry-forward
+            # requirement. valuation-inputs must not invent them.
             "tpl.v.cost_of_equity.equity_risk_premium": "deterministic",
+            # Credit spread is computed when empirical debt/SOFR guards pass;
+            # otherwise valuation-inputs requires an explicit sourced override.
             "tpl.v.wacc.credit_spread": "deterministic",
             "tpl.v.cost_of_equity.beta_floor": "deterministic",
         },
+    },
+    "repair_model_calibration": {
+        "directive": "model_calibration",
+        "recommended_skill": "model-update",
+        "input_kind": "judgment",
     },
 }
 
@@ -89,6 +97,38 @@ _WACC_INPUT_LABELS = {
     "tpl.v.cost_of_equity.beta_floor": "beta_floor",
 }
 _WACC_LABEL_TO_INPUT_ID = {label: input_id for input_id, label in _WACC_INPUT_LABELS.items()}
+_VALUATION_INPUT_REMEDIATION_ARGS: dict[str, dict[str, Any]] = {
+    "tpl.v.cost_of_equity.risk_free_rate": {
+        "source_mode": "fred",
+        "series_id": "DGS10",
+    },
+    "tpl.v.wacc.sofr_rate": {
+        "source_mode": "fred",
+        "series_id": "SOFR",
+    },
+    "tpl.v.cost_of_equity.equity_risk_premium": {
+        "requires_source": True,
+        "value_key": "equity_risk_premium_override_decimal",
+        "source_key": "equity_risk_premium_source",
+        "rationale_key": "equity_risk_premium_rationale",
+        "carry_forward_skill": "valuation-inputs",
+    },
+    "tpl.v.wacc.credit_spread": {
+        "source_mode": "derive_or_source",
+        "derivation": "effective_yield_minus_sofr",
+        "override_value_key": "credit_spread_override_decimal",
+        "override_source_key": "credit_spread_source",
+        "override_rationale_key": "credit_spread_rationale",
+        "carry_forward_skill": "valuation-inputs",
+    },
+    "tpl.v.cost_of_equity.beta_floor": {
+        "requires_source": True,
+        "value_key": "beta_floor_override_decimal",
+        "source_key": "beta_floor_source",
+        "rationale_key": "beta_floor_rationale",
+        "carry_forward_skill": "valuation-inputs",
+    },
+}
 
 
 def remediation_directives_from_pending_actions(
@@ -108,6 +148,9 @@ def remediation_directives_from_pending_actions(
     wacc_directive = _missing_wacc_directive(actions, message_by_code=message_by_code or {})
     if wacc_directive is not None:
         directives.append(wacc_directive)
+    model_calibration_directive = _model_calibration_directive(actions, message_by_code=message_by_code or {})
+    if model_calibration_directive is not None:
+        directives.append(model_calibration_directive)
     return directives
 
 
@@ -261,14 +304,113 @@ def _valuation_input_ids(action: PendingAction) -> list[str]:
 
 
 def _valuation_input_args(input_id: str, actions: list[PendingAction]) -> dict[str, Any]:
-    args: dict[str, Any] = {}
+    args: dict[str, Any] = dict(_VALUATION_INPUT_REMEDIATION_ARGS.get(input_id, {}))
     for action in actions:
         metadata = action.metadata if isinstance(action.metadata, dict) else {}
         if input_id in _valuation_input_ids(action) or not _valuation_input_ids(action):
-            args.update(metadata)
+            if metadata:
+                args.setdefault("pending_action_metadata", {}).update(metadata)
+            for key, value in metadata.items():
+                args.setdefault(key, value)
             if action.source:
                 args.setdefault("source", action.source)
     args.setdefault("input_label", _WACC_INPUT_LABELS[input_id])
+    return args
+
+
+def _model_calibration_directive(
+    actions: list[PendingAction],
+    *,
+    message_by_code: dict[str, str | None],
+) -> RemediationDirective | None:
+    relevant = [
+        action
+        for action in actions
+        if PENDING_ACTION_REMEDIATION_ADAPTERS[action.code]["directive"] == "model_calibration"
+    ]
+    if not relevant:
+        return None
+    adapter = PENDING_ACTION_REMEDIATION_ADAPTERS["repair_model_calibration"]
+    input_ids = _model_calibration_input_ids(relevant)
+    if not input_ids:
+        return None
+    blocker_key = _model_calibration_blocker_key(relevant)
+    message = next(
+        (
+            message
+            for action in relevant
+            for message in (message_by_code.get(action.code), action.message)
+            if message
+        ),
+        "Reconcile the model EPS/FCF basis against consensus before valuation.",
+    )
+    return RemediationDirective(
+        blocker_id=f"model_calibration:{blocker_key}",
+        recommended_skill=str(adapter["recommended_skill"]),
+        inputs=[
+            RemediationDirectiveInput(
+                input_id=input_id,
+                kind=adapter["input_kind"],
+                args=_model_calibration_args(input_id, relevant),
+            )
+            for input_id in input_ids
+        ],
+        message=message,
+    )
+
+
+def _model_calibration_blocker_key(actions: list[PendingAction]) -> str:
+    for action in actions:
+        metadata = action.metadata if isinstance(action.metadata, dict) else {}
+        for key in ("gap_id", "calibration_key", "basis_key"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                return value
+    return "eps_consensus_basis"
+
+
+def _model_calibration_input_ids(actions: list[PendingAction]) -> list[str]:
+    raw_values: list[Any] = ["eps_consensus_basis"]
+    for action in actions:
+        metadata = action.metadata if isinstance(action.metadata, dict) else {}
+        raw_values.extend(
+            [
+                metadata.get("model_metric_id"),
+                metadata.get("consensus_metric_id"),
+                metadata.get("output_item_id"),
+            ]
+        )
+        for key in (
+            "candidate_driver_item_ids",
+            "candidate_model_update_item_ids",
+            "candidate_writer_item_ids",
+            "related_item_ids",
+            "missing_input_ids",
+        ):
+            raw = metadata.get(key)
+            if isinstance(raw, list):
+                raw_values.extend(raw)
+    input_ids = sorted({str(value).strip() for value in raw_values if str(value or "").strip()})
+    return input_ids
+
+
+def _model_calibration_args(input_id: str, actions: list[PendingAction]) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "basis_reconciliation_required": True,
+        "do_not_write_output_rows": True,
+        "required_sequence": ["model-update", "build-model", "model-review"],
+        "calibration_input_id": input_id,
+    }
+    for action in actions:
+        metadata = action.metadata if isinstance(action.metadata, dict) else {}
+        if metadata:
+            args.setdefault("pending_action_metadata", {}).update(metadata)
+        for key, value in metadata.items():
+            args.setdefault(key, value)
+        if action.source:
+            args.setdefault("source", action.source)
+        if action.target:
+            args.setdefault("target", action.target)
     return args
 
 

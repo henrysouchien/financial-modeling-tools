@@ -413,6 +413,41 @@ def _offset_scenario_selector_id(owner: LineItem) -> Optional[str]:
     return selector_ref.id if selector_ref is not None else None
 
 
+def _constant_spec_value(spec: Optional[FormulaSpec]) -> Optional[float]:
+    if spec is None or spec.type != FormulaType.constant:
+        return None
+    try:
+        return float((spec.params or {}).get("value"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _scenario_case_row_values(model: FinancialModel, case_row_id: str) -> Dict[int, float]:
+    try:
+        item = model.get_item(case_row_id)
+    except KeyError:
+        return {}
+
+    values: Dict[int, float] = {}
+    if item.values is not None:
+        for period, cell in item.values.values.items():
+            if cell.value is None:
+                continue
+            try:
+                values[int(period)] = float(cell.value)
+            except (TypeError, ValueError):
+                continue
+    if item.overrides:
+        for period, spec in item.overrides.items():
+            value = _constant_spec_value(spec)
+            if value is not None:
+                try:
+                    values[int(period)] = value
+                except (TypeError, ValueError):
+                    continue
+    return values
+
+
 def _scenario_case_selection_for_overrides(
     model: FinancialModel,
     overrides: Dict[str, Dict[int, float]],
@@ -462,13 +497,29 @@ def _scenario_case_selection_for_overrides(
             if match["selector_id"] in overrides
         }
     )
-    owner_overrides = {
-        match["owner_id"]: {
+    case_row_overrides: Dict[str, Dict[int, float]] = {}
+    owner_overrides: Dict[str, Dict[int, float]] = {}
+    case_row_backfills: List[Dict[str, Any]] = []
+    for match in matches:
+        raw_override = {
             int(period): float(value)
             for period, value in overrides.get(match["case_row_id"], {}).items()
         }
-        for match in matches
-    }
+        row_values = _scenario_case_row_values(model, match["case_row_id"])
+        merged_override = dict(row_values)
+        merged_override.update(raw_override)
+        case_row_overrides[match["case_row_id"]] = merged_override
+        owner_overrides[match["owner_id"]] = dict(merged_override)
+        backfilled_periods = sorted(set(row_values) - set(raw_override))
+        if backfilled_periods:
+            case_row_backfills.append(
+                {
+                    "case_row_id": match["case_row_id"],
+                    "owner_id": match["owner_id"],
+                    "case": match["case"],
+                    "periods": backfilled_periods,
+                }
+            )
     owner_conflicts = [
         {
             "owner_id": owner_id,
@@ -495,7 +546,9 @@ def _scenario_case_selection_for_overrides(
         "status": "auto_selected",
         "case": case,
         "matches": matches,
+        "case_row_overrides": case_row_overrides,
         "owner_overrides": owner_overrides,
+        "case_row_backfills": case_row_backfills,
         "selector_ids": sorted({match["selector_id"] for match in matches}),
         "owner_ids": sorted({match["owner_id"] for match in matches}),
     }
@@ -542,6 +595,15 @@ def _apply_scenario_case_selection(
     if not selection or selection.get("status") != "auto_selected":
         return overrides
     expanded = {item_id: dict(period_values) for item_id, period_values in overrides.items()}
+    case_row_overrides = selection.get("case_row_overrides")
+    if isinstance(case_row_overrides, dict):
+        for case_row_id, by_period in case_row_overrides.items():
+            if not isinstance(by_period, dict):
+                continue
+            normalized = expanded.setdefault(str(case_row_id), {})
+            for raw_period, raw_value in by_period.items():
+                period = int(raw_period)
+                normalized[period] = float(raw_value)
     owner_overrides = selection.get("owner_overrides")
     if not isinstance(owner_overrides, dict):
         return expanded

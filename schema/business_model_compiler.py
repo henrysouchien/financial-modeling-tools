@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import re
 from typing import Any
 
-from .business_model import (
-    BusinessModel,
-    DriverExpr,
-    DriverNode,
-    NodeRef,
-    derive_driver_assumption_plan,
+from .business_model import BusinessModel, DriverNode, derive_driver_assumption_plan
+from .business_model_compiler_errors import BusinessModelCompileError
+from .business_model_compiler_formula import _compile_formula, _node_expr
+from .business_model_compiler_nodes import (
+    _build_node_lookup as _build_node_lookup,  # noqa: F401 - compatibility alias
+    _consolidation_dependency_node_ids as _consolidation_dependency_node_ids,  # noqa: F401 - compatibility alias
+    _count_bm_rows,
+    _count_tree_rows as _count_tree_rows,  # noqa: F401 - compatibility alias
+    _direct_consolidation_growth_node_ids,
+    _driver_expr_node_refs as _driver_expr_node_refs,  # noqa: F401 - compatibility alias
+    _iter_driver_nodes as _iter_driver_nodes,  # noqa: F401 - compatibility alias
+    _primary_scenario_growth_node_id,
+    _primary_scenario_owner_rate_id,
 )
+from .business_model_compiler_plans import _SegmentCompilePlan, _reconcile_segments
 from .driver_resolver import resolve_driver_key
 from .model_build_context import ModelBuildContext, SegmentProfileSnapshot
-from .models import FinancialModel, FormulaSpec, FormulaType, ItemType, LineItem, LineItemRef
+from .models import FinancialModel, FormulaSpec, ItemType, LineItem, LineItemRef
 from .segments import (
-    SegmentInfo,
+    SegmentInfo as SegmentInfo,
     SegmentProfile,
     _assert_no_duplicate_ids,
     _assert_rows_unique,
@@ -31,18 +38,13 @@ from .segments import (
     _shift_rows,
     _sum_or_ref_formula,
     _yoy_formula,
-    segment_revenue_observations_from_snapshot,
+    segment_revenue_observations_from_snapshot as segment_revenue_observations_from_snapshot,
 )
 from .templates import load_sia_generic_template
 
 
 _SCENARIO_TABLE_INTERMEDIATE_GROWTH_ID = "tpl.a.revenue_drivers.business_segment_1_growth"
 _SCENARIO_LABEL_ID = "tpl.a.scenario_tables.scenario_volume_growth_label"
-_NORMALIZE_NAME_RE = re.compile(r"[^a-z0-9]+")
-
-
-class BusinessModelCompileError(ValueError):
-    """Raised when a BusinessModel cannot be compiled onto a template."""
 
 
 @dataclass
@@ -54,15 +56,6 @@ class CompiledDriverRegistry:
     segment_profile: SegmentProfile = field(
         default_factory=lambda: SegmentProfile(ticker="TEMPLATE", segments=[], source="caller_override")
     )
-
-
-@dataclass(frozen=True)
-class _SegmentCompilePlan:
-    segment: Any | None
-    segment_index: int
-    info: SegmentInfo
-    segment_id: str | None = None
-    unmanaged_snapshot: bool = False
 
 
 def compile_business_model(
@@ -405,192 +398,6 @@ def _projection_periods(model: FinancialModel) -> list[int]:
     return [int(period) for period in periods]
 
 
-def _reconcile_segments(
-    business_model: BusinessModel,
-    edgar_snapshot: SegmentProfileSnapshot | None,
-) -> tuple[list[_SegmentCompilePlan], dict[str, int], SegmentProfile]:
-    if edgar_snapshot is None:
-        plans = [
-            _SegmentCompilePlan(
-                segment=segment,
-                segment_index=index,
-                info=SegmentInfo(
-                    name=segment.label,
-                    edgar_member=segment.edgar_member,
-                ),
-            )
-            for index, segment in enumerate(business_model.segments, start=1)
-        ]
-        return (
-            plans,
-            {segment.id: index for index, segment in enumerate(business_model.segments, start=1)},
-            SegmentProfile(
-                ticker=business_model.company.ticker,
-                segments=[plan.info for plan in plans],
-                source="caller_override",
-            ),
-        )
-
-    snapshot_by_name: dict[str, Any] = {}
-    snapshot_by_index: dict[int, Any] = {}
-    for snapshot_segment in edgar_snapshot.segments:
-        normalized = _normalize_name(snapshot_segment.name)
-        if normalized in snapshot_by_name:
-            raise BusinessModelCompileError(
-                f"snapshot contains duplicate segment names after normalization: {snapshot_segment.name!r}"
-            )
-        if snapshot_segment.segment_index in snapshot_by_index:
-            raise BusinessModelCompileError(
-                f"snapshot contains duplicate segment_index values: {snapshot_segment.segment_index}"
-            )
-        snapshot_by_name[normalized] = snapshot_segment
-        snapshot_by_index[int(snapshot_segment.segment_index)] = snapshot_segment
-
-    plans: list[_SegmentCompilePlan] = []
-    matched_snapshot_names: set[str] = set()
-    segment_mapping: dict[str, int] = {}
-    used_segment_ids = {str(segment.id) for segment in business_model.segments}
-    next_supplemental_index = max(snapshot_by_index) + 1 if snapshot_by_index else 1
-
-    for segment in business_model.segments:
-        normalized = _normalize_name(segment.match_name)
-        snapshot_segment = snapshot_by_name.get(normalized)
-        if snapshot_segment is None:
-            if segment.edgar_axis or segment.edgar_member:
-                raise BusinessModelCompileError(
-                    f"no EDGAR snapshot match for BM segment {segment.id!r} (match_name={segment.match_name!r})"
-                )
-            # A BusinessModel can include source-backed revenue streams that
-            # are not EDGAR axis members, e.g. interest income in total revenue.
-            segment_index = next_supplemental_index
-            next_supplemental_index += 1
-            segment_mapping[segment.id] = segment_index
-            plans.append(
-                _SegmentCompilePlan(
-                    segment=segment,
-                    segment_index=segment_index,
-                    info=SegmentInfo(
-                        name=segment.label,
-                        edgar_member=None,
-                    ),
-                    segment_id=segment.id,
-                )
-            )
-            continue
-        if normalized in matched_snapshot_names:
-            raise BusinessModelCompileError(f"snapshot segment {snapshot_segment.name!r} matched more than once")
-        if segment.edgar_member and snapshot_segment.edgar_member and segment.edgar_member != snapshot_segment.edgar_member:
-            raise BusinessModelCompileError(
-                "EDGAR member conflict for BM segment "
-                f"{segment.id!r}: business_model={segment.edgar_member!r}, "
-                f"snapshot={snapshot_segment.edgar_member!r}"
-            )
-
-        matched_snapshot_names.add(normalized)
-        segment_mapping[segment.id] = int(snapshot_segment.segment_index)
-        plans.append(
-            _SegmentCompilePlan(
-                segment=segment,
-                segment_index=int(snapshot_segment.segment_index),
-                info=SegmentInfo(
-                    name=segment.label,
-                    edgar_member=segment.edgar_member or snapshot_segment.edgar_member,
-                    revenue_observations=segment_revenue_observations_from_snapshot(snapshot_segment),
-                    volume_label=snapshot_segment.volume_label,
-                    price_label=snapshot_segment.price_label,
-                ),
-                segment_id=segment.id,
-            )
-        )
-
-    unmatched_snapshot_segments = [
-        snapshot_segment
-        for snapshot_segment in edgar_snapshot.segments
-        if _normalize_name(snapshot_segment.name) not in matched_snapshot_names
-    ]
-    residual_snapshot_segments = [
-        snapshot_segment
-        for snapshot_segment in unmatched_snapshot_segments
-        if _is_unmanaged_residual_snapshot_segment(snapshot_segment)
-    ]
-    residual_snapshot_segment_ids = {id(snapshot_segment) for snapshot_segment in residual_snapshot_segments}
-    blocking_unmatched_snapshot_names = sorted(
-        snapshot_segment.name
-        for snapshot_segment in unmatched_snapshot_segments
-        if id(snapshot_segment) not in residual_snapshot_segment_ids
-    )
-    for snapshot_segment in residual_snapshot_segments:
-        segment_id = _unmanaged_snapshot_segment_id(
-            snapshot_segment.name,
-            int(snapshot_segment.segment_index),
-            used_segment_ids,
-        )
-        plans.append(
-            _SegmentCompilePlan(
-                segment=None,
-                segment_index=int(snapshot_segment.segment_index),
-                info=SegmentInfo(
-                    name=snapshot_segment.name,
-                    edgar_member=None,
-                    revenue_observations=segment_revenue_observations_from_snapshot(snapshot_segment),
-                    volume_label=snapshot_segment.volume_label,
-                    price_label=snapshot_segment.price_label,
-                ),
-                segment_id=segment_id,
-                unmanaged_snapshot=True,
-            )
-        )
-    unmatched_snapshot_names = blocking_unmatched_snapshot_names
-    if unmatched_snapshot_names:
-        raise BusinessModelCompileError(
-            f"EDGAR snapshot has unmatched segments: {unmatched_snapshot_names}"
-        )
-
-    plans.sort(key=lambda plan: plan.segment_index)
-    if not plans or plans[0].segment_index != 1:
-        raise BusinessModelCompileError("EDGAR reconciliation must produce a primary segment with segment_index == 1")
-
-    return (
-        plans,
-        segment_mapping,
-        SegmentProfile(
-            ticker=business_model.company.ticker,
-            segments=[plan.info for plan in plans],
-            source=edgar_snapshot.source,
-            axis_used=edgar_snapshot.axis_used,
-            total_revenue_check=dict(edgar_snapshot.total_revenue_check) if edgar_snapshot.total_revenue_check else None,
-        ),
-    )
-
-
-def _is_unmanaged_residual_snapshot_segment(snapshot_segment: Any) -> bool:
-    if str(getattr(snapshot_segment, "edgar_member", "") or "").strip():
-        return False
-    if _normalize_name(getattr(snapshot_segment, "name", "")) not in {
-        "other",
-        "other segments",
-        "all other",
-    }:
-        return False
-    observations = list(getattr(snapshot_segment, "revenue_observations", None) or [])
-    if not observations:
-        return False
-    return all(str(getattr(observation, "source", "") or "") == "derived_other" for observation in observations)
-
-
-def _unmanaged_snapshot_segment_id(name: str, segment_index: int, used_segment_ids: set[str]) -> str:
-    normalized = _NORMALIZE_NAME_RE.sub("_", str(name or "").strip().casefold()).strip("_")
-    normalized = "_".join(part for part in normalized.split("_") if part) or "segment"
-    base = f"unmodeled_{normalized}_{int(segment_index)}"
-    candidate = base
-    suffix = 2
-    while candidate in used_segment_ids:
-        candidate = f"{base}_{suffix}"
-        suffix += 1
-    used_segment_ids.add(candidate)
-    return candidate
-
-
 def _materialize_unmanaged_snapshot_segment(
     *,
     plan: _SegmentCompilePlan,
@@ -706,136 +513,6 @@ def _materialize_unmanaged_snapshot_segment(
         )
     )
     return current_row
-
-
-def _count_bm_rows(plans: list[_SegmentCompilePlan]) -> int:
-    rows = 0
-    for plan in plans:
-        if plan.segment is None:
-            rows += 2
-            continue
-        rows += _count_tree_rows(plan.segment.revenue_model.decomposition)
-        rows += 2
-    return rows
-
-
-def _count_tree_rows(nodes: list[DriverNode]) -> int:
-    rows = 0
-    for node in nodes:
-        rows += _count_tree_rows(node.children or [])
-        target_type = node.compile_to.target_type
-        if target_type not in {"assumption_row", "derived_row"}:
-            continue
-        expr = _node_expr(node)
-        rows += 2 if expr and expr.type == "growth" else 1
-    return rows
-
-
-def _iter_driver_nodes(nodes: list[DriverNode]):
-    for node in nodes:
-        yield node
-        if node.children:
-            yield from _iter_driver_nodes(node.children)
-
-
-def _driver_expr_node_refs(expr: DriverExpr | None) -> set[str]:
-    if expr is None:
-        return set()
-    if expr.type == "growth":
-        node_id = expr.params.base.node_id
-        return set() if node_id == "self" else {node_id}
-    if expr.type in {"product", "sum"}:
-        return {ref.node_id for ref in expr.params.operands if ref.node_id != "self"}
-    if expr.type == "derived":
-        return {
-            ref.node_id
-            for ref in (expr.params.numerator, expr.params.denominator)
-            if ref.node_id != "self"
-        }
-    if expr.type == "roll_forward":
-        refs = [expr.params.beginning, *expr.params.additions, *expr.params.subtractions]
-        return {ref.node_id for ref in refs if ref.node_id != "self"}
-    return set()
-
-
-def _consolidation_dependency_node_ids(segment: Any) -> set[str]:
-    nodes_by_id = {
-        node.id: node
-        for node in _iter_driver_nodes(segment.revenue_model.decomposition)
-    }
-    dependencies: set[str] = set()
-    pending = list(_driver_expr_node_refs(segment.revenue_model.consolidation_formula))
-    while pending:
-        node_id = pending.pop()
-        if node_id in dependencies:
-            continue
-        dependencies.add(node_id)
-        node = nodes_by_id.get(node_id)
-        if node is not None:
-            pending.extend(_driver_expr_node_refs(_node_expr(node)) - dependencies)
-    return dependencies
-
-
-def _direct_consolidation_growth_node_ids(segment: Any) -> set[str]:
-    nodes_by_id = {
-        node.id: node
-        for node in _iter_driver_nodes(segment.revenue_model.decomposition)
-    }
-    result: set[str] = set()
-    for node_id in _driver_expr_node_refs(segment.revenue_model.consolidation_formula):
-        node = nodes_by_id.get(node_id)
-        expr = _node_expr(node) if node is not None else None
-        if expr is not None and expr.type == "growth":
-            result.add(node_id)
-    return result
-
-
-def _primary_scenario_growth_node_id(segment: Any) -> str | None:
-    consolidation_dependencies = _consolidation_dependency_node_ids(segment)
-    first_growth_node_id: str | None = None
-    for node in _iter_driver_nodes(segment.revenue_model.decomposition):
-        expr = _node_expr(node)
-        if expr is None or expr.type != "growth" or node.compile_to.target_type != "assumption_row":
-            continue
-        if node.id not in consolidation_dependencies:
-            continue
-        first_growth_node_id = first_growth_node_id or node.id
-        factor_names = {str(factor).lower() for factor in (node.factors or [])}
-        if "volume" in factor_names:
-            return node.id
-    return first_growth_node_id
-
-
-def _primary_scenario_owner_rate_id(segment: Any) -> str | None:
-    node_id = _primary_scenario_growth_node_id(segment)
-    if node_id is None:
-        return None
-    for node in _iter_driver_nodes(segment.revenue_model.decomposition):
-        if node.id != node_id:
-            continue
-        expr = _node_expr(node)
-        if expr is None or expr.type != "growth":
-            return None
-        return f"bm.{segment.id}.{node.id}__{expr.params.rate_key}"
-    return None
-
-
-def _build_node_lookup(segment: Any) -> tuple[dict[str, str], dict[str, str]]:
-    node_lookup: dict[str, str] = {}
-    non_materialized: dict[str, str] = {}
-
-    def walk(nodes: list[DriverNode]) -> None:
-        for node in nodes:
-            target_type = node.compile_to.target_type
-            if target_type in {"assumption_row", "derived_row"}:
-                node_lookup[node.id] = f"bm.{segment.id}.{node.id}"
-            else:
-                non_materialized[node.id] = target_type
-            if node.children:
-                walk(node.children)
-
-    walk(segment.revenue_model.decomposition)
-    return node_lookup, non_materialized
 
 
 def _register_driver_assumption_plan_keys(
@@ -1125,185 +802,6 @@ def _node_item(
             "repeat_group_role": None,
         },
     )
-
-
-def _compile_formula(
-    expr: DriverExpr,
-    *,
-    segment_id: str,
-    referencing_node_id: str,
-    node_lookup: dict[str, str],
-    non_materialized: dict[str, str],
-    current_item_id: str,
-) -> FormulaSpec:
-    if expr.type == "product":
-        return FormulaSpec(
-            type=FormulaType.arithmetic,
-            params={
-                "operands": [
-                    "*",
-                    *[
-                        _resolve_ref_expr(
-                            operand,
-                            segment_id=segment_id,
-                            referencing_node_id=referencing_node_id,
-                            node_lookup=node_lookup,
-                            non_materialized=non_materialized,
-                            current_item_id=current_item_id,
-                        )
-                        for operand in expr.params.operands
-                    ],
-                ]
-            },
-        )
-
-    if expr.type == "sum":
-        return FormulaSpec(
-            type=FormulaType.arithmetic,
-            params={
-                "operands": [
-                    "+",
-                    *[
-                        _resolve_ref_expr(
-                            operand,
-                            segment_id=segment_id,
-                            referencing_node_id=referencing_node_id,
-                            node_lookup=node_lookup,
-                            non_materialized=non_materialized,
-                            current_item_id=current_item_id,
-                        )
-                        for operand in expr.params.operands
-                    ],
-                ]
-            },
-        )
-
-    if expr.type == "derived":
-        numerator = _resolve_line_item_ref(
-            expr.params.numerator,
-            segment_id=segment_id,
-            referencing_node_id=referencing_node_id,
-            node_lookup=node_lookup,
-            non_materialized=non_materialized,
-            current_item_id=current_item_id,
-        )
-        denominator = _resolve_line_item_ref(
-            expr.params.denominator,
-            segment_id=segment_id,
-            referencing_node_id=referencing_node_id,
-            node_lookup=node_lookup,
-            non_materialized=non_materialized,
-            current_item_id=current_item_id,
-        )
-        if numerator.t == 0 and denominator.t == 0:
-            return _ratio_formula(numerator.id, denominator.id)
-        return FormulaSpec(
-            type=FormulaType.ratio,
-            params={"numerator": numerator, "denominator": denominator},
-        )
-
-    if expr.type == "roll_forward":
-        return FormulaSpec(
-            type=FormulaType.roll_forward,
-            params={
-                "beginning": _resolve_line_item_ref(
-                    expr.params.beginning,
-                    segment_id=segment_id,
-                    referencing_node_id=referencing_node_id,
-                    node_lookup=node_lookup,
-                    non_materialized=non_materialized,
-                    current_item_id=current_item_id,
-                ),
-                "additions": [
-                    _resolve_line_item_ref(
-                        ref,
-                        segment_id=segment_id,
-                        referencing_node_id=referencing_node_id,
-                        node_lookup=node_lookup,
-                        non_materialized=non_materialized,
-                        current_item_id=current_item_id,
-                    )
-                    for ref in expr.params.additions
-                ],
-                "subtractions": [
-                    _resolve_line_item_ref(
-                        ref,
-                        segment_id=segment_id,
-                        referencing_node_id=referencing_node_id,
-                        node_lookup=node_lookup,
-                        non_materialized=non_materialized,
-                        current_item_id=current_item_id,
-                    )
-                    for ref in expr.params.subtractions
-                ],
-            },
-        )
-
-    if expr.type == "growth":
-        raise BusinessModelCompileError(
-            f"growth expression on {segment_id}.{referencing_node_id} must be handled as an assumption_row pair"
-        )
-    if expr.type == "external":
-        raise BusinessModelCompileError(
-            f"external expression on {segment_id}.{referencing_node_id} does not compile to a FormulaSpec"
-        )
-    raise BusinessModelCompileError(f"unsupported driver expression {expr.type!r}")
-
-
-def _resolve_ref_expr(
-    ref: NodeRef,
-    *,
-    segment_id: str,
-    referencing_node_id: str,
-    node_lookup: dict[str, str],
-    non_materialized: dict[str, str],
-    current_item_id: str,
-) -> Any:
-    resolved = _resolve_line_item_ref(
-        ref,
-        segment_id=segment_id,
-        referencing_node_id=referencing_node_id,
-        node_lookup=node_lookup,
-        non_materialized=non_materialized,
-        current_item_id=current_item_id,
-    )
-    if ref.sign == -1:
-        return {"op": "NEG", "arg": resolved}
-    return resolved
-
-
-def _resolve_line_item_ref(
-    ref: NodeRef,
-    *,
-    segment_id: str,
-    referencing_node_id: str,
-    node_lookup: dict[str, str],
-    non_materialized: dict[str, str],
-    current_item_id: str,
-) -> LineItemRef:
-    if ref.node_id == "self":
-        return LineItemRef(id=current_item_id, t=ref.t)
-
-    target_id = node_lookup.get(ref.node_id)
-    if target_id is None:
-        reason = "target is not materialized"
-        if ref.node_id in non_materialized:
-            reason = f"target compiles to {non_materialized[ref.node_id]!r} and is not materialized"
-        raise BusinessModelCompileError(
-            f"node {segment_id}.{referencing_node_id!r} cannot resolve NodeRef {ref.node_id!r}: {reason}"
-        )
-    return LineItemRef(id=target_id, t=ref.t)
-
-
-def _node_expr(node: DriverNode) -> DriverExpr | None:
-    if node.children_role == "decomposition":
-        return node.children_formula
-    return node.driver
-
-
-def _normalize_name(value: str) -> str:
-    normalized = _NORMALIZE_NAME_RE.sub(" ", str(value or "").strip().casefold())
-    return " ".join(normalized.split())
 
 
 def _scenario_label(segment_name: str) -> str:

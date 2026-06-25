@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
+from .business_model import CompileTargetType, DriverAssumptionPlan, Factor
+from .models import Unit
 from .model_readiness import (
     ModelQualityReadiness,
     ModelProjectionReadiness,
@@ -121,6 +123,37 @@ class HandoffModelRef(_ContractModel):
         return _require_identifier(value, field_name="model_build_context_id")
 
 
+class ForecastAssumptionWriteTarget(_ContractModel):
+    source: Literal["DriverAssumptionPlan"] = "DriverAssumptionPlan"
+    driver_key: str
+    item_id: str | None = None
+    label: str
+    unit: Unit
+    driver_unit: Unit | None = None
+    value_unit: Unit | None = None
+    factors: list[Factor] = Field(default_factory=list)
+    compile_target_type: CompileTargetType
+    existing_driver_key: str | None = None
+    business_model_id: str
+    revision: str
+    segment_id: str
+    driver_node_id: str
+    aliases: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "driver_key",
+        "label",
+        "business_model_id",
+        "revision",
+        "segment_id",
+        "driver_node_id",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_required_write_target_identifier(cls, value: object | None) -> str:
+        return _require_identifier(value, field_name="forecast_assumption_write_target")
+
+
 class CurrentModelRef(_ContractModel):
     ticker: str
     research_file_id: int = Field(ge=1)
@@ -141,6 +174,11 @@ class CurrentModelRef(_ContractModel):
     scenario_bridge_readiness: ModelScenarioBridgeReadiness | None = None
     model_quality_readiness: ModelQualityReadiness | None = None
     valuation_input_readiness: ValuationInputReadiness | None = None
+    business_model_ref: BusinessModelRef | None = None
+    driver_assumption_plan: DriverAssumptionPlan | None = None
+    driver_assumption_plan_status: ModelFeedbackStatus = "missing"
+    driver_assumption_plan_error: dict[str, Any] | None = None
+    forecast_assumption_write_targets: list[ForecastAssumptionWriteTarget] = Field(default_factory=list)
     model_semantics_status: ModelFeedbackStatus = "missing"
     model_semantics_hash: str | None = None
     model_insights_status: ModelFeedbackStatus = "missing"
@@ -236,6 +274,7 @@ __all__ = [
     "DiligenceCompletionState",
     "Financials",
     "FinancialsSource",
+    "ForecastAssumptionWriteTarget",
     "HandoffArtifactV1_1",
     "HandoffMetadata",
     "HandoffModelRef",

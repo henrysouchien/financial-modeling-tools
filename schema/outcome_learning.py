@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ._insights_shared import _FROZEN_CONTRACT
 from ._outcome_shared import OutcomeComponent
@@ -49,6 +49,10 @@ class MethodologyScorecard(BaseModel):
     methodology_version: str
     as_of: str
     trade_filter: Literal["all", "traded"] = "all"
+    model_id: str | None = Field(default=None, min_length=1)
+    model_version: int | None = Field(default=None, ge=1)
+    model_build_context_id: str | None = Field(default=None, min_length=1)
+    model_build_context_version: int | None = Field(default=None, ge=1)
     verdicts: tuple[MethodologyVerdict, ...]
     prior_version: str | None = None
 
@@ -56,6 +60,18 @@ class MethodologyScorecard(BaseModel):
     @classmethod
     def _normalize_as_of(cls, value: object) -> str:
         return _canonical_utc_datetime(value, field_name="as_of")
+
+    @model_validator(mode="after")
+    def _model_scope_fields_move_together(self) -> MethodologyScorecard:
+        if (self.model_id is None) != (self.model_version is None):
+            raise ValueError("model_id and model_version must move together")
+        if (self.model_build_context_id is None) != (
+            self.model_build_context_version is None
+        ):
+            raise ValueError(
+                "model_build_context_id and model_build_context_version must move together"
+            )
+        return self
 
     model_config = _FROZEN_CONTRACT
 

@@ -4,228 +4,101 @@ from __future__ import annotations
 
 from collections import defaultdict
 import concurrent.futures
-from dataclasses import dataclass, field
 import logging
-import re
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from .models import (
     FinancialModel,
-    FormulaSpec,
-    FormulaType,
     LineItem,
     LineItemRef,
-    Section,
-    SheetType,
-    ValueCell,
-    ValueProvenance,
-    ValueSeries,
 )
 from .model_build_context import SegmentRevenueObservation
-from .source_values import normalize_edgar_value
+from .segment_fact_helpers import (
+    REVENUE_TAGS_PRIORITY as REVENUE_TAGS_PRIORITY,
+    SEGMENT_AXES_PRIORITY as SEGMENT_AXES_PRIORITY,
+    _REVENUE_TAGS as _REVENUE_TAGS,
+    _annotate_revenue_comparability as _annotate_revenue_comparability,
+    _clean_optional_string as _clean_optional_string,
+    _consolidated_values as _consolidated_values,
+    _dedupe_member_facts as _dedupe_member_facts,
+    _extract_fact_rows as _extract_fact_rows,
+    _fact_dimensions as _fact_dimensions,
+    _fact_value as _fact_value,
+    _filter_revenue_facts as _filter_revenue_facts,
+    _materiality_share as _materiality_share,
+    _normalize_qname as _normalize_qname,
+    _normalize_scale as _normalize_scale,
+    _observation_from_fact as _observation_from_fact,
+    _pretty_member_label as _pretty_member_label,
+    _segment_label as _segment_label,
+    _single_segment_dimension as _single_segment_dimension,
+)
+from .segment_formula_helpers import (
+    _COLUMN_OFFSET_MODE_PERIOD_RELATIVE as _COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
+    _SCENARIO_SELECTOR_ID as _SCENARIO_SELECTOR_ID,
+    _SCENARIO_VOLUME_GROWTH_LABEL_ID as _SCENARIO_VOLUME_GROWTH_LABEL_ID,
+    _carry_forward_formula as _carry_forward_formula,
+    _carry_forward_ref as _carry_forward_ref,
+    _growth_formula as _growth_formula,
+    _line_ref_dict as _line_ref_dict,
+    _offset_scenario_formula as _offset_scenario_formula,
+    _ratio_formula as _ratio_formula,
+    _ref_formula as _ref_formula,
+    _ref_source_id as _ref_source_id,
+    _ref_target_id as _ref_target_id,
+    _rewrite_refs as _rewrite_refs,
+    _sum_or_ref_formula as _sum_or_ref_formula,
+    _yoy_formula as _yoy_formula,
+)
+from .segment_model_helpers import (
+    _assert_no_duplicate_ids as _assert_no_duplicate_ids,
+    _assert_rows_unique as _assert_rows_unique,
+    _get_section as _get_section,
+    _iter_items_with_section as _iter_items_with_section,
+    _iter_sheet_items as _iter_sheet_items,
+    _repair_deleted_refs_in_item as _repair_deleted_refs_in_item,
+    _rewire_scenario_table_refs as _rewire_scenario_table_refs,
+    _set_imported_value as _set_imported_value,
+    _shift_rows as _shift_rows,
+)
+from .segment_history_helpers import (
+    populate_segment_historicals as populate_segment_historicals,
+    prune_segment_formula_periods as prune_segment_formula_periods,
+)
+from .segment_override_helpers import (
+    apply_segment_overrides as apply_segment_overrides,
+)
+from .segment_profile_helpers import (
+    ExpandResult as ExpandResult,
+    MultiAxisResult as MultiAxisResult,
+    SegmentInfo as SegmentInfo,
+    SegmentProfile as SegmentProfile,
+    _derived_component_basis_by_year as _derived_component_basis_by_year,
+    _derived_revenue_observations as _derived_revenue_observations,
+    _segment_sort_key as _segment_sort_key,
+    revenue_observations_to_values as revenue_observations_to_values,
+    segment_revenue_observation_list as segment_revenue_observation_list,
+    segment_revenue_observations_from_snapshot as segment_revenue_observations_from_snapshot,
+    segment_revenue_values as segment_revenue_values,
+)
+from .segment_template_constants import (
+    EXCLUDED_MEMBER_SUFFIXES as EXCLUDED_MEMBER_SUFFIXES,
+    MATERIALITY_THRESHOLD as MATERIALITY_THRESHOLD,
+    SEGMENT_ITEM_ID_ROLES as SEGMENT_ITEM_ID_ROLES,
+    _ASSUMPTIONS_SEGMENT_IDS as _ASSUMPTIONS_SEGMENT_IDS,
+    _ASSUMPTIONS_SEGMENT_START_ROW as _ASSUMPTIONS_SEGMENT_START_ROW,
+    _ASSUMPTIONS_TOTAL_REVENUE_ROW as _ASSUMPTIONS_TOTAL_REVENUE_ROW,
+    _FM_SECTION_SHIFT_ROWS as _FM_SECTION_SHIFT_ROWS,
+    _FM_SECTION_START_ROWS as _FM_SECTION_START_ROWS,
+    _FM_SEGMENT_IDS as _FM_SEGMENT_IDS,
+    _REBUILD_LATER_IDS as _REBUILD_LATER_IDS,
+    _SCENARIO_TABLE_NEW_GROWTH_ID as _SCENARIO_TABLE_NEW_GROWTH_ID,
+    _SCENARIO_TABLE_OLD_GROWTH_ID as _SCENARIO_TABLE_OLD_GROWTH_ID,
+    _rebuild_later_ids as _rebuild_later_ids,
+)
 
 
 EdgarFinancialsFetcher = Callable[[str, int, int, bool], Dict]
-
-
-_SCENARIO_SELECTOR_ID = "tpl.a.header.scenario_value"
-_SCENARIO_VOLUME_GROWTH_LABEL_ID = "tpl.a.scenario_tables.scenario_volume_growth_label"
-_COLUMN_OFFSET_MODE_PERIOD_RELATIVE = "period_relative"
-
-SEGMENT_ITEM_ID_ROLES = (
-    "volume_driver",
-    "volume_growth",
-    "price_driver",
-    "price_growth",
-    "revenue",
-    "growth",
-    "revenue_fm",
-    "margin_fm",
-    "growth_fm",
-)
-
-REVENUE_TAGS_PRIORITY = [
-    "RevenueFromContractWithCustomerExcludingAssessedTax",
-    "SalesRevenueNet",
-    "Revenues",
-]
-
-SEGMENT_AXES_PRIORITY = [
-    "StatementBusinessSegmentsAxis",
-    "ProductOrServiceAxis",
-    "StatementGeographicalAxis",
-]
-
-EXCLUDED_MEMBER_SUFFIXES = {
-    "CorporateNonSegmentMember",
-    "CorporateMember",
-    "IntersegmentEliminationMember",
-    "EliminationOfIntersegmentAmountsMember",
-}
-
-MATERIALITY_THRESHOLD = 0.02
-
-_REVENUE_TAGS = set(REVENUE_TAGS_PRIORITY)
-_ASSUMPTIONS_SEGMENT_IDS = {
-    "tpl.a.revenue_drivers.volume_driver_1",
-    "tpl.a.revenue_drivers.volume_1_growth",
-    "tpl.a.revenue_drivers.volume_driver_2",
-    "tpl.a.revenue_drivers.volume_2_growth",
-    "tpl.a.revenue_drivers.volume_driver_3",
-    "tpl.a.revenue_drivers.volume_3_growth",
-    "tpl.a.revenue_drivers.price_driver_1",
-    "tpl.a.revenue_drivers.price_1_growth",
-    "tpl.a.revenue_drivers.operating_metric",
-    "tpl.a.revenue_drivers.operating_metric_growth",
-    "tpl.a.revenue_drivers.business_segment_1_revenue",
-    "tpl.a.revenue_drivers.business_segment_1_growth",
-    "tpl.a.revenue_drivers.business_segment_2_volume_driver_1",
-    "tpl.a.revenue_drivers.business_segment_2_volume_growth",
-    "tpl.a.revenue_drivers.business_segment_2_price_driver_1",
-    "tpl.a.revenue_drivers.business_segment_2_price_growth",
-    "tpl.a.revenue_drivers.business_segment_2_revenue",
-    "tpl.a.revenue_drivers.business_segment_2_growth",
-}
-_FM_SEGMENT_IDS = {
-    "tpl.fm.income_statement.business_segment_1_revenue",
-    "tpl.fm.income_statement.business_segment_2_revenue",
-    "tpl.fm.margins.business_segment_1_pct_revenue",
-    "tpl.fm.margins.business_segment_2_pct_revenue",
-    "tpl.fm.growth_rates.business_segment_1_growth",
-    "tpl.fm.growth_rates.business_segment_2_growth",
-}
-_ASSUMPTIONS_SEGMENT_START_ROW = 7
-_ASSUMPTIONS_TOTAL_REVENUE_ROW = 27
-_FM_SECTION_START_ROWS = {
-    "income_statement": 5,
-    "margins": 41,
-    "growth_rates": 53,
-}
-_FM_SECTION_SHIFT_ROWS = {
-    "income_statement": 7,
-    "margins": 43,
-    "growth_rates": 55,
-}
-_SCENARIO_TABLE_OLD_GROWTH_ID = "tpl.a.revenue_drivers.volume_1_growth"
-_SCENARIO_TABLE_NEW_GROWTH_ID = "tpl.a.revenue_drivers.business_segment_1_growth"
-
-
-def _rebuild_later_ids() -> frozenset[str]:
-    """Items whose formulas reference segment IDs but are rebuilt later in the pipeline.
-
-    Skip these during generic dangling-ref repair -- they will be fixed by
-    their dedicated rebuild step.
-    """
-
-    return frozenset(
-        {
-            "tpl.a.revenue_drivers.total_revenue",  # rebuilt by _update_total_revenue_formulas()
-            "tpl.fm.income_statement.total_revenue",  # rebuilt by _update_total_revenue_formulas()
-        }
-    )
-
-
-_REBUILD_LATER_IDS = _rebuild_later_ids()
-
-
-@dataclass
-class SegmentInfo:
-    name: str
-    edgar_member: Optional[str] = None
-    revenue_observations: Optional[Dict[int, SegmentRevenueObservation]] = None
-    volume_label: Optional[str] = None
-    price_label: Optional[str] = None
-    item_ids: Optional[Dict[str, str]] = None
-
-
-@dataclass
-class SegmentProfile:
-    ticker: str
-    segments: List[SegmentInfo]
-    source: str
-    axis_used: Optional[str] = None
-    total_revenue_check: Optional[Dict[int, float]] = None
-
-
-def segment_revenue_values(segment: SegmentInfo) -> Dict[int, float]:
-    """Return model-ready revenue values derived from typed observations."""
-
-    observations = segment.revenue_observations or {}
-    values: Dict[int, float] = {}
-    for raw_year, observation in observations.items():
-        year = int(getattr(observation, "fiscal_year", raw_year))
-        value = getattr(observation, "value", None)
-        if value is None:
-            continue
-        values[year] = float(value)
-    return dict(sorted(values.items()))
-
-
-def segment_revenue_observation_list(segment: SegmentInfo) -> list[SegmentRevenueObservation] | None:
-    observations = segment.revenue_observations or {}
-    if not observations:
-        return None
-    return [
-        observation
-        for _year, observation in sorted(
-            ((int(year), observation) for year, observation in observations.items()),
-            key=lambda item: item[0],
-        )
-    ]
-
-
-def revenue_observations_to_values(
-    observations: Sequence[SegmentRevenueObservation] | None,
-) -> Dict[int, float]:
-    values: Dict[int, float] = {}
-    for observation in observations or []:
-        values[int(observation.fiscal_year)] = float(observation.value)
-    return dict(sorted(values.items()))
-
-
-def segment_revenue_observations_from_snapshot(
-    snapshot_segment: object,
-) -> Dict[int, SegmentRevenueObservation] | None:
-    observations = getattr(snapshot_segment, "revenue_observations", None)
-    if not observations:
-        return None
-    return {
-        int(observation.fiscal_year): observation
-        for observation in sorted(observations, key=lambda item: int(item.fiscal_year))
-    }
-
-
-def _derived_revenue_observations(
-    values: Dict[int, float],
-    *,
-    source: str,
-    note: str,
-) -> Dict[int, SegmentRevenueObservation]:
-    observations: Dict[int, SegmentRevenueObservation] = {}
-    for year, value in sorted(values.items()):
-        observations[int(year)] = SegmentRevenueObservation(
-            fiscal_year=int(year),
-            value=float(value),
-            source=source,
-            comparable_with_prior="unknown",
-            comparability_note=note,
-        )
-    return _annotate_revenue_comparability(observations)
-
-
-@dataclass
-class MultiAxisResult:
-    ticker: str
-    profiles: List[SegmentProfile]
-    total_revenue_check: Optional[Dict[int, float]] = None
-    payloads_by_year: Dict[int, dict] = field(default_factory=dict)
-
-
-@dataclass
-class ExpandResult:
-    segments_created: int
-    items_added: int
-    items_relabeled: int
 
 
 def discover_all_axes(
@@ -368,69 +241,6 @@ def discover_segments_with_payloads(
     )
 
 
-def apply_segment_overrides(discovered: SegmentProfile, mapping: List[Dict]) -> SegmentProfile:
-    """Apply caller-provided naming, KPI label, and ordering overrides."""
-
-    discovered_by_member = {
-        segment.edgar_member: segment
-        for segment in discovered.segments
-        if segment.edgar_member
-    }
-    matched_members: set[str] = set()
-    segments: List[SegmentInfo] = []
-    other_values: Dict[int, float] = defaultdict(float)
-
-    for entry in list(mapping or []):
-        member = str(entry.get("edgar_member") or "").strip()
-        if not member:
-            continue
-        if member in matched_members:
-            logging.warning("Ignoring duplicate segment_mapping entry for '%s'", member)
-            continue
-
-        discovered_segment = discovered_by_member.get(member)
-        if discovered_segment is None:
-            logging.warning("Ignoring unmatched segment_mapping entry for '%s'", member)
-            continue
-
-        matched_members.add(member)
-        segments.append(
-            SegmentInfo(
-                name=str(entry.get("name") or discovered_segment.name),
-                edgar_member=discovered_segment.edgar_member,
-                revenue_observations=dict(discovered_segment.revenue_observations or {}),
-                volume_label=entry.get("volume_label") or discovered_segment.volume_label,
-                price_label=entry.get("price_label") or discovered_segment.price_label,
-            )
-        )
-
-    for segment in discovered.segments:
-        if segment.edgar_member and segment.edgar_member in matched_members:
-            continue
-        for year, value in segment_revenue_values(segment).items():
-            other_values[int(year)] += float(value)
-
-    if any(abs(value) > 1e-9 for value in other_values.values()):
-        segments.append(
-            SegmentInfo(
-                name="Other",
-                revenue_observations=_derived_revenue_observations(
-                    other_values,
-                    source="derived_other",
-                    note="Aggregated from unmatched segment members after caller override.",
-                ),
-            )
-        )
-
-    return SegmentProfile(
-        ticker=discovered.ticker,
-        segments=segments,
-        source="caller_override",
-        axis_used=discovered.axis_used,
-        total_revenue_check=dict(discovered.total_revenue_check or {}),
-    )
-
-
 def expand_segments(model: FinancialModel, profile: SegmentProfile) -> ExpandResult:
     """Replace the template's hardcoded PCTY segment block with canonical segments."""
 
@@ -522,148 +332,6 @@ def expand_segments(model: FinancialModel, profile: SegmentProfile) -> ExpandRes
     )
 
 
-def populate_segment_historicals(
-    model: FinancialModel,
-    profile: SegmentProfile,
-    historical_periods: List[int],
-) -> int:
-    """Write discovered segment revenue values into FM segment revenue rows."""
-
-    if not model._index:
-        model.build_index()
-
-    periods = {int(period) for period in historical_periods}
-    writes = 0
-    for segment in profile.segments:
-        revenue_values = segment_revenue_values(segment)
-        if not segment.item_ids or not revenue_values:
-            continue
-        item = model.get_item(segment.item_ids["revenue_fm"])
-        for year, value in revenue_values.items():
-            if int(year) not in periods:
-                continue
-            _set_imported_value(item, int(year), float(value))
-            writes += 1
-    return writes
-
-
-def prune_segment_formula_periods(model: FinancialModel, profile: SegmentProfile) -> None:
-    """Prune segment-derived formulas for partial historical coverage."""
-
-    if not profile.segments or not model._index:
-        if not model._index:
-            model.build_index()
-        if not profile.segments:
-            return
-
-    historical_periods = [int(period) for period in model.time_structure.historical_periods]
-    projection_periods = [int(period) for period in model.time_structure.projection_periods]
-    if not historical_periods:
-        return
-
-    last_historical = historical_periods[-1]
-    all_segment_roles = list(SEGMENT_ITEM_ID_ROLES)
-
-    for segment in profile.segments:
-        revenue_values = segment_revenue_values(segment)
-        if not segment.item_ids or not revenue_values:
-            continue
-
-        available_years = {int(year) for year in revenue_values}
-        has_projection_base = last_historical in available_years
-
-        for role in all_segment_roles:
-            item_id = segment.item_ids.get(role)
-            if not item_id:
-                continue
-            item = model.get_item(item_id)
-            if item.formula_periods is None:
-                continue
-
-            kept: List[int] = []
-            for period in list(item.formula_periods):
-                year = int(period)
-                if year in projection_periods:
-                    if has_projection_base:
-                        kept.append(year)
-                    continue
-
-                if role in {"margin_fm", "revenue"}:
-                    if year in available_years:
-                        kept.append(year)
-                    continue
-
-                if role in {"growth", "growth_fm"}:
-                    if year in available_years and (year - 1) in available_years:
-                        kept.append(year)
-                    continue
-
-                kept.append(year)
-
-            item.formula_periods = kept
-
-
-def _normalize_qname(qname: str) -> str:
-    if not qname:
-        return ""
-    text = str(qname)
-    if ":" in text:
-        return text.split(":", 1)[1]
-    return text
-
-
-def _normalize_scale(value: float, scale: Optional[str]) -> float:
-    return normalize_edgar_value(value, scale, concept_id="")
-
-
-def _filter_revenue_facts(facts: List[Dict]) -> tuple[List[Dict], List[Dict]]:
-    consolidated: List[Dict] = []
-    dimensional: List[Dict] = []
-
-    for fact in facts:
-        tag = _normalize_qname(str(fact.get("tag") or fact.get("metric_tag") or ""))
-        if tag not in _REVENUE_TAGS:
-            continue
-        value = _fact_value(fact)
-        if value is None:
-            continue
-        axis_key = str(fact.get("axis_key") or "__NONE__")
-        if axis_key == "__NONE__":
-            consolidated.append(fact)
-        else:
-            dimensional.append(fact)
-
-    return consolidated, dimensional
-
-
-def _dedupe_member_facts(
-    facts: List[Dict],
-    tag_priority: List[str],
-) -> Dict[tuple[str, int], Dict]:
-    priority_index = {tag: index for index, tag in enumerate(tag_priority)}
-    deduped: Dict[tuple[str, int], Dict] = {}
-
-    for fact in facts:
-        dimension = _single_segment_dimension(fact)
-        if dimension is None:
-            continue
-
-        member = str(dimension["member"])
-        year = int(fact["_segment_year"])
-        key = (member, year)
-        existing = deduped.get(key)
-        current_priority = priority_index.get(_normalize_qname(str(fact.get("tag") or "")), len(tag_priority))
-        if existing is None:
-            deduped[key] = fact
-            continue
-
-        existing_priority = priority_index.get(_normalize_qname(str(existing.get("tag") or "")), len(tag_priority))
-        if current_priority < existing_priority:
-            deduped[key] = fact
-
-    return deduped
-
-
 def _try_axis_decomposition(
     dimensional_facts: List[Dict],
     consolidated_values: Dict[int, float],
@@ -729,19 +397,27 @@ def _try_axis_decomposition(
 
     named_segments: List[SegmentInfo] = []
     other_values: Dict[int, float] = defaultdict(float)
+    other_basis_parts_by_year: Dict[int, set[str]] = defaultdict(set)
+
+    def add_other_member_value(member: str, year: int, value: float) -> None:
+        other_values[int(year)] += float(value)
+        observation = observations_by_member.get(member, {}).get(int(year))
+        basis_key = getattr(observation, "basis_key", None)
+        if basis_key:
+            other_basis_parts_by_year[int(year)].add(str(basis_key))
 
     for member, values in revenue_by_member.items():
         if member in rollup_members:
             continue
         if member not in current_members:
             for year, value in values.items():
-                other_values[int(year)] += float(value)
+                add_other_member_value(member, int(year), value)
             continue
 
         share = _materiality_share(values, consolidated_values)
         if share < MATERIALITY_THRESHOLD:
             for year, value in values.items():
-                other_values[int(year)] += float(value)
+                add_other_member_value(member, int(year), value)
             continue
 
         named_segments.append(
@@ -774,6 +450,11 @@ def _try_axis_decomposition(
             reconciliation_values[int(year)] = diff
 
     if any(abs(value) > 1e-9 for value in other_values.values()):
+        other_basis_by_year = _derived_component_basis_by_year(
+            "derived_other",
+            other_values,
+            other_basis_parts_by_year,
+        )
         named_segments.append(
             SegmentInfo(
                 name="Other",
@@ -781,6 +462,7 @@ def _try_axis_decomposition(
                     other_values,
                     source="derived_other",
                     note="Aggregated from immaterial or non-current segment members.",
+                    basis_by_year=other_basis_by_year,
                 ),
             )
         )
@@ -798,7 +480,6 @@ def _try_axis_decomposition(
         )
 
     return named_segments or None
-
 
 def _detect_rollup_members(
     revenue_by_member: Dict[str, Dict[int, float]],
@@ -825,7 +506,8 @@ def _detect_rollup_members(
         return set()
 
     rollup_members: set[str] = set()
-    tolerance_for = lambda target: max(abs(float(target)) * float(rollup_tolerance), 0.01)
+    def tolerance_for(target: float) -> float:
+        return max(abs(float(target)) * float(rollup_tolerance), 0.01)
 
     for candidate, target in current_values.items():
         if target <= 0:
@@ -1132,14 +814,6 @@ def _build_canonical_segment(
     ]
 
 
-def _shift_rows(items: Iterable[LineItem], at_or_after: int, delta: int) -> None:
-    if not delta:
-        return
-    for item in items:
-        if int(item.row) >= int(at_or_after):
-            item.row = int(item.row) + int(delta)
-
-
 def _update_total_revenue_formulas(model: FinancialModel, n_segments: int) -> None:
     assumptions_total = model.get_item("tpl.a.revenue_drivers.total_revenue")
     fm_total = model.get_item("tpl.fm.income_statement.total_revenue")
@@ -1165,463 +839,6 @@ def _update_total_revenue_formulas(model: FinancialModel, n_segments: int) -> No
     fm_total.historical = None if fallback_single else _sum_or_ref_formula(fm_segment_refs)
     fm_total.projected = _sum_or_ref_formula(fm_segment_refs)
     fm_total.formula_periods = list(all_periods)
-
-
-def _assert_rows_unique(model: FinancialModel) -> None:
-    for sheet_name, sheet in model.sheets.items():
-        if sheet.sheet_type in {SheetType.valuation, SheetType.scenarios}:
-            continue
-        rows = [int(item.row) for section in sheet.sections for item in section.line_items]
-        duplicates = {row for row in rows if rows.count(row) > 1}
-        if duplicates:
-            raise ValueError(f"Duplicate rows detected in sheet '{sheet_name}': {sorted(duplicates)}")
-
-
-def _assert_no_duplicate_ids(model: FinancialModel) -> None:
-    model.build_index()
-
-
-def _extract_fact_rows(payload: Dict) -> List[Dict]:
-    rows: List[Dict] = []
-
-    def walk(obj) -> None:
-        if isinstance(obj, dict):
-            if "tag" in obj and (
-                "current_period_value" in obj or "visual_current_value" in obj or "value" in obj
-            ):
-                rows.append(obj)
-                return
-            for value in obj.values():
-                walk(value)
-            return
-        if isinstance(obj, list):
-            for value in obj:
-                walk(value)
-
-    walk(payload)
-    return rows
-
-
-def _consolidated_values(facts: Sequence[Dict]) -> Dict[int, float]:
-    priority_index = {tag: index for index, tag in enumerate(REVENUE_TAGS_PRIORITY)}
-    best_by_year: Dict[int, Dict] = {}
-
-    for fact in facts:
-        year = int(fact["_segment_year"])
-        existing = best_by_year.get(year)
-        if existing is None:
-            best_by_year[year] = fact
-            continue
-        current_priority = priority_index.get(_normalize_qname(str(fact.get("tag") or "")), len(REVENUE_TAGS_PRIORITY))
-        existing_priority = priority_index.get(_normalize_qname(str(existing.get("tag") or "")), len(REVENUE_TAGS_PRIORITY))
-        if current_priority < existing_priority:
-            best_by_year[year] = fact
-
-    values: Dict[int, float] = {}
-    for year, fact in best_by_year.items():
-        value = _fact_value(fact)
-        if value is None:
-            continue
-        values[int(year)] = _normalize_scale(value, fact.get("scale"))
-    return dict(sorted(values.items()))
-
-
-def _single_segment_dimension(fact: Dict) -> Optional[Dict[str, str]]:
-    dimensions = _fact_dimensions(fact)
-    relevant = [
-        dimension
-        for dimension in dimensions
-        if _normalize_qname(dimension["axis"]) in SEGMENT_AXES_PRIORITY
-    ]
-    if len(relevant) != 1:
-        return None
-    return relevant[0]
-
-
-def _fact_dimensions(fact: Dict) -> List[Dict[str, str]]:
-    dimensions: List[Dict[str, str]] = []
-    raw_dimensions = fact.get("dimensions")
-    if isinstance(raw_dimensions, list):
-        for entry in raw_dimensions:
-            if not isinstance(entry, dict):
-                continue
-            axis = _normalize_qname(str(entry.get("axis") or entry.get("axis_key") or ""))
-            member = str(entry.get("member") or "")
-            if not axis or not member:
-                continue
-            dimensions.append(
-                {
-                    "axis": axis,
-                    "member": member,
-                    "member_label": str(entry.get("member_label") or _pretty_member_label(member)),
-                }
-            )
-        if dimensions:
-            return dimensions
-
-    axis_key = str(fact.get("axis_key") or "")
-    if not axis_key or axis_key == "__NONE__":
-        return dimensions
-
-    for part in re.split(r"[|;]", axis_key):
-        if "=" not in part:
-            continue
-        axis_name, member = part.split("=", 1)
-        axis = _normalize_qname(axis_name.strip())
-        member = member.strip()
-        if not axis or not member:
-            continue
-        dimensions.append(
-            {
-                "axis": axis,
-                "member": member,
-                "member_label": _pretty_member_label(member),
-            }
-        )
-    return dimensions
-
-
-def _observation_from_fact(
-    fact: Dict,
-    *,
-    dimension: Dict[str, str],
-    year: int,
-    value: float,
-) -> SegmentRevenueObservation:
-    return SegmentRevenueObservation(
-        fiscal_year=int(year),
-        value=float(value),
-        source="edgar_fact",
-        tag=_clean_optional_string(fact.get("tag") or fact.get("metric_tag")),
-        scale=_clean_optional_string(fact.get("scale")),
-        axis=_clean_optional_string(dimension.get("axis")),
-        member=_clean_optional_string(dimension.get("member")),
-        member_label=_clean_optional_string(dimension.get("member_label")),
-        source_filing_accession=_clean_optional_string(
-            fact.get("source_filing_accession")
-            or fact.get("filing_accession")
-            or fact.get("accession")
-            or fact.get("adsh")
-        ),
-        source_form=_clean_optional_string(fact.get("source_form") or fact.get("form")),
-        filed_at=_clean_optional_string(fact.get("filed_at") or fact.get("filed")),
-        period_end=_clean_optional_string(
-            fact.get("period_end")
-            or fact.get("reported_period_end")
-            or fact.get("end_date")
-            or fact.get("end")
-        ),
-        basis_key=_clean_optional_string(
-            fact.get("segment_basis_key")
-            or fact.get("basis_key")
-            or fact.get("recast_basis")
-            or fact.get("presentation_basis")
-            or fact.get("statement_basis")
-        ),
-    )
-
-
-def _annotate_revenue_comparability(
-    observations: Dict[int, SegmentRevenueObservation],
-) -> Dict[int, SegmentRevenueObservation]:
-    annotated: Dict[int, SegmentRevenueObservation] = {}
-    prior: SegmentRevenueObservation | None = None
-    for year, observation in sorted((int(year), obs) for year, obs in observations.items()):
-        if prior is None:
-            comparable = "not_applicable"
-            note = observation.comparability_note
-        elif prior.basis_key and observation.basis_key:
-            comparable = "comparable" if prior.basis_key == observation.basis_key else "not_comparable"
-            note = (
-                observation.comparability_note
-                if comparable == "comparable"
-                else f"segment basis changed from {prior.basis_key!r} to {observation.basis_key!r}"
-            )
-        else:
-            comparable = "unknown"
-            note = observation.comparability_note or "segment basis provenance is missing for adjacent-year comparability"
-        updated = observation.model_copy(
-            update={
-                "comparable_with_prior": comparable,
-                "comparability_note": note,
-            }
-        )
-        annotated[int(year)] = updated
-        prior = updated
-    return annotated
-
-
-def _clean_optional_string(value: object | None) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _materiality_share(values: Dict[int, float], consolidated_values: Dict[int, float]) -> float:
-    numerator = sum(float(values.get(year, 0.0)) for year in consolidated_values)
-    denominator = sum(abs(float(value)) for value in consolidated_values.values())
-    if denominator == 0:
-        return 0.0
-    return numerator / denominator
-
-
-def _segment_label(dimension: Dict[str, str]) -> str:
-    label = str(dimension.get("member_label") or "").strip()
-    if label:
-        return label
-    return _pretty_member_label(str(dimension.get("member") or ""))
-
-
-def _pretty_member_label(member: str) -> str:
-    label = _normalize_qname(member)
-    label = re.sub(r"Member$", "", label)
-    label = re.sub(r"(?<!^)([A-Z])", r" \1", label)
-    return label.strip() or member
-
-
-def _segment_sort_key(segment: SegmentInfo) -> tuple[float, str]:
-    values = list(segment_revenue_values(segment).values())
-    average = sum(float(value) for value in values) / len(values) if values else float("-inf")
-    return (average, segment.name)
-
-
-def _repair_deleted_refs_in_item(item: LineItem, deleted_ids: set[str]) -> bool:
-    changed = False
-
-    for attr in ("historical", "projected"):
-        spec = getattr(item, attr)
-        if spec is None:
-            continue
-        new_params, updated = _rewrite_refs(
-            spec.params,
-            lambda ref: _carry_forward_ref(item.id) if ref.get("id") in deleted_ids else None,
-        )
-        if updated:
-            spec.params = new_params
-            changed = True
-
-    if item.overrides:
-        for period, spec in item.overrides.items():
-            new_params, updated = _rewrite_refs(
-                spec.params,
-                lambda ref: _carry_forward_ref(item.id) if ref.get("id") in deleted_ids else None,
-            )
-            if updated:
-                item.overrides[period] = spec.model_copy(update={"params": new_params})
-                changed = True
-
-    return changed
-
-
-def _rewire_scenario_table_refs(model: FinancialModel, old_id: str, new_id: str) -> None:
-    scenario_section = _get_section(model, "Assumptions", "scenario_tables")
-    for item in scenario_section.line_items:
-        for attr in ("historical", "projected"):
-            spec = getattr(item, attr)
-            if spec is None:
-                continue
-            new_params, updated = _rewrite_refs(
-                spec.params,
-                lambda ref: _line_ref_dict(new_id, int(ref.get("t", 0))) if ref.get("id") == old_id else None,
-            )
-            if updated:
-                spec.params = new_params
-
-        if item.overrides:
-            kept_overrides: Dict[int, FormulaSpec] = {}
-            for period, spec in item.overrides.items():
-                new_params, updated = _rewrite_refs(
-                    spec.params,
-                    lambda ref: _line_ref_dict(new_id, int(ref.get("t", 0))) if ref.get("id") == old_id else None,
-                )
-                new_spec = spec.model_copy(update={"params": new_params}) if updated else spec
-                if _ref_target_id(new_spec) == new_id:
-                    continue
-                kept_overrides[int(period)] = new_spec
-            item.overrides = kept_overrides or None
-
-
-def _ref_target_id(spec: FormulaSpec) -> Optional[str]:
-    if spec.type != FormulaType.ref:
-        return None
-
-    source = spec.params.get("source")
-    if isinstance(source, LineItemRef):
-        return source.id
-    if isinstance(source, dict):
-        return source.get("id")
-    return None
-
-
-def _rewrite_refs(obj, replacer):
-    if isinstance(obj, LineItemRef):
-        replacement = replacer({"id": obj.id, "t": obj.t, "resolved": obj.resolved})
-        if replacement is not None:
-            return replacement, True
-        return obj, False
-
-    if isinstance(obj, dict):
-        if "id" in obj and set(obj.keys()) >= {"id"}:
-            replacement = replacer(obj)
-            if replacement is not None:
-                return replacement, True
-            return obj, False
-
-        changed = False
-        new_obj = {}
-        for key, value in obj.items():
-            new_value, updated = _rewrite_refs(value, replacer)
-            new_obj[key] = new_value
-            changed = changed or updated
-        return new_obj, changed
-
-    if isinstance(obj, list):
-        changed = False
-        new_list = []
-        for value in obj:
-            new_value, updated = _rewrite_refs(value, replacer)
-            new_list.append(new_value)
-            changed = changed or updated
-        return new_list, changed
-
-    if isinstance(obj, tuple):
-        changed = False
-        new_values = []
-        for value in obj:
-            new_value, updated = _rewrite_refs(value, replacer)
-            new_values.append(new_value)
-            changed = changed or updated
-        return tuple(new_values), changed
-
-    return obj, False
-
-
-def _carry_forward_ref(item_id: str) -> Dict[str, object]:
-    return _line_ref_dict(item_id, -1)
-
-
-def _line_ref_dict(item_id: str, t: int = 0) -> Dict[str, object]:
-    return {"id": item_id, "t": int(t), "resolved": True}
-
-
-def _ref_source_id(spec: FormulaSpec | None) -> str | None:
-    if spec is None or spec.type is not FormulaType.ref:
-        return None
-    source = (spec.params or {}).get("source")
-    if isinstance(source, LineItemRef):
-        return source.id
-    if isinstance(source, dict) and isinstance(source.get("id"), str):
-        return str(source["id"])
-    return None
-
-
-def _ref_formula(item_id: str, t: int = 0) -> FormulaSpec:
-    return FormulaSpec(type=FormulaType.ref, params={"source": LineItemRef(id=item_id, t=int(t))})
-
-
-def _carry_forward_formula(item_id: str) -> FormulaSpec:
-    return _ref_formula(item_id, t=-1)
-
-
-def _growth_formula(base_id: str, rate_id: str) -> FormulaSpec:
-    return FormulaSpec(
-        type=FormulaType.growth,
-        params={
-            "base": LineItemRef(id=base_id, t=-1),
-            "rate": LineItemRef(id=rate_id),
-        },
-    )
-
-
-def _yoy_formula(item_id: str) -> FormulaSpec:
-    return FormulaSpec(
-        type=FormulaType.ratio,
-        subtype="yoy_growth",
-        params={
-            "numerator": LineItemRef(id=item_id),
-            "denominator": LineItemRef(id=item_id, t=-1),
-            "subtract_one": True,
-        },
-    )
-
-
-def _ratio_formula(numerator_id: str, denominator_id: str) -> FormulaSpec:
-    return FormulaSpec(
-        type=FormulaType.ratio,
-        params={
-            "numerator": LineItemRef(id=numerator_id),
-            "denominator": LineItemRef(id=denominator_id),
-        },
-    )
-
-
-def _sum_or_ref_formula(refs: List[LineItemRef]) -> FormulaSpec:
-    if len(refs) == 1:
-        ref = refs[0]
-        return FormulaSpec(type=FormulaType.ref, params={"source": ref})
-    return FormulaSpec(type=FormulaType.arithmetic, params={"operands": ["+", *refs]})
-
-
-def _offset_scenario_formula(
-    *,
-    anchor_id: str = _SCENARIO_VOLUME_GROWTH_LABEL_ID,
-    selector_id: str = _SCENARIO_SELECTOR_ID,
-) -> FormulaSpec:
-    return FormulaSpec(
-        type=FormulaType.valuation,
-        subtype="offset_scenario",
-        params={
-            "anchor": LineItemRef(id=anchor_id),
-            "selector": LineItemRef(id=selector_id),
-            "column_offset_mode": _COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
-        },
-    )
-
-
-def _fact_value(fact: Dict):
-    value = fact.get("current_period_value")
-    if value is None:
-        value = fact.get("visual_current_value")
-    if value is None:
-        value = fact.get("value")
-    return value
-
-
-def _get_section(model: FinancialModel, sheet_name: str, section_id: str) -> Section:
-    sheet = model.sheets[sheet_name]
-    for section in sheet.sections:
-        if section.id == section_id:
-            return section
-    raise KeyError((sheet_name, section_id))
-
-
-def _iter_sheet_items(model: FinancialModel, sheet_name: str) -> Iterable[LineItem]:
-    for section in model.sheets[sheet_name].sections:
-        for item in section.line_items:
-            yield item
-
-
-def _iter_items_with_section(model: FinancialModel):
-    for sheet_name, sheet in model.sheets.items():
-        for section in sheet.sections:
-            for item in section.line_items:
-                yield sheet_name, section.id, item
-
-
-def _set_imported_value(
-    item: LineItem,
-    year: int,
-    value: float,
-    provenance: ValueProvenance = ValueProvenance.imported_edgar,
-) -> None:
-    if item.values is None:
-        item.values = ValueSeries()
-    item.values.values[int(year)] = ValueCell(
-        period=int(year),
-        value=float(value),
-        provenance=provenance,
-    )
 
 
 __all__ = [

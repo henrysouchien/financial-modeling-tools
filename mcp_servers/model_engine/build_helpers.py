@@ -5,9 +5,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from schema.build_fmp_values import _build_fmp_lookup, _raw_fmp_value_for_concept
 from schema.model_build_context import HistoricalSources
 from schema.overrides import TickerOverrides
 from schema.segments import SEGMENT_AXES_PRIORITY
+from schema.templates import load_data_taxonomy
 from schema.tools import model_tool_error_payload
 
 from .args import safe_pydantic_errors
@@ -136,8 +138,43 @@ def historical_sources_touch_fmp(historical_sources: HistoricalSources | None) -
   )
 
 
+def fmp_zero_missing_edgar_fallback_needed(
+  *,
+  source: str,
+  financials: dict[str, Any] | None,
+  historical_sources: HistoricalSources | None,
+) -> bool:
+  if str(source or "").strip().lower() != "fmp":
+    return False
+  if historical_sources is not None:
+    return False
+  if not isinstance(financials, dict) or not financials:
+    return False
+
+  fmp_lookup = _build_fmp_lookup(financials)
+  for concept in load_data_taxonomy().values():
+    if not concept.treat_zero_as_missing:
+      continue
+    if concept.preferred_source != "fmp":
+      continue
+    if not concept.fmp_endpoint or not concept.fmp_field:
+      continue
+    if not (concept.edgar_tags or concept.registry_group_id):
+      continue
+    records_by_year = fmp_lookup.get(concept.fmp_endpoint, {})
+    if not records_by_year:
+      continue
+    if any(
+      _raw_fmp_value_for_concept(concept, record)[0] is None
+      for record in records_by_year.values()
+    ):
+      return True
+  return False
+
+
 __all__ = [
   "axis_priority",
+  "fmp_zero_missing_edgar_fallback_needed",
   "historical_sources_touch_edgar",
   "historical_sources_touch_fmp",
   "model_build_error_payload",

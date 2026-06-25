@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import json
 from typing import Any
-
-from pydantic import ValidationError
 
 from .research_labels import canonicalize_research_label
 from .thesis import (
-    BusinessModelRef,
-    DecisionsLogEntry,
-    GaapNonGaapBridge,
-    PositionMetadata,
-    QuantitativeFraming,
-    ThesisFromIdea,
-    ThesisLink,
-    ThesisModelRef,
+    BusinessModelRef as BusinessModelRef,
+    DecisionsLogEntry as DecisionsLogEntry,
+    GaapNonGaapBridge as GaapNonGaapBridge,
+    PositionMetadata as PositionMetadata,
+    QuantitativeFraming as QuantitativeFraming,
+    ThesisFromIdea as ThesisFromIdea,
+    ThesisLink as ThesisLink,
+    ThesisModelRef as ThesisModelRef,
     UnknownSection,
 )
 from .thesis_shared_slice import (
@@ -26,7 +23,6 @@ from .thesis_shared_slice import (
     ConsensusView,
     DataGap,
     DifferentiatedViewClaim,
-    Excerpt,
     HistoricalCoincidence,
     IndustryAnalysis,
     InvalidationTrigger,
@@ -52,6 +48,18 @@ from .thesis_markdown_utils import (
     _parse_source_refs_cell,
     _parse_source_token_list,
     _parse_table,
+)
+from .thesis_markdown_parse_modeling import (
+    _parse_decisions_log as _parse_decisions_log,
+    _parse_from_idea as _parse_from_idea,
+    _parse_gaap_non_gaap_bridge as _parse_gaap_non_gaap_bridge,
+    _parse_model_linkage as _parse_model_linkage,
+    _parse_position_metadata as _parse_position_metadata,
+    _parse_quantitative_framing as _parse_quantitative_framing,
+)
+from .thesis_markdown_parse_sources import (
+    _parse_source_excerpt as _parse_source_excerpt,
+    _parse_sources as _parse_sources,
 )
 from .thesis_markdown_parse_support import (  # noqa: F401
     ParseWarning,
@@ -585,262 +593,6 @@ def _parse_industry_analysis(body_lines: list[str], state: _ParseState) -> dict[
             payload["structural_trends"].append({"description": description, "time_horizon": metadata.get("time_horizon"), "source_refs": _parse_source_token_list(metadata.get("sources", ""), state)})
     validated = _safe_validate(IndustryAnalysis, payload, state, "industry_analysis")
     return {"industry_analysis": validated} if validated is not None else {}
-
-
-def _parse_quantitative_framing(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
-    sections = _split_subsections(body_lines)
-    payload: dict[str, Any] = {}
-    if "Revenue" in sections:
-        labeled = _collect_labeled_lines(sections["Revenue"])
-        payload["revenue"] = {"base": _parse_jsonish_value(labeled.get("base", "")), "bull": _parse_jsonish_value(labeled.get("bull", "")), "bear": _parse_jsonish_value(labeled.get("bear", "")), "rationale": labeled.get("rationale")}
-    if "Margins" in sections:
-        labeled = _collect_labeled_lines(sections["Margins"])
-        payload["margins"] = {"trajectory": labeled.get("trajectory"), "key_drivers": [part.strip() for part in labeled.get("key_drivers", "").split(";") if part.strip()]}
-    if "EPS / FCF" in sections:
-        labeled = _collect_labeled_lines(sections["EPS / FCF"])
-        payload["eps_fcf"] = {
-            "projection": _parse_jsonish_value(labeled.get("projection", "")),
-            "delta_vs_consensus": _parse_jsonish_value(labeled.get("delta_vs_consensus", "")),
-            "terminal_year": _parse_jsonish_value(labeled.get("terminal_year", "")),
-            "basis": _nullable_cell(labeled.get("basis")),
-        }
-        for title, bridge_lines in _split_nested_subsections(sections["EPS / FCF"]).items():
-            if _normalize_label_key(title) != "gaap_non_gaap_bridge":
-                continue
-            bridge = _parse_gaap_non_gaap_bridge(bridge_lines, state)
-            if bridge is not None:
-                payload["eps_fcf"]["bridge"] = bridge
-            break
-    if "Scenarios" in sections:
-        payload["scenarios"] = {}
-        for title, scenario_lines in _split_nested_subsections(sections["Scenarios"]).items():
-            labeled = _collect_labeled_lines(scenario_lines)
-            payload["scenarios"][_normalize_label_key(title)] = {
-                "target_price": labeled.get("target_price"),
-                "return_pct": labeled.get("return_pct"),
-                "revenue_m": _parse_jsonish_value(labeled.get("revenue_m", "")),
-                "probability": _parse_jsonish_value(labeled.get("probability", "")),
-                "op_margin_pct": _parse_jsonish_value(labeled.get("op_margin_pct", "")),
-                "ebitda_margin_pct": _parse_jsonish_value(labeled.get("ebitda_margin_pct", "")),
-                "eps": _parse_jsonish_value(labeled.get("eps", "")),
-                "eps_gaap": _parse_jsonish_value(labeled.get("eps_gaap", "")),
-                "eps_non_gaap": _parse_jsonish_value(labeled.get("eps_non_gaap", "")),
-                "adj_eps": _parse_jsonish_value(labeled.get("adj_eps", "")),
-                "fcf_per_share": _parse_jsonish_value(labeled.get("fcf_per_share", "")),
-                "what_has_to_happen": labeled.get("what_has_to_happen"),
-                "methodology": labeled.get("methodology"),
-                "what_goes_wrong": labeled.get("what_goes_wrong"),
-            }
-    validated = _safe_validate(QuantitativeFraming, payload, state, "quantitative_framing")
-    return {"quantitative_framing": validated} if validated is not None else {}
-
-
-def _parse_gaap_non_gaap_bridge(body_lines: list[str], state: _ParseState) -> GaapNonGaapBridge | None:
-    labeled = _collect_labeled_lines(body_lines)
-    components_value = labeled.get("bridge_components_json", "") or labeled.get("bridge_components", "")
-    components = _parse_jsonish_value(components_value)
-    if components is None:
-        bridge_components: list[str] = []
-    elif isinstance(components, list):
-        bridge_components = [str(item) for item in components]
-    else:
-        bridge_components = [part.strip() for part in str(components).split(";") if part.strip()]
-    return _safe_validate(
-        GaapNonGaapBridge,
-        {
-            "metric": labeled.get("metric"),
-            "period": labeled.get("period"),
-            "gaap_value": _parse_jsonish_value(labeled.get("gaap_value", "")),
-            "non_gaap_value": _parse_jsonish_value(labeled.get("non_gaap_value", "")),
-            "bridge_value": _parse_jsonish_value(labeled.get("bridge_value", "")),
-            "bridge_components": bridge_components,
-            "rationale": labeled.get("rationale"),
-            "approximation_quality": labeled.get("approximation_quality"),
-            "source_refs": _parse_source_token_list(labeled.get("sources", "") or labeled.get("source_refs", ""), state),
-        },
-        state,
-        "quantitative_framing",
-    )
-
-
-def _parse_position_metadata(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
-    sections = _split_subsections(body_lines)
-    labeled = _collect_labeled_lines(sections.pop("", []))
-    payload: dict[str, Any] = {"date_initiated": labeled.get("date_initiated")}
-    if "Position Size" in sections:
-        size = _collect_labeled_lines(sections["Position Size"])
-        payload["position_size"] = {"target_pct": size.get("target_pct"), "current_pct": size.get("current_pct")}
-    if "Portfolio Fit" in sections:
-        fit = _collect_labeled_lines(sections["Portfolio Fit"])
-        payload["portfolio_fit"] = {
-            "sector_exposure": fit.get("sector_exposure"),
-            "factor_exposure": fit.get("factor_exposure"),
-            "correlation_cluster": fit.get("correlation_cluster"),
-            "dominant_factor_stability": _parse_jsonish_value(fit.get("dominant_factor_stability", "")),
-            "idiosyncratic_volatility_annualized_pct": _parse_jsonish_value(fit.get("idiosyncratic_volatility_annualized_pct", "")),
-            "market_only_decomposition": _parse_jsonish_value(fit.get("market_only_decomposition_json", "")),
-        }
-    validated = _safe_validate(PositionMetadata, payload, state, "position_metadata")
-    return {"position_metadata": validated} if validated is not None else {}
-
-
-def _parse_sources(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
-    records: list[SourceRecord] = []
-    index = 0
-    while index < len(body_lines):
-        line = body_lines[index]
-        match = _NUMBERED_ITEM_RE.match(line.strip())
-        if match is None:
-            state.warnings.append(ParseWarning(code="section_parse_error", section="sources", message="failed to parse source line", context={"line": line}))
-            index += 1
-            continue
-        index += 1
-        excerpts: list[Excerpt] = []
-        while index < len(body_lines):
-            excerpt_match = _SOURCE_EXCERPT_RE.match(body_lines[index])
-            if excerpt_match is None:
-                break
-            excerpt = _parse_source_excerpt(excerpt_match.group("payload"), state)
-            if excerpt is not None:
-                excerpts.append(excerpt)
-            index += 1
-        metadata = _parse_key_value_segments(match.group("meta") or "")
-        validated = _safe_validate(
-            SourceRecord,
-            {
-                "id": match.group("source_id"),
-                "type": metadata.get("type"),
-                "source_id": metadata.get("source_id"),
-                "identity_hash": metadata.get("identity_hash"),
-                "section_header": metadata.get("section_header"),
-                "char_start": metadata.get("char_start"),
-                "char_end": metadata.get("char_end"),
-                "text": metadata.get("text"),
-                "annotation_id": metadata.get("annotation_id"),
-                "provider": metadata.get("provider"),
-                "endpoint_or_filing_id": metadata.get("endpoint_or_filing_id"),
-                "retrieved_at": metadata.get("retrieved_at"),
-                "skill_name": metadata.get("skill_name"),
-                "artifact_path": metadata.get("artifact_path"),
-                "artifact_id": metadata.get("artifact_id"),
-                "skill_run_id": metadata.get("skill_run_id"),
-                "source_path": metadata.get("source_path"),
-                "excerpts": excerpts,
-            },
-            state,
-            "sources",
-        )
-        if validated is not None:
-            records.append(validated)
-    return {"sources": records}
-
-
-def _parse_source_excerpt(raw_payload: str, state: _ParseState) -> Excerpt | None:
-    try:
-        payload = json.loads(raw_payload)
-    except json.JSONDecodeError as exc:
-        state.warnings.append(
-            ParseWarning(
-                code="section_parse_error",
-                section="sources",
-                message="failed to parse source excerpt JSON",
-                context={"error": str(exc), "payload": raw_payload},
-            )
-        )
-        return None
-    try:
-        return Excerpt.model_validate(payload)
-    except ValidationError as exc:
-        state.warnings.append(
-            ParseWarning(
-                code="section_parse_error",
-                section="sources",
-                message="failed to validate source excerpt",
-                context={"errors": exc.errors(include_url=False)},
-            )
-        )
-        return None
-
-
-def _parse_from_idea(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
-    labeled = _collect_labeled_lines(body_lines)
-    remaining_lines = list(body_lines)
-    hypothesis_lines: list[str] = []
-    for line in remaining_lines:
-        if _LABELED_LINE_RE.match(line.strip()):
-            continue
-        hypothesis_lines.append(line)
-    validated = _safe_validate(
-        ThesisFromIdea,
-        {
-            "idea_id": labeled.get("idea_id"),
-            "seeded_at": labeled.get("seeded_at"),
-            "schema_version": labeled.get("schema_version") or "1.0",
-            "thesis_hypothesis": "\n".join(_trim_blank_edges(hypothesis_lines)),
-        },
-        state,
-        "from_idea",
-    )
-    return {"from_idea": validated} if validated is not None else {}
-
-
-def _parse_model_linkage(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
-    sections = _split_subsections(body_lines)
-    payload: dict[str, Any] = {}
-    if "Model Reference" in sections:
-        labeled = _collect_labeled_lines(sections["Model Reference"])
-        model_ref = _safe_validate(ThesisModelRef, {"model_id": labeled.get("model_id"), "version": labeled.get("version"), "file_path": labeled.get("file_path"), "last_updated": labeled.get("last_updated"), "drivers_locked": [part.strip() for part in labeled.get("drivers_locked", "").split(",") if part.strip()]}, state, "model_links")
-        if model_ref is not None:
-            payload["model_ref"] = model_ref
-    if "Business Model Reference" in sections:
-        labeled = _collect_labeled_lines(sections["Business Model Reference"])
-        business_model_ref = _safe_validate(
-            BusinessModelRef,
-            {
-                "business_model_id": labeled.get("id"),
-                "schema_version": labeled.get("schema_version") or "1.0",
-                "revision": labeled.get("revision"),
-                "last_updated": labeled.get("last_updated"),
-            },
-            state,
-            "model_links",
-        )
-        if business_model_ref is not None:
-            payload["business_model_ref"] = business_model_ref
-    if "Links" in sections:
-        links: list[ThesisLink] = []
-        for row in _parse_table(sections["Links"]):
-            validated = _safe_validate(ThesisLink, {"thesis_link_id": row.get("Link ID") or None, "thesis_point_id": row.get("Point ID"), "category": row.get("Category"), "thesis_direction": row.get("Thesis Direction"), "driver_key": row.get("Driver Key") or None, "data_concept_id": row.get("Data Concept ID") or None, "model_item_id": row.get("Model Item ID") or None, "business_model_node_id": row.get("BM Node") or None, "template_version": row.get("Template Version") or None, "model_id": row.get("Model ID") or None, "periods": [int(part) for part in row.get("Periods", "").split(",") if part.strip()], "thesis_value": row.get("Thesis Value") or None, "consensus_value": row.get("Consensus Value") or None, "structural_fingerprint": _parse_jsonish_value(row.get("Structural Fingerprint JSON", "")), "thesis_text": row.get("Thesis Text")}, state, "model_links")
-            if validated is not None:
-                links.append(validated)
-        payload["model_links"] = links
-    return payload
-
-
-def _parse_decisions_log(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
-    entries = []
-    for row in _parse_table(body_lines):
-        validated = _safe_validate(
-            DecisionsLogEntry,
-            {
-                "entry_id": row.get("Entry ID") or None,
-                "date": row.get("Date") or None,
-                "skill": row.get("Skill") or None,
-                "verdict": row.get("Verdict") or None,
-                "decision": row.get("Decision") or None,
-                "rationale": row.get("Rationale") or None,
-                "previous_value": _parse_jsonish_value(row.get("Previous Value", "")),
-                "new_value": _parse_jsonish_value(row.get("New Value", "")),
-                "patch_ops_applied": _parse_jsonish_value(row.get("Patch Ops JSON", "")) or [],
-                "run_id": row.get("Run ID") or None,
-                "artifact_refs": _parse_jsonish_value(row.get("Artifact Refs JSON", "")) or [],
-            },
-            state,
-            "decisions_log",
-        )
-        if validated is not None:
-            entries.append(validated)
-    return {"decisions_log": entries}
 
 
 __all__ = [
