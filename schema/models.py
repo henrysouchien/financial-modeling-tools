@@ -95,6 +95,9 @@ class Unit(str, Enum):
     multiple = "multiple"
 
 
+ModelScale = Literal["millions", "units"]
+
+
 class FormulaType(str, Enum):
     """Formula classification used by the schema."""
     ref = "ref"
@@ -208,9 +211,34 @@ class DataSourceMapping(BaseModel):
     edgar_negate: Optional[bool] = None
     fmp_negate: Optional[bool] = None
     preferred_source: Optional[str] = None
+    source_arbitration_policy: Optional[
+        Literal[
+            "diagnostic_only",
+            "edgar_authoritative",
+            "preferred_source_authoritative",
+        ]
+    ] = None
     validation_tolerance_pct: Optional[float] = None
     missing_ok_when_covered_by: Optional[List[str]] = None
     optional_if_unreported: Optional[bool] = None
+    notes: Optional[str] = None
+
+
+class StatementSectionRole(BaseModel):
+    """Financial-statement section role metadata for a template row."""
+
+    statement: FinancialStatement
+    section: str
+    role: Literal[
+        "member",
+        "section_total",
+        "included_subtotal",
+        "pre_subtotal",
+        "subtotal",
+        "presentation_only",
+        "catch_all",
+    ]
+    expected_concept_id: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -353,6 +381,7 @@ class LineItem(BaseModel):
     historical: Optional[FormulaSpec] = None
     projected: Optional[FormulaSpec] = None
     unit: Unit = Unit.dollars
+    model_scale: ModelScale = "units"
     format: str = ""
     values: Optional[ValueSeries] = None
     overrides: Optional[Dict[int, FormulaSpec]] = None
@@ -366,6 +395,10 @@ class LineItem(BaseModel):
     build_notes: Optional[str] = None
     repeat_group_id: Optional[str] = None
     repeat_group_role: Optional[str] = None
+    statement_section_roles: Optional[List[StatementSectionRole]] = Field(
+        default=None,
+        exclude_if=lambda value: not value,
+    )
 
 
 class Section(BaseModel):

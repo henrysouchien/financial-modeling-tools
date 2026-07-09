@@ -10,7 +10,7 @@ from typing import Optional
 _MissingFile = object()
 
 
-def _sha256(path: str) -> Optional[str]:
+def file_sha256(path: str | Path) -> Optional[str]:
     """Return a file's SHA-256 hex digest, or None if the file does not exist."""
 
     file_path = Path(path)
@@ -22,6 +22,10 @@ def _sha256(path: str) -> Optional[str]:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256(path: str) -> Optional[str]:
+    return file_sha256(path)
 
 
 def _read_optional_bytes(path: Path) -> bytes | object:
@@ -40,6 +44,7 @@ def _restore_optional_bytes(path: Path, payload: bytes | object) -> None:
 
 __all__ = [
     "_MissingFile",
+    "file_sha256",
     "_read_optional_bytes",
     "_restore_optional_bytes",
     "_sha256",

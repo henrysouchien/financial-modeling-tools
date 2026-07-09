@@ -125,6 +125,7 @@ def compute_scenario_outputs(model: FinancialModel) -> dict[str, dict[str, dict[
             recompute=recompute,
             seed_results=base_results,
             propagate_roots=set(overrides),
+            periods=set(projection_periods),
         )
         case_outputs: dict[str, dict[int, float]] = {}
         for field_name, candidate_item_ids in scenario_output_requirements:

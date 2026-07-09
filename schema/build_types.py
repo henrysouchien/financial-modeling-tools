@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol
 
 from .build_diagnostics import DiagnosticReport
+from .build_diagnostic_types import SourceArbitrationCheck
 from .build_projection_seeds import SeedProjectionsResult
 from .build_semantic_rows import SemanticRowsResult
 from .model_build_context import BuildSource
@@ -115,6 +116,12 @@ class BuildResult:
     )
     valuation_input_readiness: ValuationInputReadiness = field(
         default_factory=ValuationInputReadiness
+    )
+    source_arbitration: SourceArbitrationCheck = field(
+        default_factory=SourceArbitrationCheck
+    )
+    source_arbitration_final_source_by_concept_year: dict[str, dict[int, str]] = field(
+        default_factory=dict
     )
 
 

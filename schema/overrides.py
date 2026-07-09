@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from .model_writer_lock import model_writer_lock
 from .models import DataSourceMapping
 
 
@@ -17,6 +20,23 @@ MODEL_ENGINE_OVERRIDES_DIR_ENV = "MODEL_ENGINE_OVERRIDES_DIR"
 _DSM_FIELD_NAMES = set(DataSourceMapping.model_fields.keys())
 _CUSTOM_CONCEPT_DSM_FIELD_NAMES = _DSM_FIELD_NAMES - {"notes"}
 _CUSTOM_CONCEPT_EXTRA_FIELDS = frozenset({"axis_key", "inline_values"})
+
+
+class GuardConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    growth_carry_forward_max: float | None = None
+    growth_carry_forward_min_periods: int | None = None
+    rationale: str | None = None
+
+    @model_validator(mode="after")
+    def _rationale_required(self) -> "GuardConfig":
+        if (
+            self.growth_carry_forward_max is not None
+            or self.growth_carry_forward_min_periods is not None
+        ) and not (self.rationale or "").strip():
+            raise ValueError("guards overrides require a rationale")
+        return self
 
 
 @dataclass
@@ -28,9 +48,10 @@ class TickerOverrides:
     projections: dict[str, dict] = field(default_factory=dict)
     semantic_rows: dict[str, dict] = field(default_factory=dict)
     valuation: dict[str, Any] = field(default_factory=dict)
+    guards: GuardConfig | None = None
 
 
-_SCHEMA_VERSION_RANK = {"1": 1, "2": 2, "3": 3, "4": 4}
+_SCHEMA_VERSION_RANK = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5}
 
 
 def _normalize_ticker(ticker: str) -> str:
@@ -57,6 +78,12 @@ def resolve_overrides_dir(overrides_dir: Path | None = None) -> Path:
     """Return the shared override directory used by override readers/writers."""
 
     return _override_dir(overrides_dir)
+
+
+def overrides_lock_target(ticker: str, overrides_dir: Path | None = None) -> Path:
+    """Return the model-writer lock target for a ticker override JSON file."""
+
+    return resolve_overrides_dir(overrides_dir) / f"{_normalize_ticker(ticker)}.json"
 
 
 def _matching_override_paths(overrides_dir: Path, ticker_upper: str) -> list[Path]:
@@ -91,6 +118,17 @@ def _resolve_override_path(ticker_upper: str, overrides_dir: Path) -> Path | Non
     )
 
 
+def validate_ticker_override_path_case(
+    ticker: str,
+    overrides_dir: Path | None = None,
+) -> None:
+    """Validate ticker override filename casing without reading or writing files."""
+
+    ticker_upper = _normalize_ticker(ticker)
+    directory = _override_dir(overrides_dir)
+    _resolve_override_path(ticker_upper, directory)
+
+
 def _coerce_dict_section(data: Any, section: str) -> dict[str, dict]:
     if data is None:
         return {}
@@ -122,6 +160,14 @@ def _coerce_valuation_section(data: Any) -> dict[str, Any]:
     return ValuationArtifact.model_validate(data).model_dump(mode="json")
 
 
+def _coerce_guards_section(data: Any) -> GuardConfig | None:
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError("guards must be an object")
+    return GuardConfig.model_validate(data)
+
+
 def overrides_schema_version_rank(schema_version: Any) -> int:
     text = str(schema_version or "1")
     if text not in _SCHEMA_VERSION_RANK:
@@ -141,7 +187,10 @@ def required_overrides_schema_version(
     projections: dict[str, Any] | None = None,
     semantic_rows: dict[str, Any] | None = None,
     valuation: dict[str, Any] | None = None,
+    guards: GuardConfig | dict[str, Any] | None = None,
 ) -> str:
+    if guards is not None:
+        return "5"
     if valuation:
         return "4"
     if semantic_rows:
@@ -158,6 +207,7 @@ def derive_overrides_file_meta(
     projections: dict[str, Any] | None = None,
     semantic_rows: dict[str, Any] | None = None,
     valuation: dict[str, Any] | None = None,
+    guards: GuardConfig | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     meta = dict(file_meta or {})
     if ticker:
@@ -167,6 +217,7 @@ def derive_overrides_file_meta(
         projections=projections,
         semantic_rows=semantic_rows,
         valuation=valuation,
+        guards=guards,
     )
     existing_rank = overrides_schema_version_rank(existing_version)
     required_rank = overrides_schema_version_rank(required_version)
@@ -184,6 +235,7 @@ def derive_ticker_overrides_schema_version(overrides: TickerOverrides) -> str:
         projections=overrides.projections,
         semantic_rows=overrides.semantic_rows,
         valuation=overrides.valuation,
+        guards=overrides.guards,
     )["schema_version"]
 
 
@@ -205,7 +257,7 @@ def load_ticker_overrides(
 
     file_meta = _coerce_meta(payload.get("_meta"))
     schema_version = str(file_meta.get("schema_version", "1"))
-    if schema_version not in ("1", "2", "3", "4"):
+    if schema_version not in ("1", "2", "3", "4", "5"):
         raise ValueError(f"unsupported overrides schema_version: {schema_version!r}")
 
     return TickerOverrides(
@@ -216,7 +268,42 @@ def load_ticker_overrides(
         projections=_coerce_dict_section(payload.get("projections"), "projections"),
         semantic_rows=_coerce_dict_section(payload.get("semantic_rows"), "semantic_rows"),
         valuation=_coerce_valuation_section(payload.get("valuation")),
+        guards=_coerce_guards_section(payload.get("guards")),
     )
+
+
+def overrides_payload(overrides: TickerOverrides) -> dict[str, Any]:
+    """Return the JSON payload saved by ``save_ticker_overrides``."""
+
+    ticker_upper = _normalize_ticker(overrides.ticker)
+    valuation = _coerce_valuation_section(overrides.valuation)
+    file_meta = derive_overrides_file_meta(
+        overrides.file_meta,
+        ticker=ticker_upper,
+        projections=overrides.projections,
+        semantic_rows=overrides.semantic_rows,
+        valuation=valuation,
+        guards=overrides.guards,
+    )
+    schema_rank = overrides_schema_version_rank(file_meta.get("schema_version"))
+    payload: dict[str, Any] = {
+        "_meta": file_meta,
+        "overrides": dict(overrides.overrides),
+        "custom_concepts": dict(overrides.custom_concepts),
+    }
+    if overrides.semantic_rows or schema_rank >= 3:
+        payload["semantic_rows"] = dict(overrides.semantic_rows)
+    if overrides.projections or schema_rank >= 2:
+        payload["projections"] = dict(overrides.projections)
+    if valuation or schema_rank >= 4:
+        payload["valuation"] = valuation
+    if overrides.guards is not None or schema_rank >= 5:
+        payload["guards"] = (
+            overrides.guards.model_dump(mode="json", exclude_none=True)
+            if overrides.guards is not None
+            else {}
+        )
+    return payload
 
 
 def _merge_mapping(
@@ -313,53 +400,35 @@ def save_ticker_overrides(
     ticker_upper = _normalize_ticker(overrides.ticker)
     directory = _override_dir(overrides_dir)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{ticker_upper}.json"
+    path = overrides_lock_target(ticker_upper, directory)
 
-    valuation = _coerce_valuation_section(overrides.valuation)
-    file_meta = derive_overrides_file_meta(
-        overrides.file_meta,
-        ticker=ticker_upper,
-        projections=overrides.projections,
-        semantic_rows=overrides.semantic_rows,
-        valuation=valuation,
-    )
-    schema_rank = overrides_schema_version_rank(file_meta.get("schema_version"))
-    payload = {
-        "_meta": file_meta,
-        "overrides": dict(overrides.overrides),
-        "custom_concepts": dict(overrides.custom_concepts),
-    }
-    if overrides.semantic_rows or schema_rank >= 3:
-        payload["semantic_rows"] = dict(overrides.semantic_rows)
-    if overrides.projections or schema_rank >= 2:
-        payload["projections"] = dict(overrides.projections)
-    if valuation or schema_rank >= 4:
-        payload["valuation"] = valuation
-    text = json.dumps(
-        payload,
-        sort_keys=True,
-        indent=2,
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    tmp_path = directory / f"{ticker_upper}.json.tmp.{os.getpid()}"
-    try:
-        with tmp_path.open("w", encoding="utf-8") as handle:
-            handle.write(f"{text}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.rename(tmp_path, path)
-        dir_flags = os.O_RDONLY
-        if hasattr(os, "O_DIRECTORY"):
-            dir_flags |= os.O_DIRECTORY
-        dir_fd = os.open(directory, dir_flags)
+    with model_writer_lock(path, ticker=ticker_upper):
+        payload = overrides_payload(overrides)
+        text = json.dumps(
+            payload,
+            sort_keys=True,
+            indent=2,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        tmp_path = directory / f"{ticker_upper}.json.tmp.{os.getpid()}"
         try:
-            os.fsync(dir_fd)
+            with tmp_path.open("w", encoding="utf-8") as handle:
+                handle.write(f"{text}\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.rename(tmp_path, path)
+            dir_flags = os.O_RDONLY
+            if hasattr(os, "O_DIRECTORY"):
+                dir_flags |= os.O_DIRECTORY
+            dir_fd = os.open(directory, dir_flags)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
         finally:
-            os.close(dir_fd)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
+            if tmp_path.exists():
+                tmp_path.unlink()
     return path
 
 
@@ -378,6 +447,7 @@ def list_ticker_overrides(overrides_dir: Path | None = None) -> list[str]:
 
 
 __all__ = [
+    "GuardConfig",
     "TickerOverrides",
     "MODEL_ENGINE_OVERRIDES_DIR_ENV",
     "configured_overrides_dir",
@@ -385,9 +455,12 @@ __all__ = [
     "derive_ticker_overrides_schema_version",
     "load_ticker_overrides",
     "merge_overrides",
+    "overrides_payload",
+    "overrides_lock_target",
     "overrides_schema_version_rank",
     "required_overrides_schema_version",
     "resolve_overrides_dir",
     "save_ticker_overrides",
+    "validate_ticker_override_path_case",
     "list_ticker_overrides",
 ]

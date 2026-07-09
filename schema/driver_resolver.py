@@ -145,6 +145,40 @@ def load_unsupported_in_segment_mode() -> tuple[tuple[str, str], ...]:
   return tuple(normalized)
 
 
+@lru_cache(maxsize=1)
+def load_scale_correction_rules() -> dict[str, dict[str, str]]:
+  payload = _load_driver_mapping_payload()
+  entries = payload.get("scale_correction_rules", []) if isinstance(payload, dict) else []
+  if not isinstance(entries, list):
+    raise ValueError("driver_mapping.yaml scale_correction_rules must be a list")
+
+  rules: dict[str, dict[str, str]] = {}
+  mapping = load_driver_mapping()
+  for entry in entries:
+    if not isinstance(entry, dict):
+      raise ValueError("scale_correction_rules entries must be objects")
+    key = str(entry.get("key") or "").strip()
+    target_item_id = str(entry.get("target_item_id") or "").strip()
+    comparator_item_id = str(entry.get("comparator_item_id") or "").strip()
+    reason = str(entry.get("reason") or "").strip()
+    if not key or not target_item_id or not comparator_item_id:
+      raise ValueError("scale_correction_rules entries must define key, target_item_id, and comparator_item_id")
+    if mapping.get(key) != target_item_id:
+      raise ValueError(f"scale_correction_rules target mismatch for {key}: {target_item_id}")
+    try:
+      _find_validation_item(target_item_id)
+      _find_validation_item(comparator_item_id)
+    except KeyError as exc:
+      raise ValueError(f"scale_correction_rules row missing for {key}: {exc}") from exc
+    rules[key] = {
+      "key": key,
+      "target_item_id": target_item_id,
+      "comparator_item_id": comparator_item_id,
+      "reason": reason,
+    }
+  return rules
+
+
 def _validate_mapping(mapping: dict[str, str], template_path: str | Path | None = None) -> None:
   violations: list[str] = []
   for driver_key, item_id in mapping.items():
@@ -274,6 +308,7 @@ __all__ = [
   "DRIVER_MAPPING_PATH",
   "RAW_PREFIX",
   "load_driver_mapping",
+  "load_scale_correction_rules",
   "load_unsupported_in_segment_mode",
   "resolve_driver_cells",
   "resolve_driver_key",

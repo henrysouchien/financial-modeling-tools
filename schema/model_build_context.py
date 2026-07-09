@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from .models import DriverCategory, PERIOD_MODE_QUARTERLY5, PERIOD_MODE_YEARLY, Unit
+from .overrides_projections import ProjectionValueScale
 from .thesis_shared_slice import (
     ConfidenceLevel,
     ScalarValue,
@@ -193,6 +194,7 @@ class Driver(_ContractModel):
     assumption_id: str | None = None
     value: ScalarValue
     unit: Unit
+    value_scale: ProjectionValueScale = "model"
     periods: list[int] | None = None
     sia_category: DriverCategory | None = None
     rationale: str | None = None
@@ -250,6 +252,21 @@ class ValuationInputs(_ContractModel):
             "Explicit equity risk premium as decimal (e.g., 0.045). When absent, "
             "build leaves ERP blank instead of inferring a default. Persists across handoffs."
         ),
+    )
+    equity_risk_premium_source: str | None = Field(
+        default=None,
+        description=(
+            "Provenance source for ERP (e.g. house policy or analyst); required "
+            "alongside a non-null ERP value."
+        ),
+    )
+    equity_risk_premium_rationale: str | None = Field(
+        default=None,
+        description="Why this ERP was selected.",
+    )
+    equity_risk_premium_as_of: str | None = Field(
+        default=None,
+        description="As-of observation month for the ERP source, YYYY-MM.",
     )
 
 

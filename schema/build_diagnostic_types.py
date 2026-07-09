@@ -30,6 +30,7 @@ class BSBalanceCheck:
 @dataclass
 class BSSublineCheck:
     by_section: dict[str, dict[str, Any]] = field(default_factory=dict)
+    section_role_resolution: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -95,6 +96,27 @@ class CrossSourceValidationCheck:
 
 
 @dataclass
+class SourceArbitrationCheck:
+    enabled: bool = False
+    mode: str = "off"
+    by_concept: dict[str, dict[str, Any]] = field(default_factory=dict)
+    final_source_by_concept_year: dict[str, dict[str, str]] = field(
+        default_factory=dict
+    )
+    summary: dict[str, Any] = field(
+        default_factory=lambda: {
+            "concepts_checked": 0,
+            "cells_decided": 0,
+            "cells_would_apply": 0,
+            "cells_applied": 0,
+            "cells_fail_closed": 0,
+            "cells_skipped_superseded": 0,
+            "actions": {},
+        }
+    )
+
+
+@dataclass
 class DiagnosticReport:
     ticker: str
     fiscal_year_end: str
@@ -111,6 +133,9 @@ class DiagnosticReport:
     historical_path_coverage: HistoricalPathCoverageCheck
     cross_source_validation: CrossSourceValidationCheck = field(
         default_factory=CrossSourceValidationCheck
+    )
+    source_arbitration: SourceArbitrationCheck = field(
+        default_factory=SourceArbitrationCheck
     )
 
     def headline_severity(
@@ -135,5 +160,6 @@ __all__ = [
     "SyntheticZeroCheck",
     "HistoricalPathCoverageCheck",
     "CrossSourceValidationCheck",
+    "SourceArbitrationCheck",
     "DiagnosticReport",
 ]

@@ -44,6 +44,13 @@ _SCENARIO_OUTPUT_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "adjusted_ebitda_m",
+        (
+            "tpl.fm.adjusted_earnings.adjusted_ebitda",
+            "tpl.a.adj_ebitda.adjusted_ebitda",
+        ),
+    ),
+    (
         "adj_eps",
         (
             "tpl.fm.adjusted_earnings.adjusted_eps",

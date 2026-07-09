@@ -85,6 +85,24 @@ def _ref_source_id(spec: FormulaSpec | None) -> str | None:
     return None
 
 
+def _ref_source_t(spec: FormulaSpec | None) -> int | None:
+    if spec is None or spec.type is not FormulaType.ref:
+        return None
+    source = (spec.params or {}).get("source")
+    if isinstance(source, LineItemRef):
+        return int(source.t)
+    if isinstance(source, dict):
+        try:
+            return int(source.get("t", 0))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _is_carry_forward_formula(spec: FormulaSpec | None, item_id: str) -> bool:
+    return _ref_source_id(spec) == item_id and _ref_source_t(spec) == -1
+
+
 def _ref_formula(item_id: str, t: int = 0) -> FormulaSpec:
     return FormulaSpec(type=FormulaType.ref, params={"source": LineItemRef(id=item_id, t=int(t))})
 
@@ -160,8 +178,10 @@ __all__ = [
     "_ratio_formula",
     "_ref_formula",
     "_ref_source_id",
+    "_ref_source_t",
     "_ref_target_id",
     "_rewrite_refs",
+    "_is_carry_forward_formula",
     "_sum_or_ref_formula",
     "_yoy_formula",
 ]
