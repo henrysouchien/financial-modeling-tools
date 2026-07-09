@@ -17,9 +17,12 @@ from .kpi_bridge import _decode_period_key
 from .overrides import (
     TickerOverrides,
     load_ticker_overrides,
+    overrides_lock_target,
     resolve_overrides_dir,
     save_ticker_overrides,
+    validate_ticker_override_path_case,
 )
+from .model_writer_lock import model_writer_lock
 from .templates import load_data_taxonomy
 
 if TYPE_CHECKING:
@@ -30,6 +33,16 @@ _KPI_SOURCE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.
 _AXIS_QNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*$")
 _EDGAR_AXIS_FAMILY_LABELS = frozenset({"business_segment", "product", "geography"})
 _DIMENSION_SUFFIXES = ("Member", "Domain", "Axis")
+_REVENUE_KPI_SOURCE_LOCAL_TOKENS = frozenset({
+    "netsales",
+    "revenue",
+    "revenuefromcontractwithcustomerexcludingassessedtax",
+    "revenues",
+    "revenuenotfromcontractwithcustomer",
+    "sales",
+    "salesrevenuegoodsnet",
+    "salesrevenuenet",
+})
 _HASH_INPUT_KEYS = (
     "concept_id",
     "axis_key",
@@ -62,6 +75,7 @@ class OverridesWriteReport:
     conflicts: list[str] = field(default_factory=list)
     dimensional_intent_backfilled: list[str] = field(default_factory=list)
     tombstoned: list[str] = field(default_factory=list)
+    warnings: list[dict[str, object]] = field(default_factory=list)
     output_path: Path | None = None
     exit_status: int = 0
 
@@ -80,26 +94,28 @@ def business_model_to_overrides(
 
     ticker_upper = _normalize_ticker(ticker)
     directory = _override_dir(overrides_dir)
-    existing = load_ticker_overrides(ticker_upper, directory) or TickerOverrides(
-        ticker=ticker_upper,
-        overrides={},
-        custom_concepts={},
-        file_meta={},
-    )
-    merged, report = business_model_to_ticker_overrides(
-        business_model,
-        ticker_upper,
-        existing=existing,
-        prune=prune,
-        bridge_report=bridge_report,
-        inline_values_by_node=inline_values_by_node,
-        generated_conflict_strategy=generated_conflict_strategy,
-    )
+    validate_ticker_override_path_case(ticker_upper, directory)
+    with model_writer_lock(overrides_lock_target(ticker_upper, directory), ticker=ticker_upper):
+        existing = load_ticker_overrides(ticker_upper, directory) or TickerOverrides(
+            ticker=ticker_upper,
+            overrides={},
+            custom_concepts={},
+            file_meta={},
+        )
+        merged, report = business_model_to_ticker_overrides(
+            business_model,
+            ticker_upper,
+            existing=existing,
+            prune=prune,
+            bridge_report=bridge_report,
+            inline_values_by_node=inline_values_by_node,
+            generated_conflict_strategy=generated_conflict_strategy,
+        )
 
-    if not dry_run:
-        report.output_path = save_ticker_overrides(merged, directory)
+        if not dry_run:
+            report.output_path = save_ticker_overrides(merged, directory)
 
-    return report
+        return report
 
 
 def business_model_to_ticker_overrides(
@@ -170,6 +186,7 @@ def business_model_to_ticker_overrides(
             node,
             concept_id,
             bridge_report,
+            report=report,
             inline_values_by_node=inline_values_by_node,
         )
         report.nodes_emitted += 1
@@ -197,6 +214,7 @@ def business_model_to_ticker_overrides(
         projections=dict(existing.projections or {}),
         semantic_rows=dict(existing.semantic_rows or {}),
         valuation=dict(existing.valuation or {}),
+        guards=existing.guards,
     )
 
     report.exit_status = 1 if report.conflicts else 0
@@ -253,6 +271,7 @@ def _build_custom_concept_entry(
     concept_id: str,
     bridge_report: "BridgeReport | None" = None,
     *,
+    report: OverridesWriteReport | None = None,
     inline_values_by_node: Mapping[str, Mapping[str | int, float]] | None = None,
 ) -> dict:
     unit = getattr(node.unit, "value", node.unit)
@@ -269,8 +288,31 @@ def _build_custom_concept_entry(
             "generated_at": _utc_now_iso(),
         },
     }
-    if segment.edgar_member:
+    if _node_has_dimensional_intent(segment, node):
         entry.setdefault("_meta", {})["dimensional_intent"] = True
+
+    claimed_members = _absorbed_claim_members(segment)
+    if claimed_members and not segment.edgar_member:
+        warning = {
+            "code": "blended_segment_dimensional_binding_unexpressible",
+            "segment_id": segment.id,
+            "node_id": node.id,
+            "concept_id": concept_id,
+            "claimed_members": claimed_members,
+            "message": (
+                "Blended segment absorbs multiple EDGAR members, but the current KPI "
+                "override axis_key format can express only one axis/member pair."
+            ),
+        }
+        logging.warning(
+            "custom_concept %r targets blended segment %s with claimed members %s; "
+            "current axis_key format cannot express the multi-member binding.",
+            concept_id,
+            segment.id,
+            claimed_members,
+        )
+        if report is not None:
+            report.warnings.append(warning)
 
     if segment.edgar_axis and segment.edgar_member:
         axis_key = f"{segment.edgar_axis}={segment.edgar_member}"
@@ -288,6 +330,28 @@ def _build_custom_concept_entry(
 
     entry["_meta"]["content_hash"] = _compute_content_hash(entry)
     return entry
+
+
+def _node_has_dimensional_intent(segment: Segment, node: DriverNode) -> bool:
+    if segment.edgar_member:
+        return True
+    if getattr(segment.revenue_model, "type", None) != "product_based":
+        return False
+    if str(node.id or "") == "segment_revenue":
+        return False
+    if not bool(node.kpi):
+        return False
+    source = str(node.kpi_source or "").rsplit(":", 1)[-1].lower()
+    return source in _REVENUE_KPI_SOURCE_LOCAL_TOKENS
+
+
+def _absorbed_claim_members(segment: Segment) -> list[str]:
+    members: list[str] = []
+    for claim in segment.absorbs or []:
+        member = str(getattr(claim, "member", "") or "").strip()
+        name = str(getattr(claim, "name", "") or "").strip()
+        members.append(member or name)
+    return [member for member in members if member]
 
 
 def _merge_with_existing(

@@ -27,7 +27,7 @@ from .business_model_driver_specs import (
     _capital_source_driver_specs,  # noqa: F401 - compatibility alias for schema.business_model imports
     _working_capital_driver_specs,  # noqa: F401 - compatibility alias for schema.business_model imports
 )
-from .models import Unit
+from .models import ModelScale, Unit
 from .thesis_shared_slice import (
     _ContractModel,
     _normalize_ticker,
@@ -206,6 +206,7 @@ class DriverNode(_ContractModel):
     label: str = Field(min_length=1)
     factors: list[Factor] = Field(min_length=1)
     unit: Unit
+    model_scale: ModelScale | None = None
     driver: DriverExpr | None = None
     compile_to: CompileTarget
     kpi: bool = False
@@ -299,12 +300,24 @@ class RevenueModel(_ContractModel):
     consolidation_formula: DriverExpr
 
 
+class AbsorbedClaim(_ContractModel):
+    name: str | None = None
+    member: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_claim(self) -> "AbsorbedClaim":
+        if not str(self.name or "").strip() and not str(self.member or "").strip():
+            raise ValueError("absorbed claim requires name and/or member")
+        return self
+
+
 class Segment(_ContractModel):
     id: str = Field(min_length=1)
     label: str = Field(min_length=1)
     match_name: str = Field(min_length=1)
     edgar_member: str | None = None
     edgar_axis: str | None = None
+    absorbs: list[AbsorbedClaim] | None = None
     is_default: bool
     revenue_share: float = Field(ge=0.0, le=1.0)
     revenue_model: RevenueModel
@@ -332,7 +345,30 @@ class Segment(_ContractModel):
                 f"edgar_axis {self.edgar_axis!r} must be an XBRL QName "
                 "(e.g., srt:ProductOrServiceAxis), not a family label"
             )
+        if self.absorbs:
+            if self.edgar_member is not None:
+                raise ValueError("absorbs requires edgar_member to be None")
+            if self.edgar_axis is not None:
+                raise ValueError("absorbs requires edgar_axis to be None")
+            seen_names: set[str] = set()
+            seen_members: set[str] = set()
+            for claim in self.absorbs:
+                normalized_name = _normalize_absorbed_claim_name(claim.name)
+                member = str(claim.member or "").strip()
+                if normalized_name and normalized_name in seen_names:
+                    raise ValueError("duplicate absorbed claim within segment")
+                if member and member in seen_members:
+                    raise ValueError("duplicate absorbed claim within segment")
+                if normalized_name:
+                    seen_names.add(normalized_name)
+                if member:
+                    seen_members.add(member)
         return self
+
+
+def _normalize_absorbed_claim_name(value: str | None) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().casefold())
+    return " ".join(normalized.split())
 
 
 class CostStructure(_ContractModel):
@@ -398,10 +434,40 @@ class Consolidated(_ContractModel):
     capital_sources: CapitalSources | None = None
 
 
+_PROFITABILITY_TARGET_MARGIN_FIELDS = (
+    "adjusted_ebitda_margin",
+    "free_cash_flow_margin",
+    "operating_margin",
+)
+_PROFITABILITY_TARGET_PERCENT_SHAPED_MESSAGE = (
+    "looks percent-shaped (e.g. 36.0); express profitability targets as "
+    "fractions of revenue (e.g. 0.36 for 36%)"
+)
+
+
+def normalize_legacy_profitability_targets(payload: dict) -> dict:
+    profitability_targets = payload.get("profitability_targets")
+    if not isinstance(profitability_targets, dict):
+        return payload
+
+    for field in _PROFITABILITY_TARGET_MARGIN_FIELDS:
+        value = profitability_targets.get(field)
+        if isinstance(value, (int, float)) and abs(value) > 1.0:
+            profitability_targets[field] = value / 100
+    return payload
+
+
 class ProfitabilityTargets(_ContractModel):
     adjusted_ebitda_margin: float | None = None
     free_cash_flow_margin: float | None = None
     operating_margin: float | None = None
+
+    @field_validator(*_PROFITABILITY_TARGET_MARGIN_FIELDS)
+    @classmethod
+    def _reject_percent_shaped_margin(cls, value: float | None) -> float | None:
+        if value is not None and abs(value) > 1.0:
+            raise ValueError(_PROFITABILITY_TARGET_PERCENT_SHAPED_MESSAGE)
+        return value
 
 
 class BmCompanyInfo(_ContractModel):
@@ -564,6 +630,7 @@ BusinessModel.model_rebuild()
 __all__ = [
     "AcquisitionPattern",
     "Acquisitions",
+    "AbsorbedClaim",
     "BmCompanyInfo",
     "BmDecisionsLogEntry",
     "BusinessModel",
@@ -623,4 +690,5 @@ __all__ = [
     "WorkingCapital",
     "derive_driver_assumption_plan",
     "driver_assumption_key",
+    "normalize_legacy_profitability_targets",
 ]

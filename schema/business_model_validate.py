@@ -107,6 +107,59 @@ def _node_unit_value(node: Any) -> str:
     return str(getattr(getattr(node, "unit", None), "value", getattr(node, "unit", "")) or "").strip().lower()
 
 
+def _node_factor_values(node: Any) -> list[str]:
+    return [
+        str(getattr(factor, "value", factor) or "").strip().lower()
+        for factor in getattr(node, "factors", []) or []
+    ]
+
+
+def _is_external_price_leaf(node: Any) -> bool:
+    driver = getattr(node, "driver", None)
+    return (
+        getattr(driver, "type", None) == "external"
+        and _node_factor_values(node) == ["price"]
+        and not getattr(node, "children", None)
+    )
+
+
+def _dollar_model_scale_warning(segment: Any, node: Any, path: tuple[str, ...]) -> dict[str, Any] | None:
+    if _node_unit_value(node) != "dollars":
+        return None
+    if getattr(node, "model_scale", None) is not None:
+        return None
+    compile_to = getattr(node, "compile_to", None)
+    target_type = getattr(compile_to, "target_type", None)
+    if str(getattr(target_type, "value", target_type) or "") not in {"assumption_row", "derived_row"}:
+        return None
+    if _is_external_price_leaf(node):
+        return None
+    return {
+        "code": "missing_dollar_model_scale",
+        "reason": "materialized_dollar_node_without_model_scale",
+        "segment_id": segment.id,
+        "node_id": node.id,
+        "qualified_id": f"{segment.id}.{'.'.join(path)}",
+        "unit": "dollars",
+        "compile_to": str(getattr(target_type, "value", target_type) or ""),
+        "inferred_model_scale": "millions",
+        "loc": [
+            "segments",
+            segment.id,
+            "revenue_model",
+            "decomposition",
+            *path,
+            "model_scale",
+        ],
+        "message": (
+            "Dollar BusinessModel nodes that materialize model rows must declare "
+            "model_scale so downstream seeds do not rely on compiler fallback. Use "
+            "'millions' for statement/aggregate dollar rows, or 'units' for raw "
+            "per-unit price rows."
+        ),
+    }
+
+
 def _is_revenue_kpi_source(value: object | None) -> bool:
     local = _tag_local_name(value)
     if local in _REVENUE_KPI_SOURCE_LOCAL_TOKENS:
@@ -177,6 +230,9 @@ def contract_checks(
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     for segment, node, path in _walk_business_model_nodes(parsed):
+        scale_issue = _dollar_model_scale_warning(segment, node, path)
+        if scale_issue is not None:
+            warnings.append(scale_issue)
         if not node.kpi:
             continue
         ok, reason = validate_kpi_source_reference(node.kpi_source)
@@ -404,67 +460,171 @@ def segment_context_checks(
     matched: list[dict[str, Any]] = []
     for segment in parsed.segments:
         declared_member = str(segment.edgar_member or "").strip()
-        if not declared_member:
-            continue
-        declared_axis = str(segment.edgar_axis or "").strip()
-        axis_candidates = [
-            candidate
-            for candidate in discovered
-            if not declared_axis or _axis_equivalent(declared_axis, candidate.get("axis"))
-        ]
-        exact = next(
-            (
+        if declared_member:
+            declared_axis = str(segment.edgar_axis or "").strip()
+            axis_candidates = [
                 candidate
-                for candidate in axis_candidates
-                if _member_exact_or_unqualified_discovery(declared_member, candidate.get("edgar_member"))
-            ),
-            None,
-        )
-        if exact is not None:
-            matched.append(
-                {
-                    "segment_id": segment.id,
-                    "declared_axis": declared_axis or None,
-                    "declared_member": declared_member,
-                    "matched_axis": exact.get("axis"),
-                    "matched_member": exact.get("edgar_member"),
-                }
+                for candidate in discovered
+                if not declared_axis or _axis_equivalent(declared_axis, candidate.get("axis"))
+            ]
+            exact = next(
+                (
+                    candidate
+                    for candidate in axis_candidates
+                    if _member_exact_or_unqualified_discovery(declared_member, candidate.get("edgar_member"))
+                ),
+                None,
             )
-            if not declared_axis:
-                errors.append(
+            if exact is not None:
+                matched.append(
                     {
-                        "code": "segment_axis_missing",
                         "segment_id": segment.id,
-                        "segment_label": segment.label,
+                        "declared_axis": declared_axis or None,
                         "declared_member": declared_member,
-                        "discovered_axis": exact.get("axis"),
-                        "suggested_axis": _suggested_axis_qname(exact.get("axis")),
-                        "suggested_member": exact.get("edgar_member"),
-                        "message": "Segment.edgar_member matched live discovery but edgar_axis is missing; set both axis and member before build.",
+                        "matched_axis": exact.get("axis"),
+                        "matched_member": exact.get("edgar_member"),
                     }
                 )
-            continue
+                if not declared_axis:
+                    errors.append(
+                        {
+                            "code": "segment_axis_missing",
+                            "segment_id": segment.id,
+                            "segment_label": segment.label,
+                            "declared_member": declared_member,
+                            "discovered_axis": exact.get("axis"),
+                            "suggested_axis": _suggested_axis_qname(exact.get("axis")),
+                            "suggested_member": exact.get("edgar_member"),
+                            "message": "Segment.edgar_member matched live discovery but edgar_axis is missing; set both axis and member before build.",
+                        }
+                    )
+                continue
 
-        suggestions = _segment_suggestions(segment, axis_candidates or discovered)
-        errors.append(
-            {
-                "code": "segment_member_mismatch",
-                "segment_id": segment.id,
-                "segment_label": segment.label,
-                "declared_axis": declared_axis or None,
-                "declared_member": declared_member,
-                "suggested_segments": suggestions,
-                "message": "Segment.edgar_member does not exactly match live segment discovery for this ticker/year.",
-            }
-        )
+            suggestions = _segment_suggestions(segment, axis_candidates or discovered)
+            errors.append(
+                {
+                    "code": "segment_member_mismatch",
+                    "segment_id": segment.id,
+                    "segment_label": segment.label,
+                    "declared_axis": declared_axis or None,
+                    "declared_member": declared_member,
+                    "suggested_segments": suggestions,
+                    "message": "Segment.edgar_member does not exactly match live segment discovery for this ticker/year.",
+                }
+            )
+        for claim_index, claim in enumerate(segment.absorbs or []):
+            claim_member = str(getattr(claim, "member", "") or "").strip()
+            claim_name = str(getattr(claim, "name", "") or "").strip()
+            exact = next(
+                (
+                    candidate
+                    for candidate in discovered
+                    if claim_member
+                    and _member_exact_or_unqualified_discovery(claim_member, candidate.get("edgar_member"))
+                ),
+                None,
+            )
+            if exact is not None:
+                matched.append(
+                    {
+                        "segment_id": segment.id,
+                        "claim_index": claim_index,
+                        "claim_name": claim_name or None,
+                        "declared_member": claim_member,
+                        "matched_axis": exact.get("axis"),
+                        "matched_member": exact.get("edgar_member"),
+                    }
+                )
+                continue
+            name_match = next(
+                (
+                    candidate
+                    for candidate in discovered
+                    if claim_name and _normalize_segment_name(candidate.get("name")) == _normalize_segment_name(claim_name)
+                ),
+                None,
+            )
+            if name_match is not None:
+                warnings.append(
+                    {
+                        "code": "absorbed_claim_member_suggestion",
+                        "segment_id": segment.id,
+                        "segment_label": segment.label,
+                        "claim_index": claim_index,
+                        "claim_name": claim_name or None,
+                        "declared_member": claim_member or None,
+                        "discovered_axis": name_match.get("axis"),
+                        "suggested_axis": _suggested_axis_qname(name_match.get("axis")),
+                        "suggested_member": name_match.get("edgar_member"),
+                        "message": "Segment.absorbs claim matched live discovery by name; add or update the member qname.",
+                    }
+                )
+                matched.append(
+                    {
+                        "segment_id": segment.id,
+                        "claim_index": claim_index,
+                        "claim_name": claim_name or None,
+                        "matched_axis": name_match.get("axis"),
+                        "matched_member": name_match.get("edgar_member"),
+                    }
+                )
+
+    coverage_warnings = _unclaimed_memberful_discovery_warnings(parsed, discovered)
+    warnings.extend(coverage_warnings)
 
     context = {
         "status": "ok",
         "axes_checked": len(axes),
         "segments_checked": len([segment for segment in parsed.segments if segment.edgar_member]),
         "matches": matched,
+        "coverage_scope": "memberful_discovery_candidates",
     }
     return errors, warnings, context
+
+
+def _unclaimed_memberful_discovery_warnings(
+    parsed: BusinessModel,
+    discovered: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for candidate in discovered:
+        candidate_member = str(candidate.get("edgar_member") or "").strip()
+        if not candidate_member:
+            continue
+        if _discovery_candidate_claimed(parsed, candidate):
+            continue
+        warnings.append(
+            {
+                "code": "unclaimed_discovery_member",
+                "axis": candidate.get("axis"),
+                "name": candidate.get("name"),
+                "edgar_member": candidate.get("edgar_member"),
+                "message": (
+                    "Discovered memberful EDGAR segment is not claimed by any BusinessModel "
+                    "segment; add a segment edgar_member or include it in Segment.absorbs."
+                ),
+            }
+        )
+    return warnings
+
+
+def _discovery_candidate_claimed(parsed: BusinessModel, candidate: dict[str, Any]) -> bool:
+    candidate_name = _normalize_segment_name(candidate.get("name"))
+    candidate_member = candidate.get("edgar_member")
+    for segment in parsed.segments:
+        if candidate_name and _normalize_segment_name(segment.match_name) == candidate_name:
+            return True
+        declared_member = str(segment.edgar_member or "").strip()
+        if declared_member and _member_exact_or_unqualified_discovery(declared_member, candidate_member):
+            return True
+        for claim in segment.absorbs or []:
+            claim_member = str(getattr(claim, "member", "") or "").strip()
+            if claim_member and _member_exact_or_unqualified_discovery(claim_member, candidate_member):
+                return True
+            claim_name = _normalize_segment_name(getattr(claim, "name", None))
+            if claim_name and claim_name == candidate_name:
+                return True
+    return False
 
 
 def driver_key_checks(
@@ -631,6 +791,7 @@ def summary(
                 {
                     "id": node.id,
                     "unit": getattr(node.unit, "value", node.unit),
+                    "model_scale": node.model_scale,
                     "kpi": bool(node.kpi),
                     "kpi_source": node.kpi_source,
                     "driver_type": driver_type,
@@ -644,6 +805,13 @@ def summary(
                 "label": segment.label,
                 "edgar_axis": segment.edgar_axis,
                 "edgar_member": segment.edgar_member,
+                "absorbs": [
+                    {
+                        "name": claim.name,
+                        "member": claim.member,
+                    }
+                    for claim in (segment.absorbs or [])
+                ] or None,
                 "revenue_model_type": segment.revenue_model.type,
                 "revenue_share": segment.revenue_share,
                 "nodes": nodes,

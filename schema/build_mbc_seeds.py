@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import sys
 from typing import TYPE_CHECKING, Any
@@ -69,6 +70,15 @@ def _bm_segment_snapshot_inline_values(
     inline_values: dict[str, dict[str, float]] = {}
     for segment in business_model.segments:
         if not (segment.edgar_axis and segment.edgar_member):
+            claimed_members = _absorbed_claim_members(segment)
+            if claimed_members and not segment.edgar_member:
+                logging.warning(
+                    "BM segment %s absorbs multiple EDGAR members %s; current inline seed "
+                    "format cannot emit per-member segment snapshot values, skipping "
+                    "snapshot inline values for this segment.",
+                    segment.id,
+                    claimed_members,
+                )
             continue
         if not tags_equivalent(str(segment.edgar_axis), str(axis)):
             continue
@@ -97,6 +107,15 @@ def _bm_segment_snapshot_inline_values(
         for key, values in inline_values.items()
         if values
     }
+
+
+def _absorbed_claim_members(segment: object) -> list[str]:
+    members: list[str] = []
+    for claim in getattr(segment, "absorbs", None) or []:
+        member = str(getattr(claim, "member", "") or "").strip()
+        name = str(getattr(claim, "name", "") or "").strip()
+        members.append(member or name)
+    return [member for member in members if member]
 
 
 def _bm_revenue_share_inline_values(

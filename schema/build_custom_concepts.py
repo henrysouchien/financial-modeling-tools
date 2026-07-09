@@ -347,6 +347,15 @@ def _populate_custom_concepts(
                     axis_key,
                 )
                 continue
+            blended_members = _absorbed_claim_members_for_target(business_model, target_id)
+            if blended_members:
+                logging.warning(
+                    "custom_concept %r targets blended segment members %s, but current "
+                    "custom concept format cannot filter to multiple members; falling "
+                    "back to unfiltered EDGAR fetch.",
+                    concept_id,
+                    blended_members,
+                )
             fetch_result = fetch_legacy_edgar_concept(
                 ticker=ticker,
                 concept_id=concept_id,
@@ -396,3 +405,25 @@ def _populate_custom_concepts(
             populated += 1
 
     return populated
+
+
+def _absorbed_claim_members_for_target(
+    business_model: "BusinessModel | None",
+    target_id: str,
+) -> list[str]:
+    if business_model is None:
+        return []
+    parts = str(target_id or "").split(".")
+    if len(parts) < 3 or parts[0] != "bm":
+        return []
+    segment_id = parts[1]
+    for segment in business_model.segments:
+        if str(segment.id) != segment_id:
+            continue
+        members: list[str] = []
+        for claim in segment.absorbs or []:
+            member = str(getattr(claim, "member", "") or "").strip()
+            name = str(getattr(claim, "name", "") or "").strip()
+            members.append(member or name)
+        return [member for member in members if member]
+    return []

@@ -7,7 +7,12 @@ from typing import Any
 from .business_model import BusinessModel
 from .business_model_compiler_errors import BusinessModelCompileError
 from .model_build_context import SegmentProfileSnapshot
-from .segments import SegmentInfo, SegmentProfile, segment_revenue_observations_from_snapshot
+from .segments import (
+    SegmentInfo,
+    SegmentProfile,
+    segment_revenue_observations_from_snapshot,
+)
+from .segment_profile_helpers import aggregate_segment_revenue_observations
 
 
 _NORMALIZE_NAME_RE = re.compile(r"[^a-z0-9]+")
@@ -50,6 +55,7 @@ def _reconcile_segments(
 
     snapshot_by_name: dict[str, Any] = {}
     snapshot_by_index: dict[int, Any] = {}
+    snapshot_by_member: dict[str, Any] = {}
     for snapshot_segment in edgar_snapshot.segments:
         normalized = _normalize_name(snapshot_segment.name)
         if normalized in snapshot_by_name:
@@ -62,9 +68,17 @@ def _reconcile_segments(
             )
         snapshot_by_name[normalized] = snapshot_segment
         snapshot_by_index[int(snapshot_segment.segment_index)] = snapshot_segment
+        member = str(getattr(snapshot_segment, "edgar_member", "") or "").strip()
+        if member:
+            if member in snapshot_by_member:
+                raise BusinessModelCompileError(
+                    f"snapshot contains duplicate edgar_member values: {member!r}"
+                )
+            snapshot_by_member[member] = snapshot_segment
 
     plans: list[_SegmentCompilePlan] = []
-    matched_snapshot_names: set[str] = set()
+    matched_snapshot_indices: set[int] = set()
+    matched_snapshot_owner: dict[int, str] = {}
     segment_mapping: dict[str, int] = {}
     used_segment_ids = {str(segment.id) for segment in business_model.segments}
     next_supplemental_index = max(snapshot_by_index) + 1 if snapshot_by_index else 1
@@ -77,6 +91,33 @@ def _reconcile_segments(
                 raise BusinessModelCompileError(
                     f"no EDGAR snapshot match for BM segment {segment.id!r} (match_name={segment.match_name!r})"
                 )
+            if segment.absorbs:
+                resolved_segments = _resolve_absorbed_snapshot_segments(
+                    segment,
+                    snapshot_by_member=snapshot_by_member,
+                    snapshot_by_name=snapshot_by_name,
+                )
+                segment_index = min(int(candidate.segment_index) for candidate in resolved_segments)
+                _claim_snapshot_segments(
+                    segment,
+                    resolved_segments,
+                    matched_snapshot_owner=matched_snapshot_owner,
+                    matched_snapshot_indices=matched_snapshot_indices,
+                )
+                segment_mapping[segment.id] = segment_index
+                plans.append(
+                    _SegmentCompilePlan(
+                        segment=segment,
+                        segment_index=segment_index,
+                        info=_absorbed_segment_info(
+                            segment,
+                            resolved_segments,
+                            axis_used=edgar_snapshot.axis_used,
+                        ),
+                        segment_id=segment.id,
+                    )
+                )
+                continue
             # A BusinessModel can include source-backed revenue streams that
             # are not EDGAR axis members, e.g. interest income in total revenue.
             segment_index = next_supplemental_index
@@ -94,8 +135,6 @@ def _reconcile_segments(
                 )
             )
             continue
-        if normalized in matched_snapshot_names:
-            raise BusinessModelCompileError(f"snapshot segment {snapshot_segment.name!r} matched more than once")
         if segment.edgar_member and snapshot_segment.edgar_member and segment.edgar_member != snapshot_segment.edgar_member:
             raise BusinessModelCompileError(
                 "EDGAR member conflict for BM segment "
@@ -103,7 +142,45 @@ def _reconcile_segments(
                 f"snapshot={snapshot_segment.edgar_member!r}"
             )
 
-        matched_snapshot_names.add(normalized)
+        if segment.absorbs:
+            resolved_segments = _unique_snapshot_segments(
+                [
+                    snapshot_segment,
+                    *_resolve_absorbed_snapshot_segments(
+                        segment,
+                        snapshot_by_member=snapshot_by_member,
+                        snapshot_by_name=snapshot_by_name,
+                    ),
+                ]
+            )
+            segment_index = min(int(candidate.segment_index) for candidate in resolved_segments)
+            _claim_snapshot_segments(
+                segment,
+                resolved_segments,
+                matched_snapshot_owner=matched_snapshot_owner,
+                matched_snapshot_indices=matched_snapshot_indices,
+            )
+            segment_mapping[segment.id] = segment_index
+            plans.append(
+                _SegmentCompilePlan(
+                    segment=segment,
+                    segment_index=segment_index,
+                    info=_absorbed_segment_info(
+                        segment,
+                        resolved_segments,
+                        axis_used=edgar_snapshot.axis_used,
+                    ),
+                    segment_id=segment.id,
+                )
+            )
+            continue
+
+        _claim_snapshot_segments(
+            segment,
+            [snapshot_segment],
+            matched_snapshot_owner=matched_snapshot_owner,
+            matched_snapshot_indices=matched_snapshot_indices,
+        )
         segment_mapping[segment.id] = int(snapshot_segment.segment_index)
         plans.append(
             _SegmentCompilePlan(
@@ -123,7 +200,7 @@ def _reconcile_segments(
     unmatched_snapshot_segments = [
         snapshot_segment
         for snapshot_segment in edgar_snapshot.segments
-        if _normalize_name(snapshot_segment.name) not in matched_snapshot_names
+        if int(snapshot_segment.segment_index) not in matched_snapshot_indices
     ]
     residual_snapshot_segments = [
         snapshot_segment
@@ -164,8 +241,15 @@ def _reconcile_segments(
         )
 
     plans.sort(key=lambda plan: plan.segment_index)
-    if not plans or plans[0].segment_index != 1:
-        raise BusinessModelCompileError("EDGAR reconciliation must produce a primary segment with segment_index == 1")
+    if (
+        not plans
+        or plans[0].segment_index != 1
+        or plans[0].segment is None
+        or plans[0].unmanaged_snapshot
+    ):
+        raise BusinessModelCompileError(
+            "EDGAR reconciliation must produce a managed primary segment with segment_index == 1"
+        )
 
     return (
         plans,
@@ -193,6 +277,98 @@ def _is_unmanaged_residual_snapshot_segment(snapshot_segment: Any) -> bool:
     if not observations:
         return False
     return all(str(getattr(observation, "source", "") or "") == "derived_other" for observation in observations)
+
+
+def _resolve_absorbed_snapshot_segments(
+    segment: Any,
+    *,
+    snapshot_by_member: dict[str, Any],
+    snapshot_by_name: dict[str, Any],
+) -> list[Any]:
+    resolved: list[Any] = []
+    for claim in segment.absorbs or []:
+        member = str(getattr(claim, "member", "") or "").strip()
+        name = str(getattr(claim, "name", "") or "").strip()
+        by_member = snapshot_by_member.get(member) if member else None
+        by_name = snapshot_by_name.get(_normalize_name(name)) if name else None
+        if by_member is not None and by_name is not None and int(by_member.segment_index) != int(by_name.segment_index):
+            raise BusinessModelCompileError(
+                f"absorbed claim for BM segment {segment.id!r} resolves to different EDGAR "
+                f"segments by member and name: member={member!r}, name={name!r}"
+            )
+        resolved_segment = by_member or by_name
+        if resolved_segment is None:
+            raise BusinessModelCompileError(
+                f"absorbed claim for BM segment {segment.id!r} could not resolve to EDGAR snapshot: "
+                f"name={name!r}, member={member!r}"
+            )
+        resolved.append(resolved_segment)
+    return _unique_snapshot_segments(resolved)
+
+
+def _unique_snapshot_segments(snapshot_segments: list[Any]) -> list[Any]:
+    unique: dict[int, Any] = {}
+    for snapshot_segment in snapshot_segments:
+        unique[int(snapshot_segment.segment_index)] = snapshot_segment
+    return sorted(unique.values(), key=lambda segment: int(segment.segment_index))
+
+
+def _claim_snapshot_segments(
+    segment: Any,
+    snapshot_segments: list[Any],
+    *,
+    matched_snapshot_owner: dict[int, str],
+    matched_snapshot_indices: set[int],
+) -> None:
+    for snapshot_segment in snapshot_segments:
+        segment_index = int(snapshot_segment.segment_index)
+        owner = matched_snapshot_owner.get(segment_index)
+        if owner is not None and owner != segment.id:
+            raise BusinessModelCompileError(
+                f"EDGAR snapshot segment {snapshot_segment.name!r} is claimed by multiple BM segments: "
+                f"{owner!r} and {segment.id!r}"
+            )
+        matched_snapshot_owner[segment_index] = str(segment.id)
+        matched_snapshot_indices.add(segment_index)
+
+
+def _absorbed_segment_info(
+    segment: Any,
+    resolved_segments: list[Any],
+    *,
+    axis_used: str | None,
+) -> SegmentInfo:
+    ordered_segments = sorted(resolved_segments, key=lambda candidate: int(candidate.segment_index))
+    edgar_members = [
+        str(candidate.edgar_member).strip()
+        for candidate in ordered_segments
+        if str(getattr(candidate, "edgar_member", "") or "").strip()
+    ]
+    try:
+        revenue_observations = aggregate_segment_revenue_observations(
+            ordered_segments,
+            axis_used=axis_used,
+        )
+    except ValueError as exc:
+        raise BusinessModelCompileError(str(exc)) from exc
+    return SegmentInfo(
+        name=segment.label,
+        edgar_member=edgar_members[0] if len(edgar_members) == 1 else None,
+        edgar_members=edgar_members or None,
+        revenue_observations=revenue_observations,
+        volume_label=_common_snapshot_label(ordered_segments, "volume_label"),
+        price_label=_common_snapshot_label(ordered_segments, "price_label"),
+    )
+
+
+def _common_snapshot_label(snapshot_segments: list[Any], attr: str) -> str | None:
+    values = [getattr(segment, attr, None) for segment in snapshot_segments]
+    if not values or any(value is None for value in values):
+        return None
+    normalized = {str(value) for value in values}
+    if len(normalized) != 1:
+        return None
+    return str(values[0])
 
 
 def _unmanaged_snapshot_segment_id(name: str, segment_index: int, used_segment_ids: set[str]) -> str:
