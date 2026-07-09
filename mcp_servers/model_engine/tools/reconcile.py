@@ -4,6 +4,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Callable, get_type_hints
 
+from schema.model_writer_lock import model_writer_lock
+from schema.overrides import overrides_lock_target
+
 
 @dataclass(frozen=True)
 class ReconcileSubtotalIntegrityDeps:
@@ -269,35 +272,36 @@ def reconcile_subtotal_integrity_handler(
     }
 
   try:
-    with deps.ticker_override_lock(ticker_upper):
-      override_path = deps.resolve_reconcile_override_path(ticker_upper)
-      existing = deps.load_ticker_overrides(ticker_upper)
-      conflict = deps.override_conflict(existing, affected_input_concept, proposed_field)
-      if conflict is not None:
-        proposed = deps.merged_ticker_overrides(
+    with model_writer_lock(overrides_lock_target(ticker_upper), ticker=ticker_upper):
+      with deps.ticker_override_lock(ticker_upper):
+        override_path = deps.resolve_reconcile_override_path(ticker_upper)
+        existing = deps.load_ticker_overrides(ticker_upper)
+        conflict = deps.override_conflict(existing, affected_input_concept, proposed_field)
+        if conflict is not None:
+          proposed = deps.merged_ticker_overrides(
+            ticker_upper,
+            existing,
+            affected_input_concept,
+            proposed_field,
+          )
+          return deps.override_conflict_response(
+            ticker_upper,
+            group_entries,
+            affected_input_concept,
+            conflict,
+            deps.serialize_ticker_overrides(proposed),
+          )
+        existing_override_preserved = deps.existing_override_preserved(
+          existing,
+          affected_input_concept,
+        )
+        merged_overrides = deps.merged_ticker_overrides(
           ticker_upper,
           existing,
           affected_input_concept,
           proposed_field,
         )
-        return deps.override_conflict_response(
-          ticker_upper,
-          group_entries,
-          affected_input_concept,
-          conflict,
-          deps.serialize_ticker_overrides(proposed),
-        )
-      existing_override_preserved = deps.existing_override_preserved(
-        existing,
-        affected_input_concept,
-      )
-      merged_overrides = deps.merged_ticker_overrides(
-        ticker_upper,
-        existing,
-        affected_input_concept,
-        proposed_field,
-      )
-      written_path = deps.save_ticker_overrides(merged_overrides)
+        written_path = deps.save_ticker_overrides(merged_overrides)
   except ValueError as exc:
     if "Invalid override file casing" in str(exc):
       return deps.reconcile_error(

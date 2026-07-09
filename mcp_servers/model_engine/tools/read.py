@@ -13,6 +13,10 @@ _SCENARIO_TABLE_SCALAR_KEYS = _read_scenario.SCENARIO_TABLE_SCALAR_KEYS
 _MISSING = _read_scenario.MISSING
 
 
+def _empty_model_handle_token_payload(**_kwargs: Any) -> dict[str, Any]:
+  return {}
+
+
 @dataclass(frozen=True)
 class ModelReadDeps:
   validate_file_path: Callable[[str], str]
@@ -36,6 +40,29 @@ class ModelReadDeps:
   invalid_override_period_error: Callable[..., Exception]
   invalid_override_value_error: Callable[..., Exception]
   scenario: Callable[..., dict[str, Any]]
+  model_handle_token_payload: Callable[..., dict[str, Any]] = _empty_model_handle_token_payload
+
+
+def _attach_model_handle_token(
+  response: dict[str, Any],
+  *,
+  deps: ModelReadDeps,
+  file_path: str,
+  historical_cutoff_year: int | None,
+  issued_by: str,
+) -> dict[str, Any]:
+  try:
+    response["model_handle_token"] = deps.model_handle_token_payload(
+      file_path=file_path,
+      historical_cutoff_year=historical_cutoff_year,
+      issued_by=issued_by,
+    )
+  except Exception as exc:
+    response["model_handle_token_error"] = {
+      "error": str(exc),
+      "error_code": getattr(exc, "error_code", "model_handle_token_unavailable"),
+    }
+  return response
 
 
 def _is_scenario_table_value_item(item_id: str) -> bool:
@@ -151,7 +178,13 @@ def model_summarize_handler(
       historical_cutoff_year=historical_cutoff_year,
       include_items=include_items,
     )
-    return {"status": "ok", **result}
+    return _attach_model_handle_token(
+      {"status": "ok", **result},
+      deps=deps,
+      file_path=file_path,
+      historical_cutoff_year=historical_cutoff_year,
+      issued_by="model_summarize",
+    )
   except Exception as exc:
     return deps.model_tool_error_payload(exc)
 
@@ -289,7 +322,13 @@ def model_values_handler(
       periods=periods,
       historical_cutoff_year=historical_cutoff_year,
     )
-    return {"status": "ok", **result}
+    return _attach_model_handle_token(
+      {"status": "ok", **result},
+      deps=deps,
+      file_path=file_path,
+      historical_cutoff_year=historical_cutoff_year,
+      issued_by="model_values",
+    )
   except Exception as exc:
     return deps.model_tool_error_payload(exc)
 
@@ -436,7 +475,13 @@ def model_scenario_handler(
       result=result,
       overrides=normalized,
     )
-    return {"status": "ok", **result}
+    return _attach_model_handle_token(
+      {"status": "ok", **result},
+      deps=deps,
+      file_path=file_path,
+      historical_cutoff_year=historical_cutoff_year,
+      issued_by="model_scenario",
+    )
   except Exception as exc:
     return deps.model_tool_error_payload(exc)
 
@@ -525,6 +570,8 @@ def build_model_read_tool_functions(
     Discovery: use model_build output_path or a prior model_summarize/model_find
     result to obtain file_path. Set include_items=True when choosing item_ids for
     follow-up model_values, model_drivers, or model_sensitivity calls.
+    Pass returned model_handle_token unchanged to later model modification or
+    bridge tools when available.
     """
     return _parent_handler(parent_namespace, "_model_summarize_handler")(
       deps=_parent_read_deps(parent_namespace),
@@ -541,7 +588,7 @@ def build_model_read_tool_functions(
     """Read canonical valuation, DCF, WACC, P/E, and EV/EBITDA rows.
 
     Discovery: use model_build output_path or a current-model file_path from
-    portfolio-mcp.get_current_model. Use model_summarize(include_items=True) only
+    portfolio-reads-mcp.get_current_model. Use model_summarize(include_items=True) only
     when this canonical valuation reader reports an unknown-item gap.
 
     Use this before dcf-relative-valuation or valuation QA. It returns the stable
@@ -641,6 +688,8 @@ def build_model_read_tool_functions(
     item_ids. If item_ids x periods would produce an oversized response, it
     returns a structured model_values_request_too_large error with suggested
     item_id batches instead of a raw validation failure.
+    Pass returned model_handle_token unchanged to later model modification or
+    bridge tools when available.
     """
     return _parent_handler(parent_namespace, "_model_values_handler")(
       deps=_parent_read_deps(parent_namespace),
@@ -720,6 +769,8 @@ def build_model_read_tool_functions(
     compare_items before running the scenario. Each comparison includes
     base_values/scenario_values by period; use those instead of a follow-up
     model_values call after a successful scenario readback.
+    Pass returned model_handle_token unchanged to later model modification or
+    bridge tools when available.
     """
     return _parent_handler(parent_namespace, "_model_scenario_handler")(
       deps=_parent_read_deps(parent_namespace),

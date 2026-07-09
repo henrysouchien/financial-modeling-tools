@@ -12,7 +12,9 @@ _EXCHANGE_SUFFIXES = (
     ".TW", ".BO", ".NS",
     ".L", ".T",
 )
-_SHARE_CLASS_SUFFIXES = (".A", ".B")
+# Dot-form (BRK.A) and hyphen-form (BRK-A) share classes collapse to BRKA.
+# Preferred lines (EFC-PC, PPL-PA) do not end in exact -A/-B and stay rejected.
+_SHARE_CLASS_SUFFIXES = (".A", ".B", "-A", "-B")
 
 
 def normalize_ticker(raw: str) -> str:
@@ -24,7 +26,8 @@ def normalize_ticker(raw: str) -> str:
             value = value[:-len(suffix)]
             break
     for suffix in _SHARE_CLASS_SUFFIXES:
-        if value.endswith(suffix):
+        # len guard: a bare suffix must not collapse to a valid single letter.
+        if value.endswith(suffix) and len(value) > len(suffix):
             value = value[:-len(suffix)] + suffix[-1]
             break
     return value

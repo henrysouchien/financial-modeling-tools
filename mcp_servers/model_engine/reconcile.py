@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 
 from schema.overrides import TickerOverrides
+from api.research.source_html import provider_symbol
 from mcp_servers.model_engine.reconcile_candidates import (
   RECONCILE_CANDIDATE_CONCEPTS as RECONCILE_CANDIDATE_CONCEPTS,
   best_value_for_target as _best_value_for_target_impl,
@@ -587,6 +588,7 @@ def merged_ticker_overrides(
     file_meta=file_meta,
     projections=dict(existing.projections or {}) if existing is not None else {},
     semantic_rows=dict(existing.semantic_rows or {}) if existing is not None else {},
+    guards=existing.guards if existing is not None else None,
   )
 
 
@@ -625,8 +627,9 @@ def list_metrics(
   api_key = os_module.getenv("EDGAR_API_KEY", "")
   base_url = os_module.getenv("EDGAR_API_URL", "https://www.edgarparser.com").rstrip("/")
   endpoint = f"{base_url}/api/financials/list_metrics"
+  ticker_upper = str(ticker).upper()
   params = {
-    "ticker": str(ticker).upper(),
+    "ticker": provider_symbol(ticker_upper),
     "year": str(int(year)),
     "quarter": str(int(quarter)),
     "date_type": str(date_type),

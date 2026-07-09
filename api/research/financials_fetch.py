@@ -12,6 +12,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+try:  # full-repo context: real collapsed->native SEC translation (cache-only, fail-open)
+    from research.source_html import provider_symbol  # type: ignore
+except Exception:  # standalone context without the main api: fail-open identity
+    def provider_symbol(ticker: str) -> str:
+        return ticker
+
 
 _STATEMENT_ENDPOINTS = ("income_statement", "balance_sheet", "cash_flow")
 _MARKET_INPUT_ENDPOINTS = ("quote", "profile")
@@ -42,9 +48,10 @@ def _records(frame: Any) -> list[dict[str, Any]]:
 
 
 async def fetch_fmp_financials(ticker: str) -> dict[str, list[dict[str, Any]]]:
+    provider_ticker = provider_symbol(ticker)
     statement_frames = await asyncio.gather(
         *(
-            asyncio.to_thread(fmp.fetch, endpoint, symbol=ticker)
+            asyncio.to_thread(fmp.fetch, endpoint, symbol=provider_ticker)
             for endpoint in _STATEMENT_ENDPOINTS
         )
     )
@@ -54,7 +61,7 @@ async def fetch_fmp_financials(ticker: str) -> dict[str, list[dict[str, Any]]]:
     }
     market_frames = await asyncio.gather(
         *(
-            asyncio.to_thread(fmp.fetch, endpoint, symbol=ticker)
+            asyncio.to_thread(fmp.fetch, endpoint, symbol=provider_ticker)
             for endpoint in _MARKET_INPUT_ENDPOINTS
         ),
         return_exceptions=True,
@@ -74,7 +81,7 @@ def make_edgar_financials_fetcher():
 
     def _fetcher(ticker: str, year: int, quarter: int = 4, full_year_mode: bool = True) -> dict[str, Any]:
         params = {
-            "ticker": ticker,
+            "ticker": provider_symbol(ticker),
             "year": str(int(year)),
             "quarter": str(int(quarter)),
             "full_year_mode": str(bool(full_year_mode)).lower(),

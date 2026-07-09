@@ -16,6 +16,7 @@ from ..models import (
     ItemType,
     LineItem,
     LineItemRef,
+    ModelScale,
     Section,
     Sheet,
     SheetLayout,
@@ -27,6 +28,11 @@ from ..models import (
 )
 from ..refs import line_item_ref_from_obj
 from .template_builder import SIA_GENERIC_TEMPLATE_PATH
+from .model_scale import (
+    apply_template_model_scales,
+    assert_template_model_scales_declared,
+    require_declared_model_scale,
+)
 
 
 SCENARIO_EPS_LIMIT = 4
@@ -144,8 +150,12 @@ def item(
     repeat_group_id: str | None = None,
     repeat_group_role: str | None = None,
     build_notes: str | None = None,
+    model_scale: ModelScale | None = None,
 ) -> LineItem:
-    return LineItem(
+    kwargs: dict[str, Any] = {}
+    if model_scale is not None:
+        kwargs["model_scale"] = model_scale
+    line_item = LineItem(
         id=item_id,
         label=label,
         row=row,
@@ -165,7 +175,10 @@ def item(
         repeat_group_id=repeat_group_id,
         repeat_group_role=repeat_group_role,
         build_notes=build_notes,
+        **kwargs,
     )
+    require_declared_model_scale(line_item)
+    return line_item
 
 
 def header(item_id: str, label: str, row: int, *, label_column: str | None = None, column: str | None = None) -> LineItem:
@@ -197,6 +210,7 @@ def input_value(
     template_token: str | None = None,
     repeat_group_id: str | None = None,
     repeat_group_role: str | None = None,
+    model_scale: ModelScale | None = None,
 ) -> LineItem:
     return item(
         item_id,
@@ -213,6 +227,7 @@ def input_value(
         template_token=template_token,
         repeat_group_id=repeat_group_id,
         repeat_group_role=repeat_group_role,
+        model_scale=model_scale,
     )
 
 
@@ -229,6 +244,7 @@ def blank_input(
     template_token: str | None = None,
     repeat_group_id: str | None = None,
     repeat_group_role: str | None = None,
+    model_scale: ModelScale | None = None,
 ) -> LineItem:
     return item(
         item_id,
@@ -243,6 +259,7 @@ def blank_input(
         template_token=template_token,
         repeat_group_id=repeat_group_id,
         repeat_group_role=repeat_group_role,
+        model_scale=model_scale,
     )
 
 
@@ -340,6 +357,7 @@ def build_valuation_sheet(model: FinancialModel) -> Sheet:
                         {"op": "*", "args": [ref("tpl.v.current_valuation.stock_price"), ref("tpl.v.current_valuation.shares_outstanding")]}
                     ),
                     style=STYLE_FORMULA,
+                    model_scale="millions",
                 ),
                 item(
                     "tpl.v.current_valuation.net_debt",
@@ -348,6 +366,7 @@ def build_valuation_sheet(model: FinancialModel) -> Sheet:
                     column="B",
                     formula=ref_formula("tpl.fm.balance_sheet.net_cash", negate=True),
                     style=STYLE_FORMULA,
+                    model_scale="millions",
                 ),
                 item(
                     "tpl.v.current_valuation.enterprise_value",
@@ -361,6 +380,7 @@ def build_valuation_sheet(model: FinancialModel) -> Sheet:
                         ]
                     ),
                     style=STYLE_FORMULA,
+                    model_scale="millions",
                 ),
             ],
         )
@@ -395,19 +415,19 @@ def build_valuation_sheet(model: FinancialModel) -> Sheet:
             line_items=[
                 header("tpl.v.forward_ev_ebitda.header", "Forward EV/EBITDA", 18),
                 header("tpl.v.forward_ev_ebitda.ref_year_header", "Year", 19, label_column="D"),
-                item("tpl.v.forward_ev_ebitda.ebitda_current_ref", "EBITDA", 20, column="F", label_column="D", formula=ref_formula("tpl.fm.adjusted_earnings.adjusted_ebitda"), style=STYLE_FORMULA),
-                item("tpl.v.forward_ev_ebitda.ebitda_fy2_ref", "", 20, column="G", formula=ref_formula("tpl.fm.adjusted_earnings.adjusted_ebitda"), formula_periods=fy2_formula_periods, style=STYLE_FORMULA),
+                item("tpl.v.forward_ev_ebitda.ebitda_current_ref", "EBITDA", 20, column="F", label_column="D", formula=ref_formula("tpl.fm.adjusted_earnings.adjusted_ebitda"), style=STYLE_FORMULA, model_scale="millions"),
+                item("tpl.v.forward_ev_ebitda.ebitda_fy2_ref", "", 20, column="G", formula=ref_formula("tpl.fm.adjusted_earnings.adjusted_ebitda"), formula_periods=fy2_formula_periods, style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.forward_ev_ebitda.ev_ebitda_current_ref", "EV/EBITDA", 21, column="F", label_column="D", formula=ratio_formula(ref("tpl.v.current_valuation.enterprise_value"), ref("tpl.v.forward_ev_ebitda.ebitda_current_ref")), unit=Unit.multiple, style=STYLE_FORMULA),
                 item("tpl.v.forward_ev_ebitda.ev_ebitda_fy2_ref", "", 21, column="G", formula=ratio_formula(ref("tpl.v.current_valuation.enterprise_value"), ref("tpl.v.forward_ev_ebitda.ebitda_fy2_ref")), formula_periods=fy2_formula_periods, unit=Unit.multiple, style=STYLE_FORMULA),
                 item("tpl.v.forward_ev_ebitda.implied_ebitda_growth", "Implied EBITDA Growth", 22, column="G", label_column="D", formula=ratio_formula(ref("tpl.v.forward_ev_ebitda.ebitda_fy2_ref"), ref("tpl.v.forward_ev_ebitda.ebitda_current_ref"), subtract_one=True), formula_periods=fy2_formula_periods, unit=Unit.percentage, style=STYLE_FORMULA),
-                item("tpl.v.forward_ev_ebitda.ebitda_current", "EBITDA", 20, column="B", formula=ref_formula("tpl.v.forward_ev_ebitda.ebitda_current_ref"), style=STYLE_FORMULA),
+                item("tpl.v.forward_ev_ebitda.ebitda_current", "EBITDA", 20, column="B", formula=ref_formula("tpl.v.forward_ev_ebitda.ebitda_current_ref"), style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.forward_ev_ebitda.forward_ev_ebitda", "Forward EV/EBITDA", 21, column="B", formula=ref_formula("tpl.v.forward_ev_ebitda.ev_ebitda_current_ref"), unit=Unit.multiple, style=STYLE_FORMULA),
-                item("tpl.v.forward_ev_ebitda.fy2_ebitda", "FY2 EBITDA", 22, column="B", formula=ref_formula("tpl.v.forward_ev_ebitda.ebitda_fy2_ref"), formula_periods=fy2_formula_periods, style=STYLE_FORMULA),
+                item("tpl.v.forward_ev_ebitda.fy2_ebitda", "FY2 EBITDA", 22, column="B", formula=ref_formula("tpl.v.forward_ev_ebitda.ebitda_fy2_ref"), formula_periods=fy2_formula_periods, style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.forward_ev_ebitda.ev_ebitda_price", "EV/EBITDA Price", 23, column="B", formula=ref_formula("tpl.v.forward_ev_ebitda.implied_share_price"), formula_periods=fy2_formula_periods, unit=Unit.per_share, style=STYLE_FORMULA),
                 header("tpl.v.forward_ev_ebitda.implied_price_header", "EV/EBITDA Implied Price", 25, label_column="D"),
-                item("tpl.v.forward_ev_ebitda.implied_ev", "Implied EV", 26, column="E", label_column="D", formula=valuation_formula("multiple", multiple=ref("tpl.v.forward_ev_ebitda.forward_ev_ebitda"), metric=ref("tpl.v.forward_ev_ebitda.fy2_ebitda")), formula_periods=fy2_formula_periods, style=STYLE_FORMULA),
-                item("tpl.v.forward_ev_ebitda.net_debt_fy2", "Less: Net Debt", 27, column="E", label_column="D", formula=ref_formula("tpl.fm.balance_sheet.net_cash"), formula_periods=fy2_formula_periods, style=STYLE_FORMULA),
-                item("tpl.v.forward_ev_ebitda.implied_equity_value", "Implied Equity Value", 28, column="E", label_column="D", formula=sum_formula([ref("tpl.v.forward_ev_ebitda.implied_ev"), ref("tpl.v.forward_ev_ebitda.net_debt_fy2")]), formula_periods=fy2_formula_periods, style=STYLE_FORMULA),
+                item("tpl.v.forward_ev_ebitda.implied_ev", "Implied EV", 26, column="E", label_column="D", formula=valuation_formula("multiple", multiple=ref("tpl.v.forward_ev_ebitda.forward_ev_ebitda"), metric=ref("tpl.v.forward_ev_ebitda.fy2_ebitda")), formula_periods=fy2_formula_periods, style=STYLE_FORMULA, model_scale="millions"),
+                item("tpl.v.forward_ev_ebitda.net_debt_fy2", "Less: Net Debt", 27, column="E", label_column="D", formula=ref_formula("tpl.fm.balance_sheet.net_cash"), formula_periods=fy2_formula_periods, style=STYLE_FORMULA, model_scale="millions"),
+                item("tpl.v.forward_ev_ebitda.implied_equity_value", "Implied Equity Value", 28, column="E", label_column="D", formula=sum_formula([ref("tpl.v.forward_ev_ebitda.implied_ev"), ref("tpl.v.forward_ev_ebitda.net_debt_fy2")]), formula_periods=fy2_formula_periods, style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.forward_ev_ebitda.shares_fy2", "Shares Outstanding", 29, column="E", label_column="D", formula=ref_formula("tpl.fm.income_statement.diluted_shares_outstanding_m"), formula_periods=fy2_formula_periods, unit=Unit.count, style=STYLE_FORMULA),
                 item("tpl.v.forward_ev_ebitda.implied_share_price", "Implied Share Price", 30, column="E", label_column="D", formula=ratio_formula(ref("tpl.v.forward_ev_ebitda.implied_equity_value"), ref("tpl.v.forward_ev_ebitda.shares_fy2")), formula_periods=fy2_formula_periods, unit=Unit.per_share, style=STYLE_FORMULA),
             ],
@@ -419,30 +439,30 @@ def build_valuation_sheet(model: FinancialModel) -> Sheet:
         item("tpl.v.dcf.terminal_growth_summary", "Terminal Growth", 27, column="B", formula=ref_formula("tpl.v.dcf.terminal_growth_rate"), unit=Unit.percentage, style=STYLE_FORMULA),
         item("tpl.v.dcf.dcf_price_summary", "DCF Price", 28, column="B", formula=ref_formula("tpl.v.dcf.dcf_price"), unit=Unit.per_share, style=STYLE_FORMULA),
         header("tpl.v.dcf.header", "DCF", 33, label_column="E"),
-        item("tpl.v.dcf.fcf_projection", "FCF", 35, formula=ref_formula("tpl.fm.cash_flow.free_cash_flow"), formula_periods=projection_periods, style=STYLE_FORMULA),
-        item("tpl.v.dcf.pv_fcf_projection", "PV of FCF", 36, formula=valuation_formula("dcf_discount", cash_flow=ref("tpl.v.dcf.fcf_projection"), discount_rate=ref("tpl.v.wacc.wacc"), period=ref("tpl.v.dcf.discount_period")), formula_periods=projection_periods, style=STYLE_FORMULA),
+        item("tpl.v.dcf.fcf_projection", "FCF", 35, formula=ref_formula("tpl.fm.cash_flow.free_cash_flow"), formula_periods=projection_periods, style=STYLE_FORMULA, model_scale="millions"),
+        item("tpl.v.dcf.pv_fcf_projection", "PV of FCF", 36, formula=valuation_formula("dcf_discount", cash_flow=ref("tpl.v.dcf.fcf_projection"), discount_rate=ref("tpl.v.wacc.wacc"), period=ref("tpl.v.dcf.discount_period")), formula_periods=projection_periods, style=STYLE_FORMULA, model_scale="millions"),
         item("tpl.v.dcf.discount_period", "Discount Period", 37, item_type=ItemType.input, values=values_for({period: 0.5 + index for index, period in enumerate(projection_periods)}), formula_periods=projection_periods, unit=Unit.count, style=STYLE_INPUT),
-        item("tpl.v.dcf.pv_cash_flows", "PV of Cash Flows", 40, column="E", label_column="D", formula=sum_range_formula(ref("tpl.v.dcf.pv_fcf_projection")), style=STYLE_FORMULA),
-        item("tpl.v.dcf.pv_terminal_value", "PV of Terminal Value", 41, column="E", label_column="D", formula=valuation_formula("dcf_discount", cash_flow=ref("tpl.v.dcf.terminal_value_growth"), discount_rate=ref("tpl.v.wacc.wacc"), period=ref("tpl.v.dcf.discount_period", period_anchor="last")), style=STYLE_FORMULA),
-        item("tpl.v.dcf.total_ev", "Total Enterprise Value", 42, column="E", label_column="D", formula=sum_formula([ref("tpl.v.dcf.pv_cash_flows"), ref("tpl.v.dcf.pv_terminal_value")]), style=STYLE_FORMULA),
-        item("tpl.v.dcf.less_net_debt", "Less: Net Debt", 43, column="E", label_column="D", formula=ref_formula("tpl.v.current_valuation.net_debt"), style=STYLE_FORMULA),
-        item("tpl.v.dcf.equity_value", "Equity Value", 44, column="E", label_column="D", formula=expr_formula({"op": "-", "left": ref("tpl.v.dcf.total_ev"), "right": ref("tpl.v.dcf.less_net_debt")}), style=STYLE_FORMULA),
+        item("tpl.v.dcf.pv_cash_flows", "PV of Cash Flows", 40, column="E", label_column="D", formula=sum_range_formula(ref("tpl.v.dcf.pv_fcf_projection")), style=STYLE_FORMULA, model_scale="millions"),
+        item("tpl.v.dcf.pv_terminal_value", "PV of Terminal Value", 41, column="E", label_column="D", formula=valuation_formula("dcf_discount", cash_flow=ref("tpl.v.dcf.terminal_value_growth"), discount_rate=ref("tpl.v.wacc.wacc"), period=ref("tpl.v.dcf.discount_period", period_anchor="last")), style=STYLE_FORMULA, model_scale="millions"),
+        item("tpl.v.dcf.total_ev", "Total Enterprise Value", 42, column="E", label_column="D", formula=sum_formula([ref("tpl.v.dcf.pv_cash_flows"), ref("tpl.v.dcf.pv_terminal_value")]), style=STYLE_FORMULA, model_scale="millions"),
+        item("tpl.v.dcf.less_net_debt", "Less: Net Debt", 43, column="E", label_column="D", formula=ref_formula("tpl.v.current_valuation.net_debt"), style=STYLE_FORMULA, model_scale="millions"),
+        item("tpl.v.dcf.equity_value", "Equity Value", 44, column="E", label_column="D", formula=expr_formula({"op": "-", "left": ref("tpl.v.dcf.total_ev"), "right": ref("tpl.v.dcf.less_net_debt")}), style=STYLE_FORMULA, model_scale="millions"),
         item("tpl.v.dcf.shares_outstanding", "Shares Outstanding", 45, column="E", label_column="D", formula=ref_formula("tpl.v.current_valuation.shares_outstanding"), unit=Unit.count, style=STYLE_FORMULA),
         item("tpl.v.dcf.equity_value_per_share", "Equity Value per Share", 46, column="E", label_column="D", formula=ratio_formula(ref("tpl.v.dcf.equity_value"), ref("tpl.v.dcf.shares_outstanding")), unit=Unit.per_share, style=STYLE_FORMULA),
         item("tpl.v.dcf.dcf_price", "DCF Price", 47, column="E", label_column="D", formula=growth_formula(ref("tpl.v.dcf.equity_value_per_share"), ref("tpl.v.wacc.wacc")), unit=Unit.per_share, style=STYLE_FORMULA),
         header("tpl.v.dcf.terminal_value_multiple_header", "Terminal Value Multiple", 40, label_column="G"),
-        item("tpl.v.dcf.terminal_year_fcf", "Terminal Year FCF", 41, column="H", label_column="G", formula=ref_formula("tpl.v.dcf.fcf_projection", period_anchor="last"), style=STYLE_FORMULA),
+        item("tpl.v.dcf.terminal_year_fcf", "Terminal Year FCF", 41, column="H", label_column="G", formula=ref_formula("tpl.v.dcf.fcf_projection", period_anchor="last"), style=STYLE_FORMULA, model_scale="millions"),
         item("tpl.v.dcf.exit_multiple", "Exit Multiple", 42, column="H", label_column="G", formula=valuation_formula("offset_scenario", anchor=ref("tpl.v.dcf.exit_multiple_scenario_table_anchor"), selector=ref("tpl.a.header.scenario_value"), column_offset=0), unit=Unit.multiple, style=STYLE_FORMULA),
-        item("tpl.v.dcf.terminal_value_multiple", "Terminal Value (Multiple)", 43, column="H", label_column="G", formula=valuation_formula("multiple", multiple=ref("tpl.v.dcf.exit_multiple"), metric=ref("tpl.v.dcf.terminal_year_fcf")), style=STYLE_FORMULA),
+        item("tpl.v.dcf.terminal_value_multiple", "Terminal Value (Multiple)", 43, column="H", label_column="G", formula=valuation_formula("multiple", multiple=ref("tpl.v.dcf.exit_multiple"), metric=ref("tpl.v.dcf.terminal_year_fcf")), style=STYLE_FORMULA, model_scale="millions"),
         header("tpl.v.dcf.exit_multiple_scenario_table_anchor", "Exit Multiple", 40, label_column="K", column="K"),
         input_value("tpl.v.dcf.exit_multiple_bull", "Bull", 41, "K", [first_projection], 25.0, label_column="J", unit=Unit.multiple, key_driver=True),
         input_value("tpl.v.dcf.exit_multiple_base", "Base", 42, "K", [first_projection], 18.0, label_column="J", unit=Unit.multiple, key_driver=True),
         input_value("tpl.v.dcf.exit_multiple_bear", "Bear", 43, "K", [first_projection], 15.0, label_column="J", unit=Unit.multiple, key_driver=True),
         header("tpl.v.dcf.constant_growth_header", "Constant Growth", 45, label_column="G"),
-        item("tpl.v.dcf.terminal_year_fcf_growth", "Terminal Year FCF", 46, column="H", label_column="G", formula=ref_formula("tpl.v.dcf.terminal_year_fcf"), style=STYLE_FORMULA),
+        item("tpl.v.dcf.terminal_year_fcf_growth", "Terminal Year FCF", 46, column="H", label_column="G", formula=ref_formula("tpl.v.dcf.terminal_year_fcf"), style=STYLE_FORMULA, model_scale="millions"),
         item("tpl.v.dcf.terminal_growth_rate", "Terminal Growth Rate", 47, column="H", label_column="G", formula=valuation_formula("offset_scenario", anchor=ref("tpl.v.dcf.terminal_growth_scenario_table_anchor"), selector=ref("tpl.a.header.scenario_value"), column_offset=0), unit=Unit.percentage, style=STYLE_FORMULA),
         item("tpl.v.dcf.terminal_discount_rate", "Discount Rate (WACC)", 48, column="H", label_column="G", formula=ref_formula("tpl.v.wacc.wacc"), unit=Unit.percentage, style=STYLE_FORMULA),
-        item("tpl.v.dcf.terminal_value_growth", "Terminal Value (Growth)", 49, column="H", label_column="G", formula=valuation_formula("terminal_value", final_cf=ref("tpl.v.dcf.terminal_year_fcf_growth"), growth=ref("tpl.v.dcf.terminal_growth_rate"), discount=ref("tpl.v.dcf.terminal_discount_rate")), style=STYLE_FORMULA),
+        item("tpl.v.dcf.terminal_value_growth", "Terminal Value (Growth)", 49, column="H", label_column="G", formula=valuation_formula("terminal_value", final_cf=ref("tpl.v.dcf.terminal_year_fcf_growth"), growth=ref("tpl.v.dcf.terminal_growth_rate"), discount=ref("tpl.v.dcf.terminal_discount_rate")), style=STYLE_FORMULA, model_scale="millions"),
         header("tpl.v.dcf.terminal_growth_scenario_table_anchor", "Terminal Growth", 45, label_column="K", column="K"),
         input_value("tpl.v.dcf.terminal_growth_bull", "Bull", 46, "K", [first_projection], 0.04, label_column="J", unit=Unit.percentage, key_driver=True),
         input_value("tpl.v.dcf.terminal_growth_base", "Base", 47, "K", [first_projection], 0.03, label_column="J", unit=Unit.percentage, key_driver=True),
@@ -522,11 +542,11 @@ def build_valuation_sheet(model: FinancialModel) -> Sheet:
                 item("tpl.v.wacc.tax_shield", "(1 - Tax Rate)", 60, column="E", label_column="D", formula=expr_formula({"op": "-", "left": 1, "right": ref("tpl.fm.margins.tax_rate")}), unit=Unit.percentage, style=STYLE_FORMULA),
                 item("tpl.v.wacc.after_tax_cost_of_debt", "After-tax Cost of Debt (Kd)", 61, column="E", label_column="D", formula=expr_formula({"op": "*", "args": [ref("tpl.v.wacc.pretax_cost_of_debt"), ref("tpl.v.wacc.tax_shield")]}), unit=Unit.percentage, style=STYLE_FORMULA),
                 header("tpl.v.wacc.capital_structure_header", "Capital Structure", 63, label_column="D"),
-                item("tpl.v.wacc.equity_value", "Equity Value", 64, column="E", label_column="D", formula=ref_formula("tpl.v.current_valuation.market_cap"), style=STYLE_FORMULA),
+                item("tpl.v.wacc.equity_value", "Equity Value", 64, column="E", label_column="D", formula=ref_formula("tpl.v.current_valuation.market_cap"), style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.wacc.weight_equity", "", 64, column="F", formula=ratio_formula(ref("tpl.v.wacc.equity_value"), ref("tpl.v.wacc.total_capital")), unit=Unit.percentage, style=STYLE_FORMULA),
-                item("tpl.v.wacc.debt_value", "Debt Value", 65, column="E", label_column="D", formula=ref_formula("tpl.fm.balance_sheet.long_term_debt"), style=STYLE_FORMULA),
+                item("tpl.v.wacc.debt_value", "Debt Value", 65, column="E", label_column="D", formula=ref_formula("tpl.fm.balance_sheet.long_term_debt"), style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.wacc.weight_debt", "", 65, column="F", formula=ratio_formula(ref("tpl.v.wacc.debt_value"), ref("tpl.v.wacc.total_capital")), unit=Unit.percentage, style=STYLE_FORMULA),
-                item("tpl.v.wacc.total_capital", "Total Capital", 66, column="E", label_column="D", formula=sum_formula([ref("tpl.v.wacc.equity_value"), ref("tpl.v.wacc.debt_value")]), style=STYLE_FORMULA),
+                item("tpl.v.wacc.total_capital", "Total Capital", 66, column="E", label_column="D", formula=sum_formula([ref("tpl.v.wacc.equity_value"), ref("tpl.v.wacc.debt_value")]), style=STYLE_FORMULA, model_scale="millions"),
                 item("tpl.v.wacc.wacc", "WACC", 68, column="E", label_column="D", formula=valuation_formula("wacc", cost_equity=ref("tpl.v.cost_of_equity.cost_of_equity"), weight_equity=ref("tpl.v.wacc.weight_equity"), cost_debt=ref("tpl.v.wacc.after_tax_cost_of_debt"), weight_debt=ref("tpl.v.wacc.weight_debt")), unit=Unit.percentage, style=STYLE_FORMULA),
             ],
         )
@@ -753,24 +773,24 @@ def build_scenarios_sheet(model: FinancialModel) -> Sheet:
         item("tpl.s.expected_value.upside_price", "Upside price", 9, column="I", label_column="H", formula=ref_formula("tpl.s.valuation_scenarios.bull_valuation_avg"), unit=Unit.per_share, style=STYLE_FORMULA),
         item("tpl.s.expected_value.upside_return", "Estimated return", 10, column="I", label_column="H", formula=ratio_formula(ref("tpl.s.expected_value.upside_price"), ref("tpl.s.expected_value.current_price"), subtract_one=True), unit=Unit.percentage, style=STYLE_FORMULA),
         input_value("tpl.s.expected_value.bull_probability", "Probability", 11, "I", projection_periods[:1], 0.20, label_column="H", unit=Unit.percentage, key_driver=True),
-        item("tpl.s.expected_value.estimated_upside", "Estimated upside", 12, column="I", label_column="H", formula=valuation_formula("probability_weighted", value=ref("tpl.s.expected_value.upside_price"), current=ref("tpl.s.expected_value.current_price"), probability=ref("tpl.s.expected_value.bull_probability")), style=STYLE_FORMULA),
+        item("tpl.s.expected_value.estimated_upside", "Estimated upside", 12, column="I", label_column="H", formula=valuation_formula("probability_weighted", value=ref("tpl.s.expected_value.upside_price"), current=ref("tpl.s.expected_value.current_price"), probability=ref("tpl.s.expected_value.bull_probability")), style=STYLE_FORMULA, model_scale="units"),
         item("tpl.s.expected_value.base_price", "Base price", 14, column="I", label_column="H", formula=ref_formula("tpl.s.valuation_scenarios.base_valuation_avg"), unit=Unit.per_share, style=STYLE_FORMULA),
         item("tpl.s.expected_value.base_return", "Estimated return", 15, column="I", label_column="H", formula=ratio_formula(ref("tpl.s.expected_value.base_price"), ref("tpl.s.expected_value.current_price"), subtract_one=True), unit=Unit.percentage, style=STYLE_FORMULA),
         input_value("tpl.s.expected_value.base_probability", "Probability", 16, "I", projection_periods[:1], 0.60, label_column="H", unit=Unit.percentage, key_driver=True),
-        item("tpl.s.expected_value.estimated_base", "Estimated upside", 17, column="I", label_column="H", formula=valuation_formula("probability_weighted", value=ref("tpl.s.expected_value.base_price"), current=ref("tpl.s.expected_value.current_price"), probability=ref("tpl.s.expected_value.base_probability")), style=STYLE_FORMULA),
+        item("tpl.s.expected_value.estimated_base", "Estimated upside", 17, column="I", label_column="H", formula=valuation_formula("probability_weighted", value=ref("tpl.s.expected_value.base_price"), current=ref("tpl.s.expected_value.current_price"), probability=ref("tpl.s.expected_value.base_probability")), style=STYLE_FORMULA, model_scale="units"),
         item("tpl.s.expected_value.downside_price", "Downside price", 19, column="I", label_column="H", formula=ref_formula("tpl.s.valuation_scenarios.bear_valuation_avg"), unit=Unit.per_share, style=STYLE_FORMULA),
         item("tpl.s.expected_value.downside_return", "Estimated return", 20, column="I", label_column="H", formula=ratio_formula(ref("tpl.s.expected_value.downside_price"), ref("tpl.s.expected_value.current_price"), subtract_one=True), unit=Unit.percentage, style=STYLE_FORMULA),
         item("tpl.s.expected_value.bear_probability", "Probability", 21, column="I", label_column="H", formula=expr_formula({"op": "MAX", "args": [0, {"op": "-", "left": 1, "right": {"op": "+", "args": [ref("tpl.s.expected_value.bull_probability"), ref("tpl.s.expected_value.base_probability")]}}]}), unit=Unit.percentage, style=STYLE_FORMULA),
-        item("tpl.s.expected_value.estimated_risk", "Estimated risk", 22, column="I", label_column="H", formula=valuation_formula("probability_weighted", value=ref("tpl.s.expected_value.downside_price"), current=ref("tpl.s.expected_value.current_price"), probability=ref("tpl.s.expected_value.bear_probability")), style=STYLE_FORMULA),
+        item("tpl.s.expected_value.estimated_risk", "Estimated risk", 22, column="I", label_column="H", formula=valuation_formula("probability_weighted", value=ref("tpl.s.expected_value.downside_price"), current=ref("tpl.s.expected_value.current_price"), probability=ref("tpl.s.expected_value.bear_probability")), style=STYLE_FORMULA, model_scale="units"),
         item("tpl.s.expected_value.expected_value", "Expected value", 24, column="I", label_column="H", formula=expr_formula({"op": "+", "args": [{"op": "*", "args": [ref("tpl.s.expected_value.upside_price"), ref("tpl.s.expected_value.bull_probability")]}, {"op": "*", "args": [ref("tpl.s.expected_value.base_price"), ref("tpl.s.expected_value.base_probability")]}, {"op": "*", "args": [ref("tpl.s.expected_value.downside_price"), ref("tpl.s.expected_value.bear_probability")]}]}), unit=Unit.per_share, style=STYLE_FORMULA),
         item("tpl.s.expected_value.expected_return", "Estimated return", 25, column="I", label_column="H", formula=ratio_formula(ref("tpl.s.expected_value.expected_value"), ref("tpl.s.expected_value.current_price"), subtract_one=True), unit=Unit.percentage, style=STYLE_FORMULA),
         item("tpl.s.expected_value.return_to_risk", "Return-to-risk ratio", 26, column="I", label_column="H", formula=ratio_formula({"op": "+", "args": [ref("tpl.s.expected_value.estimated_upside"), ref("tpl.s.expected_value.estimated_base")]}, {"op": "NEG", "arg": ref("tpl.s.expected_value.estimated_risk")}), unit=Unit.ratio, style=STYLE_FORMULA),
         header("tpl.s.expected_value.kelly_header", "Kelly criterion", 7, label_column="K"),
-        item("tpl.s.expected_value.kelly_expected_value", "Expected value", 8, column="L", label_column="K", formula=sum_formula([ref("tpl.s.expected_value.estimated_upside"), ref("tpl.s.expected_value.estimated_base"), ref("tpl.s.expected_value.estimated_risk")]), style=STYLE_FORMULA),
-        item("tpl.s.expected_value.kelly_total_win", "Total win", 9, column="L", label_column="K", formula=sum_formula([ref("tpl.s.expected_value.upside_price"), ref("tpl.s.expected_value.current_price")]), style=STYLE_FORMULA),
+        item("tpl.s.expected_value.kelly_expected_value", "Expected value", 8, column="L", label_column="K", formula=sum_formula([ref("tpl.s.expected_value.estimated_upside"), ref("tpl.s.expected_value.estimated_base"), ref("tpl.s.expected_value.estimated_risk")]), style=STYLE_FORMULA, model_scale="units"),
+        item("tpl.s.expected_value.kelly_total_win", "Total win", 9, column="L", label_column="K", formula=sum_formula([ref("tpl.s.expected_value.upside_price"), ref("tpl.s.expected_value.current_price")]), style=STYLE_FORMULA, model_scale="units"),
         item("tpl.s.expected_value.kelly_position_size", "% position size", 10, column="L", label_column="K", formula=valuation_formula("kelly", expected_value=ref("tpl.s.expected_value.kelly_expected_value"), total_win=ref("tpl.s.expected_value.kelly_total_win")), unit=Unit.percentage, style=STYLE_FORMULA),
-        item("tpl.s.expected_value.kelly_upside", "Upside", 15, column="L", label_column="K", formula=expr_formula({"op": "-", "left": ref("tpl.s.expected_value.upside_price"), "right": ref("tpl.s.expected_value.current_price")}), style=STYLE_FORMULA),
-        item("tpl.s.expected_value.kelly_downside", "Downside", 16, column="L", label_column="K", formula=expr_formula({"op": "-", "left": ref("tpl.s.expected_value.downside_price"), "right": ref("tpl.s.expected_value.current_price")}), style=STYLE_FORMULA),
+        item("tpl.s.expected_value.kelly_upside", "Upside", 15, column="L", label_column="K", formula=expr_formula({"op": "-", "left": ref("tpl.s.expected_value.upside_price"), "right": ref("tpl.s.expected_value.current_price")}), style=STYLE_FORMULA, model_scale="units"),
+        item("tpl.s.expected_value.kelly_downside", "Downside", 16, column="L", label_column="K", formula=expr_formula({"op": "-", "left": ref("tpl.s.expected_value.downside_price"), "right": ref("tpl.s.expected_value.current_price")}), style=STYLE_FORMULA, model_scale="units"),
         item("tpl.s.expected_value.kelly_odds", "Odds", 17, column="L", label_column="K", formula=ratio_formula(ref("tpl.s.expected_value.kelly_upside"), {"op": "NEG", "arg": ref("tpl.s.expected_value.kelly_downside")}), unit=Unit.ratio, style=STYLE_FORMULA),
         header("tpl.s.expected_value.implied_probability_header", "Implied probability", 19, label_column="K"),
         item("tpl.s.expected_value.implied_probability_upside", "Upside", 20, column="L", label_column="K", formula=ratio_formula(1, {"op": "+", "args": [ref("tpl.s.expected_value.kelly_odds"), 1]}), unit=Unit.percentage, style=STYLE_FORMULA),
@@ -816,6 +836,7 @@ def build_scenarios_sheet(model: FinancialModel) -> Sheet:
                     label_column=label_col,
                     unit=unit,
                     key_driver=True,
+                    model_scale="millions" if field_name == "revenue_m" else None,
                 )
             )
     snapshot_items.append(
@@ -917,6 +938,8 @@ def build_valuation_scenarios_template(
     model.sheets.pop("Scenarios", None)
     model.sheets["Valuation"] = build_valuation_sheet(model)
     model.sheets["Scenarios"] = build_scenarios_sheet(model)
+    apply_template_model_scales(model)
+    assert_template_model_scales_declared(model)
     model.build_index()
     validate_refs(model)
 

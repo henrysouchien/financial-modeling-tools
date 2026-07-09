@@ -486,7 +486,14 @@ def valuation_policy_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
       "value": equity_risk_premium,
       "legacy_placeholder_value": erp_placeholder,
       "is_legacy_placeholder_value": nearly_equal(equity_risk_premium, erp_placeholder, tolerance=1e-12),
-      "source_policy": "ModelBuildContext.valuation.inputs.equity_risk_premium is the explicit build-time source; when absent, schema.build leaves ERP blank instead of inferring a default.",
+      "source_policy": (
+        "ModelBuildContext.valuation.inputs.equity_risk_premium is the explicit "
+        "build-time value; it may be analyst-provided or a sourced house-policy "
+        "MBC ERP. Use model_semantics(..., sections=[\"valuation\"]) and the "
+        "valuation-inputs artifact for row-level ERP source/rationale once "
+        "valuation-inputs has durably persisted the row. When ERP is absent, "
+        "schema.build leaves it blank instead of inferring a default."
+      ),
     },
     "beta": {
       "raw_beta_item_id": "tpl.v.cost_of_equity.raw_beta",

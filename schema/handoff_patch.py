@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated, Literal, Union
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from ._insights_shared import (
     Confidence,
@@ -461,6 +461,13 @@ class RegisterSourcesOp(_PatchOpBase):
     op: Literal["register_sources"] = "register_sources"
     target: None = None
     value: list[SourceRecord]
+    _source_ref_alias_map: dict[str, str] = PrivateAttr(default_factory=dict)
+    _citation_degradation_warnings: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, RegisterSourcesOp):
+            return self.model_dump(mode="python") == other.model_dump(mode="python")
+        return super().__eq__(other)
 
     @model_validator(mode="before")
     @classmethod

@@ -7,7 +7,8 @@ import math
 from collections import defaultdict
 from typing import Any, Optional
 
-from .build_diagnostic_sections import BS_SECTIONS, ParentCandidate, SectionMember
+from .build_diagnostic_sections import ParentCandidate, SectionMember
+from .build_diagnostic_section_roles import resolve_balance_sheet_sections
 from .build_diagnostic_types import BSBalanceCheck, BSSublineCheck, DiagnosticTolerances
 from .build_diagnostic_values import (
     _iter_items,
@@ -112,20 +113,32 @@ def _check_bs_subline_reconciliation(
     tolerances: DiagnosticTolerances,
     presentation_tree: PresentationTree | None = None,
 ) -> BSSublineCheck:
+    section_resolution = resolve_balance_sheet_sections(model)
+    sections = section_resolution.sections
     if presentation_tree is None:
-        return _check_bs_subline_reconciliation_legacy(
+        result = _check_bs_subline_reconciliation_legacy(
             model,
             historical_years=historical_years,
             taxonomy=taxonomy,
             tolerances=tolerances,
+            sections=sections,
         )
-    return _check_bs_subline_reconciliation_presentation(
-        model,
-        historical_years=historical_years,
-        taxonomy=taxonomy,
-        tolerances=tolerances,
-        presentation_tree=presentation_tree,
-    )
+    else:
+        result = _check_bs_subline_reconciliation_presentation(
+            model,
+            historical_years=historical_years,
+            taxonomy=taxonomy,
+            tolerances=tolerances,
+            presentation_tree=presentation_tree,
+            sections=sections,
+        )
+    result.section_role_resolution = {
+        "metadata_source": section_resolution.metadata_source,
+        "fallback_reason": section_resolution.fallback_reason,
+        "role_derived_sections": section_resolution.role_derived_sections,
+        "legacy_fallback_sections": section_resolution.legacy_fallback_sections,
+    }
+    return result
 
 
 def _check_bs_subline_reconciliation_legacy(
@@ -134,11 +147,14 @@ def _check_bs_subline_reconciliation_legacy(
     historical_years: list[int],
     taxonomy: dict[str, DataSourceMapping],
     tolerances: DiagnosticTolerances,
+    sections: dict[str, dict[str, Any]] | None = None,
 ) -> BSSublineCheck:
     result = BSSublineCheck()
     value_memo: dict[tuple[str, int], Optional[float]] = {}
+    if sections is None:
+        sections = resolve_balance_sheet_sections(model).sections
 
-    for section_name, definition in BS_SECTIONS.items():
+    for section_name, definition in sections.items():
         if definition.get("presentation_only"):
             continue
         section_members = _effective_section_members(model, definition)
@@ -232,13 +248,16 @@ def _check_bs_subline_reconciliation_presentation(
     taxonomy: dict[str, DataSourceMapping],
     tolerances: DiagnosticTolerances,
     presentation_tree: PresentationTree,
+    sections: dict[str, dict[str, Any]] | None = None,
 ) -> BSSublineCheck:
     result = BSSublineCheck()
     tag_to_concept = _build_taxonomy_tag_index(taxonomy)
-    concept_sections = _concept_sections_by_id(model)
+    if sections is None:
+        sections = resolve_balance_sheet_sections(model).sections
+    concept_sections = _concept_sections_by_id(model, sections=sections)
     coverage_per_section: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
-    for section_name, definition in BS_SECTIONS.items():
+    for section_name, definition in sections.items():
         parent_candidates = tuple(definition.get("xbrl_section_parents", ()))
         if not parent_candidates:
             continue
@@ -749,9 +768,15 @@ def _section_member_for_concept(
     return None
 
 
-def _concept_sections_by_id(model: FinancialModel) -> dict[str, set[str]]:
+def _concept_sections_by_id(
+    model: FinancialModel,
+    *,
+    sections: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, set[str]]:
     sections_by_concept: dict[str, set[str]] = defaultdict(set)
-    for section_name, definition in BS_SECTIONS.items():
+    if sections is None:
+        sections = resolve_balance_sheet_sections(model).sections
+    for section_name, definition in sections.items():
         if definition.get("presentation_only"):
             continue
         for member in _effective_section_members(model, definition):

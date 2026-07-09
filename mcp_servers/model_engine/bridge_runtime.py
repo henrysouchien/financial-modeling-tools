@@ -21,14 +21,10 @@ def bridge_model_bundle(
   file_path: str,
   cutoff: int,
   *,
-  model_cache: Any,
-  load_model_cache_fn: Callable[..., Any],
+  load_handle_fn: Callable[..., Any],
 ) -> Any | None:
-  bundle = model_cache.get((file_path, cutoff))
-  if bundle is not None:
-    return bundle
   try:
-    return load_model_cache_fn(file_path, historical_cutoff_year=cutoff)
+    return load_handle_fn(file_path, historical_cutoff_year=cutoff).to_bundle()
   except Exception:
     return None
 

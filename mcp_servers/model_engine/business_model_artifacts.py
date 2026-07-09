@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
-from schema.business_model import BusinessModel
+from schema.business_model import BusinessModel, normalize_legacy_profitability_targets
 from schema.business_model_markdown import parse as parse_business_model_markdown
 
 from .args import valid_workspace_user_id
@@ -69,7 +70,8 @@ def load_business_model_from_path(path_value: str) -> tuple[BusinessModel, str, 
   raw = path.read_text(encoding="utf-8")
   if path.suffix.lower() in {".md", ".markdown"} or raw.lstrip().startswith("---"):
     return parse_business_model_markdown(raw), "markdown", path, searched_paths
-  return BusinessModel.model_validate_json(raw), "json", path, searched_paths
+  payload = normalize_legacy_profitability_targets(json.loads(raw))
+  return BusinessModel.model_validate(payload), "json", path, searched_paths
 
 
 __all__ = [

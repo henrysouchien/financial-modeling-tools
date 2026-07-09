@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, is_dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, get_type_hints
 
-from mcp_servers.model_engine.scenario_readiness import (
-  READINESS_OWNER_MIN_GAP,
-  READINESS_OWNER_MIN_SCORE,
-  READINESS_OWNER_STRONG_SCORE,
-  readiness_owner_tokens,
-)
+from mcp_servers.model_engine.tools import bridge_topology as _bridge_topology
+
+_candidate_owner_scores = _bridge_topology._candidate_owner_scores
+_jsonable = _bridge_topology._jsonable
+_object_value = _bridge_topology._object_value
+_parse_optional_factor_list = _bridge_topology._parse_optional_factor_list
+_readiness_owners = _bridge_topology._readiness_owners
+_resolve_topology_factor = _bridge_topology._resolve_topology_factor
+_topology_next_actions = _bridge_topology._topology_next_actions
+_topology_owner_complete = _bridge_topology._topology_owner_complete
+_topology_owner_score = _bridge_topology._topology_owner_score
+_unresolved_topology_factor_payload = _bridge_topology._unresolved_topology_factor_payload
 
 
 @dataclass(frozen=True)
@@ -21,6 +27,9 @@ class ModelFindScenarioAnchorDeps:
   find_scenario_anchor: Callable[..., Any]
   anchor_recovery: Callable[[dict[str, Any]], dict[str, Any] | None]
   model_tool_error_payload: Callable[[Exception], dict[str, Any]]
+  validate_model_handle_token: Callable[..., Any] | None = None
+  model_handle_token_cls: Any | None = None
+  model_handle_token_error_type: type[Exception] | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +43,9 @@ class ModelScenarioTopologyDeps:
   find_scenario_anchor: Callable[..., Any]
   anchor_recovery: Callable[[dict[str, Any]], dict[str, Any] | None]
   model_tool_error_payload: Callable[[Exception], dict[str, Any]]
+  validate_model_handle_token: Callable[..., Any] | None = None
+  model_handle_token_cls: Any | None = None
+  model_handle_token_error_type: type[Exception] | None = None
 
 
 @dataclass(frozen=True)
@@ -55,7 +67,7 @@ class ModelBridgeScenariosDeps:
   bridge_projection_persistence: Callable[..., dict[str, Any]]
   apply_modify_request: Callable[..., Any]
   modify_error_type: type[Exception]
-  load_model_cache: Callable[..., Any]
+  load_model_bundle: Callable[..., Any]
   populate_scenario_eps: Callable[[Any, dict[str, Any]], None]
   bridge_workbook_outputs: Callable[..., dict[str, Any]]
   render_model: Callable[[Any], Any]
@@ -70,223 +82,64 @@ class ModelBridgeScenariosDeps:
   bridge_live_dispatch_only_reason: Callable[..., str | None]
   bridge_non_workbook_partial_reason: Callable[..., str | None]
   bridge_durable_file_mode: Callable[..., dict[str, Any]]
+  validate_model_handle_token: Callable[..., Any] | None = None
+  model_handle_token_cls: Any | None = None
+  model_handle_token_error_type: type[Exception] | None = None
+  model_handle_token_payload: Callable[..., dict[str, Any]] | None = None
 
 
-def _jsonable(value: Any) -> dict[str, Any]:
-  if hasattr(value, "model_dump"):
-    return value.model_dump(mode="json")
-  if is_dataclass(value):
-    return asdict(value)
-  if isinstance(value, dict):
-    return value
-  return {"value": value}
-
-
-def _parse_optional_factor_list(
-  deps: ModelScenarioTopologyDeps,
-  factors: list[str] | str | None,
-) -> list[str]:
-  if factors is None:
-    return []
-  if isinstance(factors, str):
-    raw = factors.strip()
-    if not raw:
-      return []
-    if raw.startswith("["):
-      values = deps.coerce_json_list_arg(raw, name="factors")
-    else:
-      values = [raw]
-  else:
-    values = deps.coerce_json_list_arg(factors, name="factors")
-  return [str(value).strip() for value in values if str(value).strip()]
-
-
-def _topology_next_actions() -> list[str]:
-  return [
-    "Use topology.owners[].owner_id as the factor_anchor_hints value for model_bridge_scenarios after confirming the economic factor.",
-    "Use topology.owners[].bull_id/base_id/bear_id with model_values to inspect seeded scenario rows.",
-    "For one-off model_scenario sensitivity, override returned bull/base/bear case row IDs for one scenario case at a time; model_scenario maps each case row to its owning economic row internally.",
-    "Use model_find_scenario_anchor(file_path=..., factor=..., hint=owner_id) only when you need to bind one thesis factor or disambiguate a candidate owner.",
-    "Use model_find only for non-scenario workbook rows; scenario owner topology is authoritative here.",
-  ]
-
-
-def _object_value(value: Any, key: str) -> Any:
-  if isinstance(value, dict):
-    return value.get(key)
-  return getattr(value, key, None)
-
-
-def _readiness_owners(readiness: Any) -> list[Any]:
-  owners = getattr(readiness, "owners", None)
-  if owners is None and hasattr(readiness, "model_dump"):
-    dumped = readiness.model_dump(mode="json")
-    owners = dumped.get("owners") if isinstance(dumped, dict) else None
-  if owners is None and isinstance(readiness, dict):
-    owners = readiness.get("owners")
-  return list(owners or [])
-
-
-def _topology_owner_complete(owner: Any) -> bool:
-  return bool(
-    _object_value(owner, "owner_id")
-    and _object_value(owner, "anchor_id")
-    and _object_value(owner, "bull_id")
-    and _object_value(owner, "base_id")
-    and _object_value(owner, "bear_id")
-    and _object_value(owner, "upstream_of_target") is True
-    and not (_object_value(owner, "missing_cases") or [])
-  )
-
-
-def _topology_owner_score(factor_tokens: set[str], owner: Any) -> float:
-  owner_tokens = (
-    readiness_owner_tokens(_object_value(owner, "owner_id"))
-    | readiness_owner_tokens(_object_value(owner, "anchor_id"))
-  )
-  if not factor_tokens or not owner_tokens:
-    return 0.0
-  return len(factor_tokens & owner_tokens) / len(factor_tokens | owner_tokens)
-
-
-def _candidate_owner_scores(scored: list[tuple[float, Any]]) -> list[dict[str, Any]]:
-  return [
-    {
-      "owner_id": _object_value(owner, "owner_id"),
-      "score": score,
-    }
-    for score, owner in scored[:5]
-  ]
-
-
-def _unresolved_topology_factor_payload(
-  *,
-  deps: ModelScenarioTopologyDeps,
-  factor: str,
-  readiness: Any,
-  scored: list[tuple[float, Any]],
-  match_reason: str = "unresolved",
-  score: float | None = None,
-) -> dict[str, Any]:
-  if scored:
-    candidates = [
-      str(_object_value(owner, "owner_id"))
-      for _score, owner in scored[:5]
-      if _object_value(owner, "owner_id")
-    ]
-  else:
-    candidates = [
-      str(_object_value(owner, "owner_id"))
-      for owner in _readiness_owners(readiness)[:5]
-      if _object_value(owner, "owner_id")
-    ]
-  payload = {
-    "status": "ok",
-    "factor": factor,
-    "owner_id": None,
-    "anchor_id": None,
-    "bull_id": None,
-    "base_id": None,
-    "bear_id": None,
-    "match_reason": match_reason,
-    "score": score,
-    "candidates": candidates,
-    "readiness_match": {
-      "source": "scenario_bridge_readiness.owners",
-      "target_item_id": getattr(readiness, "target_item_id", None)
-      or (readiness.get("target_item_id") if isinstance(readiness, dict) else None),
-      "readiness_status": getattr(readiness, "status", None)
-      or (readiness.get("status") if isinstance(readiness, dict) else None),
-      "candidate_owner_scores": _candidate_owner_scores(scored),
-    },
+def _bridge_token_error_payload(exc: Exception) -> dict[str, Any]:
+  if hasattr(exc, "to_payload"):
+    return exc.to_payload()
+  return {
+    "status": "error",
+    "error": str(exc),
+    "error_code": getattr(exc, "error_code", "invalid_model_handle_token"),
   }
-  recovery = deps.anchor_recovery(payload)
-  if recovery is not None:
-    payload["recovery"] = recovery
-  return payload
 
 
-def _resolve_topology_factor(
+def _bridge_bundle_from_token(
   *,
-  deps: ModelScenarioTopologyDeps,
-  model: Any,
-  factor: str,
-  readiness: Any,
-) -> dict[str, Any]:
-  factor_tokens = readiness_owner_tokens(factor)
-  scored = [
-    (_topology_owner_score(factor_tokens, owner), owner)
-    for owner in _readiness_owners(readiness)
-    if _topology_owner_complete(owner)
-  ]
-  scored.sort(key=lambda entry: (-entry[0], str(_object_value(entry[1], "owner_id") or "")))
-  if not scored:
-    return _unresolved_topology_factor_payload(
-      deps=deps,
-      factor=factor,
-      readiness=readiness,
-      scored=scored,
+  deps: Any,
+  file_path: str,
+  model_handle_token: dict[str, Any],
+) -> tuple[Any | None, str, int, dict[str, Any] | None]:
+  if deps.validate_model_handle_token is None or deps.model_handle_token_cls is None:
+    return (
+      None,
+      file_path,
+      deps.current_year(),
+      {
+        "status": "error",
+        "error": "model_handle_token validation is unavailable",
+        "error_code": "model_handle_token_unavailable",
+      },
     )
-
-  best_score, best_owner = scored[0]
-  next_score = scored[1][0] if len(scored) > 1 else 0.0
-  if best_score < READINESS_OWNER_MIN_SCORE:
-    return _unresolved_topology_factor_payload(
-      deps=deps,
-      factor=factor,
-      readiness=readiness,
-      scored=scored,
-      score=best_score,
+  try:
+    handle = deps.validate_model_handle_token(model_handle_token, file_path=file_path)
+    parsed_token = deps.model_handle_token_cls.model_validate(model_handle_token)
+  except Exception as exc:
+    if deps.model_handle_token_error_type is not None and isinstance(
+      exc,
+      deps.model_handle_token_error_type,
+    ):
+      return None, file_path, deps.current_year(), _bridge_token_error_payload(exc)
+    return (
+      None,
+      file_path,
+      deps.current_year(),
+      {
+        "status": "error",
+        "error": str(exc),
+        "error_code": "invalid_model_handle_token",
+      },
     )
-  if best_score < READINESS_OWNER_STRONG_SCORE and (
-    best_score - next_score
-  ) < READINESS_OWNER_MIN_GAP:
-    return _unresolved_topology_factor_payload(
-      deps=deps,
-      factor=factor,
-      readiness=readiness,
-      scored=scored,
-      match_reason="label_match_low_confidence",
-      score=best_score,
-    )
-
-  resolution = deps.find_scenario_anchor(
-    model,
-    factor,
-    hint=str(_object_value(best_owner, "owner_id")),
+  return (
+    handle.to_bundle(),
+    parsed_token.workbook_path,
+    parsed_token.historical_cutoff_year,
+    None,
   )
-  if getattr(resolution, "match_reason", None) != "explicit_hint":
-    return _unresolved_topology_factor_payload(
-      deps=deps,
-      factor=factor,
-      readiness=readiness,
-      scored=scored,
-      match_reason=getattr(resolution, "match_reason", None) or "unresolved",
-      score=best_score,
-    )
-  payload = {"status": "ok", **asdict(resolution)}
-  payload["match_reason"] = "readiness_owner"
-  payload["score"] = best_score
-  payload["readiness_match"] = {
-    "source": "scenario_bridge_readiness.owners",
-    "readiness_status": getattr(readiness, "status", None)
-    or (readiness.get("status") if isinstance(readiness, dict) else None),
-    "owner_id": _object_value(best_owner, "owner_id"),
-    "owner_label": _object_value(best_owner, "label"),
-    "anchor_id": _object_value(best_owner, "anchor_id"),
-    "bull_id": _object_value(best_owner, "bull_id"),
-    "base_id": _object_value(best_owner, "base_id"),
-    "bear_id": _object_value(best_owner, "bear_id"),
-    "target_item_id": _object_value(best_owner, "target_item_id"),
-    "upstream_of_target": _object_value(best_owner, "upstream_of_target"),
-    "score": best_score,
-    "next_best_score": next_score,
-    "candidate_owner_scores": _candidate_owner_scores(scored),
-  }
-  recovery = deps.anchor_recovery(payload)
-  if recovery is not None:
-    payload["recovery"] = recovery
-  return payload
 
 
 def model_scenario_topology_handler(
@@ -295,9 +148,19 @@ def model_scenario_topology_handler(
   file_path: str,
   factors: list[str] | str | None = None,
   target_item_id: str = "tpl.fm.adjusted_earnings.adjusted_eps",
+  model_handle_token: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-  cutoff = deps.current_year()
-  bundle = deps.bridge_model_bundle(file_path, cutoff)
+  if model_handle_token is not None:
+    bundle, file_path, cutoff, token_error = _bridge_bundle_from_token(
+      deps=deps,
+      file_path=file_path,
+      model_handle_token=model_handle_token,
+    )
+    if token_error is not None:
+      return token_error
+  else:
+    cutoff = deps.current_year()
+    bundle = deps.bridge_model_bundle(file_path, cutoff)
   if bundle is None:
     return {
       "status": "failed",
@@ -338,9 +201,19 @@ def model_find_scenario_anchor_handler(
   file_path: str,
   factor: str,
   hint: str | None = None,
+  model_handle_token: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-  cutoff = deps.current_year()
-  bundle = deps.bridge_model_bundle(file_path, cutoff)
+  if model_handle_token is not None:
+    bundle, file_path, cutoff, token_error = _bridge_bundle_from_token(
+      deps=deps,
+      file_path=file_path,
+      model_handle_token=model_handle_token,
+    )
+    if token_error is not None:
+      return token_error
+  else:
+    cutoff = deps.current_year()
+    bundle = deps.bridge_model_bundle(file_path, cutoff)
   if bundle is None:
     return {
       "status": "failed",
@@ -379,6 +252,7 @@ def model_bridge_scenarios_handler(
   ticker: str | None = None,
   skill_run_id: str | None = None,
   model_build_id: str | None = None,
+  model_handle_token: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   if target not in {"file", "workbook", "both"}:
     return deps.bridge_base_result(status="failed", reason=f"unsupported_target:{target}")
@@ -407,8 +281,17 @@ def model_bridge_scenarios_handler(
   if any(scenario_payload.get(case) is None for case in ("bull", "base", "bear")):
     return deps.bridge_base_result(status="skipped", reason="missing_scenario_outputs")
 
-  cutoff = deps.current_year()
-  bundle = deps.bridge_model_bundle(file_path, cutoff)
+  if model_handle_token is not None:
+    bundle, file_path, cutoff, token_error = _bridge_bundle_from_token(
+      deps=deps,
+      file_path=file_path,
+      model_handle_token=model_handle_token,
+    )
+    if token_error is not None:
+      return token_error
+  else:
+    cutoff = deps.current_year()
+    bundle = deps.bridge_model_bundle(file_path, cutoff)
   if bundle is None:
     return deps.bridge_base_result(status="failed", reason="model_not_in_cache")
 
@@ -504,6 +387,7 @@ def model_bridge_scenarios_handler(
     warnings=warnings,
     skill_run_id=skill_run_id,
     model_build_id=model_build_id,
+    strict_through_period=int(terminal_year),
   )
   if persistence["failures"]:
     return deps.bridge_base_result(
@@ -522,6 +406,7 @@ def model_bridge_scenarios_handler(
       operations=ops,
       target="file",
       best_effort=best_effort,
+      historical_cutoff_year=cutoff,
     )
   except deps.modify_error_type:
     return deps.bridge_base_result(
@@ -565,7 +450,7 @@ def model_bridge_scenarios_handler(
   workbook_status = modify_result.workbook_status
   workbook_outputs = None
   try:
-    post_bundle = deps.load_model_cache(file_path, historical_cutoff_year=cutoff)
+    post_bundle = deps.load_model_bundle(file_path, historical_cutoff_year=cutoff)
     mutated_model = post_bundle.model
     scenario_outputs_by_case = deps.compute_scenario_outputs(mutated_model)
     eps_by_case = {
@@ -588,7 +473,7 @@ def model_bridge_scenarios_handler(
         workbook_status = deps.dispatch_to_addin("apply_render_plan", payload)
       except Exception as exc:
         workbook_status = deps.addin_dispatch_error_status(exc)
-    deps.load_model_cache(
+    deps.load_model_bundle(
       file_path,
       model=mutated_model,
       historical_cutoff_year=cutoff,
@@ -642,7 +527,7 @@ def model_bridge_scenarios_handler(
     )
   if workbook_outputs is None:
     status = "partial"
-  return deps.bridge_base_result(
+  response = deps.bridge_base_result(
     status=status,
     reason=reason,
     operations_applied=modify_result.operations_applied,
@@ -664,6 +549,23 @@ def model_bridge_scenarios_handler(
     bridge_validation=bridge_validation,
     operation_groups=operation_groups,
   )
+  if (
+    modify_result.output_path
+    and not modify_result.rolled_back
+    and deps.model_handle_token_payload is not None
+  ):
+    try:
+      response["model_handle_token"] = deps.model_handle_token_payload(
+        file_path=modify_result.output_path,
+        historical_cutoff_year=cutoff,
+        issued_by="model_bridge_scenarios",
+      )
+    except Exception as exc:
+      response["model_handle_token_error"] = {
+        "error": str(exc),
+        "error_code": getattr(exc, "error_code", "model_handle_token_unavailable"),
+      }
+  return response
 
 
 ParentNamespaceProvider = Callable[[], dict[str, Any]]
@@ -753,6 +655,7 @@ def build_bridge_tool_functions(
     file_path: str,
     factors: list[str] | str | None = None,
     target_item_id: str = "tpl.fm.adjusted_earnings.adjusted_eps",
+    model_handle_token: dict[str, Any] | None = None,
   ) -> dict:
     """Return workbook scenario owner/anchor/case-row topology without writing.
 
@@ -766,18 +669,22 @@ def build_bridge_tool_functions(
     Pass factors as a list to also receive factor_matches that map thesis factor
     labels to owner_id hints. Do not use broad model_find searches to infer this
     topology.
+    Pass returned model_handle_token from model_build/model_summarize unchanged
+    when available; do not hand-write token fields.
     """
     return _parent_handler(parent_namespace, "_model_scenario_topology_handler")(
       deps=_parent_model_scenario_topology_deps(parent_namespace),
       file_path=file_path,
       factors=factors,
       target_item_id=target_item_id,
+      model_handle_token=model_handle_token,
     )
 
   def model_find_scenario_anchor(
     file_path: str,
     factor: str,
     hint: str | None = None,
+    model_handle_token: dict[str, Any] | None = None,
   ) -> dict:
     """Resolve one thesis factor to a workbook scenario anchor without writing.
 
@@ -785,12 +692,15 @@ def build_bridge_tool_functions(
     in the model cache. Use model_find for generic line-item lookup; use this
     tool when mapping a thesis factor such as pricing, volume, or margin to the
     workbook anchor expected by model_bridge_scenarios.
+    Pass returned model_handle_token from model_build/model_summarize unchanged
+    when available; do not hand-write token fields.
     """
     return _parent_handler(parent_namespace, "_model_find_scenario_anchor_handler")(
       deps=_parent_model_find_scenario_anchor_deps(parent_namespace),
       file_path=file_path,
       factor=factor,
       hint=hint,
+      model_handle_token=model_handle_token,
     )
 
   def model_bridge_scenarios(
@@ -805,6 +715,7 @@ def build_bridge_tool_functions(
     ticker: str | None = None,
     skill_run_id: str | None = None,
     model_build_id: str | None = None,
+    model_handle_token: dict[str, Any] | None = None,
   ) -> dict:
     """Write thesis scenario assumptions and snapshot outputs into a workbook.
 
@@ -816,6 +727,8 @@ def build_bridge_tool_functions(
     Valid conflict_strategy values: overwrite | fail_on_collision. The default
     overwrite makes repeated target=both runs idempotent for the already-rendered
     bridge workbook sheets.
+    Pass returned model_handle_token from model_build/model_summarize unchanged
+    when available; do not hand-write token fields.
     """
     return _parent_handler(parent_namespace, "_model_bridge_scenarios_handler")(
       deps=_parent_model_bridge_scenarios_deps(parent_namespace),
@@ -830,6 +743,7 @@ def build_bridge_tool_functions(
       ticker=ticker,
       skill_run_id=skill_run_id,
       model_build_id=model_build_id,
+      model_handle_token=model_handle_token,
     )
 
   return BridgeToolFunctions(

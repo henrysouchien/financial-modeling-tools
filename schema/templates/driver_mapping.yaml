@@ -20,6 +20,12 @@ mappings:
 
   debt_change: tpl.a.capital_sources.change
 
+scale_correction_rules:
+  - key: debt_change
+    target_item_id: tpl.a.capital_sources.change
+    comparator_item_id: tpl.fm.balance_sheet.long_term_debt
+    reason: "Debt-change seeds affect rolled long-term debt; compare raw magnitude against latest historical debt."
+
 unsupported_in_segment_mode:
   - key: revenue.segment_N.operating_metric
     reason: "no post-expansion equivalent — expand_segments() does not emit an operating_metric row"

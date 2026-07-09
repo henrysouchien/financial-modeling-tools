@@ -60,6 +60,7 @@ from .build_diagnostic_types import (
     SyntheticZeroCheck as SyntheticZeroCheck,
     HistoricalPathCoverageCheck as HistoricalPathCoverageCheck,
     CrossSourceValidationCheck as CrossSourceValidationCheck,
+    SourceArbitrationCheck as SourceArbitrationCheck,
     DiagnosticReport as DiagnosticReport,
 )
 from .build_diagnostic_balance_sheet import (
@@ -92,6 +93,9 @@ from .build_diagnostic_validation import (
     _year_lookup as _year_lookup,
     _validation_served_source as _validation_served_source,
 )
+from .build_diagnostic_source_arbitration import (
+    _check_source_arbitration as _check_source_arbitration,
+)
 from .models import (
     DataSourceMapping,
     ItemType,
@@ -99,6 +103,7 @@ from .models import (
     FinancialModel,
 )
 from .presentation_tree import PresentationTree
+from .source_arbitration_input import SourceArbitrationDiagnosticInput
 from .validation_input import ValidationInput
 
 if TYPE_CHECKING:
@@ -107,7 +112,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DIAGNOSTIC_VERSION = 1
+DIAGNOSTIC_VERSION = 3
 VALID_KINDS = {
     "missing_concept",
     "missing_mapping",
@@ -136,6 +141,8 @@ def run_build_diagnostic(
     tolerances: DiagnosticTolerances | None = None,
     presentation_tree: PresentationTree | None = None,
     validation_input: ValidationInput | None = None,
+    source_arbitration_input: SourceArbitrationDiagnosticInput | None = None,
+    source_arbitration_check: SourceArbitrationCheck | None = None,
 ) -> DiagnosticReport:
     model.build_index()
     historical_years = _historical_years(model)
@@ -197,6 +204,16 @@ def run_build_diagnostic(
             validation_input,
             taxonomy=taxonomy,
             tolerances=tolerances,
+        ),
+        source_arbitration=(
+            source_arbitration_check
+            if source_arbitration_check is not None
+            else _check_source_arbitration(
+                source_arbitration_input,
+                model=model,
+                taxonomy=taxonomy,
+                tolerances=tolerances,
+            )
         ),
     )
 

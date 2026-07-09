@@ -49,7 +49,7 @@ def build_model_build_deps_function(
       warm_edgar_cache=ns["warm_edgar_cache"],
       accumulate_tree=ns["_accumulate_tree"],
       build_model=ns["_build_model"],
-      load_model_cache=ns["_load_model_cache"],
+      load_model_bundle=ns["_load_model_bundle"],
       render_plan_to_addin_payload=ns["render_plan_to_addin_payload"],
       dispatch_to_addin=ns["_dispatch_to_addin"],
       addin_dispatch_error_status=ns["addin_dispatch_error_status"],
@@ -58,6 +58,7 @@ def build_model_build_deps_function(
       asdict=ns["asdict"],
       is_dataclass=ns["is_dataclass"],
       model_build_error_payload=ns["_model_build_error_payload"],
+      model_handle_token_payload=ns["_model_handle_token_payload"],
     )
 
   return _bind_parent_private(
@@ -190,11 +191,17 @@ def build_model_modify_deps_function(
     return ns["_ModelModifyDeps"](
       coerce_json_list_arg=ns["_coerce_json_list_arg"],
       current_year=lambda: ns["datetime"].now().year,
-      model_cache=ns["_model_cache"],
       normalize_modify_operation_payload=ns["_normalize_modify_operation_payload"],
       operation_cls=modify_module.Operation,
       apply_modify_request=modify_module.apply_modify_request,
       modify_error_type=modify_module.ModifyError,
+      validate_model_handle_token=ns["validate_model_handle_token"],
+      model_handle_token_cls=ns["ModelHandleToken"],
+      model_handle_token_error_type=ns["ModelHandleTokenError"],
+      model_handle_token_payload=ns["_model_handle_token_payload"],
+      peek_handle=ns["_peek_handle"],
+      load_handle=ns["_load_handle"],
+      load_on_cache_miss_enabled=modify_module._load_on_cache_miss_enabled,
     )
 
   return _bind_parent_private(
@@ -250,8 +257,7 @@ def build_bridge_private_functions(
     return ns["_bridge_model_bundle_impl"](
       file_path,
       cutoff,
-      model_cache=ns["_model_cache"],
-      load_model_cache_fn=ns["_load_model_cache"],
+      load_handle_fn=ns["_load_handle"],
     )
 
   def _readiness_owner_anchor_payload(model: Any, factor: str) -> dict | None:
@@ -332,6 +338,9 @@ def build_model_find_scenario_anchor_deps_function(
       find_scenario_anchor=ns["find_scenario_anchor"],
       anchor_recovery=ns["_anchor_recovery"],
       model_tool_error_payload=ns["_model_tool_error_payload"],
+      validate_model_handle_token=ns["validate_model_handle_token"],
+      model_handle_token_cls=ns["ModelHandleToken"],
+      model_handle_token_error_type=ns["ModelHandleTokenError"],
     )
 
   return _bind_parent_private(
@@ -357,6 +366,9 @@ def build_model_scenario_topology_deps_function(
       find_scenario_anchor=ns["find_scenario_anchor"],
       anchor_recovery=ns["_anchor_recovery"],
       model_tool_error_payload=ns["_model_tool_error_payload"],
+      validate_model_handle_token=ns["validate_model_handle_token"],
+      model_handle_token_cls=ns["ModelHandleToken"],
+      model_handle_token_error_type=ns["ModelHandleTokenError"],
     )
 
   return _bind_parent_private(
@@ -392,7 +404,7 @@ def build_model_bridge_scenarios_deps_function(
       bridge_projection_persistence=ns["_bridge_projection_persistence"],
       apply_modify_request=modify_module.apply_modify_request,
       modify_error_type=modify_module.ModifyError,
-      load_model_cache=ns["_load_model_cache"],
+      load_model_bundle=ns["_load_model_bundle"],
       populate_scenario_eps=ns["_populate_scenario_eps"],
       bridge_workbook_outputs=ns["_bridge_workbook_outputs"],
       render_model=ns["render_model"],
@@ -407,6 +419,10 @@ def build_model_bridge_scenarios_deps_function(
       bridge_live_dispatch_only_reason=ns["_bridge_live_dispatch_only_reason"],
       bridge_non_workbook_partial_reason=ns["_bridge_non_workbook_partial_reason"],
       bridge_durable_file_mode=ns["_bridge_durable_file_mode"],
+      validate_model_handle_token=ns["validate_model_handle_token"],
+      model_handle_token_cls=ns["ModelHandleToken"],
+      model_handle_token_error_type=ns["ModelHandleTokenError"],
+      model_handle_token_payload=ns["_model_handle_token_payload"],
     )
 
   return _bind_parent_private(

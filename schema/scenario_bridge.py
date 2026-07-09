@@ -9,9 +9,10 @@ from typing import Any, Literal, Optional
 from schema.build import _find_scenario_value_row
 from schema.dependency_graph import DependencyGraph
 from schema.formatter import SIA_FORMATTER
-from schema.models import FinancialModel, FormulaType, LineItem
+from schema.models import FinancialModel, FormulaType, LineItem, Unit
 from schema.modify import Operation, OperationType
 from schema.refs import line_item_ref_from_obj
+from schema.scenario_ordering import scenario_ordering_issues
 
 
 @dataclass(frozen=True)
@@ -314,6 +315,37 @@ def find_scenario_anchor(
     )
 
 
+def normalize_value_for_model(
+    model: FinancialModel,
+    target_item_id: str,
+    value: float,
+    *,
+    value_scale: Literal["display", "model"],
+    value_scale_explicit: bool,
+    pct_decimal_passthrough: bool = False,
+) -> float:
+    """Normalize an authored value into model storage scale."""
+
+    target = model.get_item(target_item_id)
+    numeric = float(value)
+    if value_scale == "model":
+        return numeric
+
+    fmt = SIA_FORMATTER.number_format_for(target)
+    if fmt in (SIA_FORMATTER.percentage_format, SIA_FORMATTER.ratio_format):
+        if pct_decimal_passthrough and abs(numeric) <= 1.0:
+            return numeric
+        return numeric / 100.0
+    if (
+        value_scale == "display"
+        and value_scale_explicit
+        and target.unit is Unit.dollars
+        and getattr(target, "model_scale", "units") == "millions"
+    ):
+        return numeric / 1_000_000.0
+    return numeric
+
+
 def percent_normalize_via_formatter(
     model: FinancialModel,
     target_item_id: str,
@@ -323,14 +355,14 @@ def percent_normalize_via_formatter(
 ) -> float:
     """Normalize whole-pct values for rows the renderer formats as pct/ratio."""
 
-    target = model.get_item(target_item_id)
-    fmt = SIA_FORMATTER.number_format_for(target)
-    if fmt in (SIA_FORMATTER.percentage_format, SIA_FORMATTER.ratio_format):
-        numeric = float(value)
-        if decimal_passthrough and abs(numeric) <= 1.0:
-            return numeric
-        return numeric / 100.0
-    return float(value)
+    return normalize_value_for_model(
+        model,
+        target_item_id,
+        value,
+        value_scale="display",
+        value_scale_explicit=False,
+        pct_decimal_passthrough=decimal_passthrough,
+    )
 
 
 def _is_pct_or_ratio_target(model: FinancialModel, target_item_id: str) -> bool:
@@ -396,29 +428,15 @@ def _scenario_ordering_issues(
     bull_values: dict[int, float],
     base_values: dict[int, float],
     bear_values: dict[int, float],
+    strict_through_period: int | None = None,
 ) -> list[str]:
-    issues: list[str] = []
-    for period in sorted(set(bull_values) & set(bear_values)):
-        bull = bull_values[period]
-        bear = bear_values[period]
-        base = base_values.get(period)
-        if base is None:
-            issues.append(f"{period}:bull={bull:g},base=missing,bear={bear:g},expected=base_value_present")
-            continue
-        detail = f"{period}:bull={bull:g},base={base:g},bear={bear:g}"
-        if abs(bull - bear) <= _SCENARIO_ORDERING_EPS:
-            issues.append(f"{detail},expected=bull/base/bear_distinct")
-        elif bull > bear:
-            if bull <= base + _SCENARIO_ORDERING_EPS:
-                issues.append(f"{detail},expected=bull>base")
-            if bear >= base - _SCENARIO_ORDERING_EPS:
-                issues.append(f"{detail},expected=bear<base")
-        else:
-            if bull >= base - _SCENARIO_ORDERING_EPS:
-                issues.append(f"{detail},expected=bull<base")
-            if bear <= base + _SCENARIO_ORDERING_EPS:
-                issues.append(f"{detail},expected=bear>base")
-    return issues
+    return scenario_ordering_issues(
+        bull_values=bull_values,
+        base_values=base_values,
+        bear_values=bear_values,
+        strict_through_period=strict_through_period,
+        eps=_SCENARIO_ORDERING_EPS,
+    )
 
 
 def factor_values_by_period(
@@ -727,6 +745,7 @@ def build_bridge_operations(
                 bull_values=normalized_case_values["bull"],
                 base_values=base_values,
                 bear_values=normalized_case_values["bear"],
+                strict_through_period=int(terminal_year),
             )
             if ordering_issues:
                 warnings.append(

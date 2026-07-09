@@ -6,7 +6,7 @@ from typing import Any, Iterable
 
 import yaml
 
-from .business_model import BusinessModel
+from .business_model import BusinessModel, normalize_legacy_profitability_targets
 
 
 PROSE_SEPARATOR = " \u2014 "
@@ -98,7 +98,7 @@ def parse(text: str) -> BusinessModel:
         if section_key == "decisions_log":
             payload["decisions_log"] = _parse_decisions_log_section(section.body_lines)
 
-    return BusinessModel.model_validate(payload)
+    return BusinessModel.model_validate(normalize_legacy_profitability_targets(payload))
 
 
 def _render_frontmatter(payload: dict[str, Any]) -> list[str]:

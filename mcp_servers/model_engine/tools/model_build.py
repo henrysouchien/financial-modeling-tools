@@ -25,7 +25,7 @@ class ModelBuildDeps:
   warm_edgar_cache: Callable[..., dict[int, Any]]
   accumulate_tree: Callable[[dict[int, Any]], Any]
   build_model: Callable[..., Any]
-  load_model_cache: Callable[..., Any]
+  load_model_bundle: Callable[..., Any]
   render_plan_to_addin_payload: Callable[..., dict[str, Any]]
   dispatch_to_addin: Callable[[str, dict[str, Any]], Any]
   addin_dispatch_error_status: Callable[[Exception], dict[str, Any]]
@@ -34,6 +34,7 @@ class ModelBuildDeps:
   asdict: Callable[[Any], dict[str, Any]]
   is_dataclass: Callable[[Any], bool]
   model_build_error_payload: Callable[..., dict[str, Any]]
+  model_handle_token_payload: Callable[..., dict[str, Any]]
 
 
 def model_build_handler(
@@ -58,6 +59,7 @@ def model_build_handler(
   equity_risk_premium: float | None = None,
   valuation_comps: dict | None = None,
   validation_mode: bool = False,
+  source_arbitration_mode: str = "off",
   target: str = "file",
   conflict_strategy: str = "fail_on_collision",
 ) -> dict[str, Any]:
@@ -128,6 +130,7 @@ def model_build_handler(
         default_source="edgar",
         default_fallback_enabled=True,
       )
+    source_arbitration_enabled = str(source_arbitration_mode).lower() != "off"
     fmp_required_by_populate = (
       (normalized_source == "fmp" and parsed_historical_sources is None)
       or deps.historical_sources_touch_fmp(parsed_historical_sources)
@@ -139,7 +142,9 @@ def model_build_handler(
       and parsed_historical_sources.default_fallback_enabled
       and not historical_sources
     )
-    if financials is None and (auto_edgar_fallback or validation_mode):
+    if financials is None and (
+      auto_edgar_fallback or validation_mode or source_arbitration_enabled
+    ):
       try:
         financials = deps.asyncio_run(deps.fetch_fmp_financials(ticker))
       except Exception as exc:
@@ -154,7 +159,7 @@ def model_build_handler(
             "Supply 'financials' explicitly or choose an EDGAR-only historical_sources route."
           ) from exc
         deps.logger.warning(
-          "FMP fetch failed for validation-only model_build (ticker=%s): %s",
+          "FMP fetch failed for diagnostic-only model_build (ticker=%s): %s",
           ticker,
           exc,
         )
@@ -173,6 +178,7 @@ def model_build_handler(
       or routing_touches_edgar
       or zero_missing_edgar_fallback
       or validation_mode
+      or source_arbitration_enabled
     )
     edgar_fetcher = deps.make_edgar_fetcher() if needs_edgar_fetcher else None
     edgar_financials_fetcher = deps.make_edgar_financials_fetcher() if segment_mode else None
@@ -217,11 +223,18 @@ def model_build_handler(
       business_model=parsed_business_model,
       presentation_tree=presentation_tree,
       validation_mode=validation_mode,
+      source_arbitration_mode=source_arbitration_mode,
       equity_risk_premium=equity_risk_premium,
       valuation_comps=parsed_valuation_comps,
+      enforce_model_quality_status_block=True,
     )
+    persisted_model_bundle = None
     if resolved_output_path and getattr(result, "model", None) is not None:
-      deps.load_model_cache(resolved_output_path, model=result.model, persist=True)
+      persisted_model_bundle = deps.load_model_bundle(
+        resolved_output_path,
+        model=result.model,
+        persist=True,
+      )
 
     workbook_result = None
     workbook_dispatch_failed = False
@@ -272,6 +285,16 @@ def model_build_handler(
       "custom_concepts_applied": getattr(result, "custom_concepts_applied", 0),
       "bm_compiled": getattr(result, "compiled_registry", None) is not None,
     }
+    if source_arbitration_enabled:
+      response["source_arbitration_mode"] = source_arbitration_mode
+      response["source_arbitration_final_source_by_concept_year"] = {
+        concept_id: {str(year): source for year, source in by_year.items()}
+        for concept_id, by_year in getattr(
+          result,
+          "source_arbitration_final_source_by_concept_year",
+          {},
+        ).items()
+      }
     if workbook_result is not None:
       response["workbook_result"] = workbook_result
     if workbook_dispatch_failed:
@@ -302,6 +325,18 @@ def model_build_handler(
     fmp_quality_warnings = list(getattr(result.stats, "fmp_quality_warnings", []) or [])
     if fmp_quality_warnings:
       response["fmp_quality_warnings"] = fmp_quality_warnings
+    if persisted_model_bundle is not None:
+      try:
+        response["model_handle_token"] = deps.model_handle_token_payload(
+          file_path=resolved_output_path,
+          historical_cutoff_year=most_recent_fy,
+          issued_by="model_build",
+        )
+      except Exception as exc:
+        response["model_handle_token_error"] = {
+          "error": str(exc),
+          "error_code": getattr(exc, "error_code", "model_handle_token_unavailable"),
+        }
     return response
   except Exception as exc:
     return deps.model_build_error_payload(exc, model_build_id=model_build_id)
@@ -397,6 +432,7 @@ def build_model_build_tool_functions(
     equity_risk_premium: float | None = None,
     valuation_comps: Optional[dict] = None,
     validation_mode: bool = False,
+    source_arbitration_mode: str = "off",
     target: str = "file",
     conflict_strategy: str = "fail_on_collision",
   ) -> dict:
@@ -424,6 +460,9 @@ def build_model_build_tool_functions(
                   "trailing_median": 19.0, "trailing_high": 25.0}]}.
       Primary production callers should bridge this from Thesis peer_comparison;
       if omitted, model-engine tries a small FMP build_fallback.
+    source_arbitration_mode: "off" (default), "shadow", or "apply". This
+      controls the explicit FMP-vs-EDGAR source-arbitration diagnostic/apply
+      pass; validation_mode by itself does not enable arbitration.
 
     target="file" (default): write a .xlsx via openpyxl to output_path.
     target="workbook": dispatch the render plan to the active Excel add-in
@@ -432,6 +471,8 @@ def build_model_build_tool_functions(
       an error if Assumptions/Financial_model already exist; "overwrite"
       clears existing sheets before writing (sheet names preserved → cross-
       sheet formulas continue to resolve).
+    Pass returned model_handle_token unchanged to later model modification or
+    bridge tools when available.
     """
     return _parent_handler(parent_namespace, "_model_build_handler")(
       deps=_parent_model_build_deps(parent_namespace),
@@ -454,6 +495,7 @@ def build_model_build_tool_functions(
       equity_risk_premium=equity_risk_premium,
       valuation_comps=valuation_comps,
       validation_mode=validation_mode,
+      source_arbitration_mode=source_arbitration_mode,
       target=target,
       conflict_strategy=conflict_strategy,
     )

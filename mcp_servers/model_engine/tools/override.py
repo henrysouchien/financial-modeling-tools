@@ -4,6 +4,9 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Optional, get_type_hints
 
+from schema.model_writer_lock import model_writer_lock
+from schema.overrides import overrides_lock_target
+
 
 MODEL_OVERRIDE_ACTIONS = {
   "get",
@@ -241,28 +244,29 @@ def model_override_handler(
             ),
           }
 
-      with deps.ticker_override_lock(ticker_upper):
-        current = deps.load_ticker_overrides(ticker_upper) or deps.ticker_overrides_cls(
-          ticker=ticker_upper,
-          overrides={},
-          custom_concepts={},
-          file_meta={"ticker": ticker_upper, "schema_version": "1"},
-        )
-        if current.projections is None:
-          current.projections = {}
+      with model_writer_lock(overrides_lock_target(ticker_upper), ticker=ticker_upper):
+        with deps.ticker_override_lock(ticker_upper):
+          current = deps.load_ticker_overrides(ticker_upper) or deps.ticker_overrides_cls(
+            ticker=ticker_upper,
+            overrides={},
+            custom_concepts={},
+            file_meta={"ticker": ticker_upper, "schema_version": "1"},
+          )
+          if current.projections is None:
+            current.projections = {}
 
-        merge_result = deps.merge_projection_scenarios(
-          existing_projection=current.projections.get(
-            projection_rate_key,
-            {"scenarios": {}},
-          ),
-          new_scenarios=validated_entry.scenarios,
-          file_meta=current.file_meta,
-        )
-        current.projections[projection_rate_key] = merge_result["projection"]
-        current.file_meta = merge_result["file_meta"]
+          merge_result = deps.merge_projection_scenarios(
+            existing_projection=current.projections.get(
+              projection_rate_key,
+              {"scenarios": {}},
+            ),
+            new_scenarios=validated_entry.scenarios,
+            file_meta=current.file_meta,
+          )
+          current.projections[projection_rate_key] = merge_result["projection"]
+          current.file_meta = merge_result["file_meta"]
 
-        deps.save_ticker_overrides(current)
+          deps.save_ticker_overrides(current)
 
       return {
         "status": "success",
@@ -303,15 +307,16 @@ def model_override_handler(
           "error": "rate_key required for action='delete_projection'",
         }
       projection_rate_key = rate_key.strip()
-      with deps.ticker_override_lock(ticker_upper):
-        current = deps.load_ticker_overrides(ticker_upper)
-        delete_result = deps.delete_projection_entry(
-          current.projections if current is not None else None,
-          rate_key=projection_rate_key,
-        )
-        if current is not None and delete_result["deleted"]:
-          current.projections = delete_result["updated_projections"]
-          deps.save_ticker_overrides(current)
+      with model_writer_lock(overrides_lock_target(ticker_upper), ticker=ticker_upper):
+        with deps.ticker_override_lock(ticker_upper):
+          current = deps.load_ticker_overrides(ticker_upper)
+          delete_result = deps.delete_projection_entry(
+            current.projections if current is not None else None,
+            rate_key=projection_rate_key,
+          )
+          if current is not None and delete_result["deleted"]:
+            current.projections = delete_result["updated_projections"]
+            deps.save_ticker_overrides(current)
       return {
         "status": "success",
         "ticker": ticker_upper,
@@ -385,33 +390,34 @@ def model_override_handler(
 
       deleted_scenarios: list[dict[str, str]] = []
       deleted_rate_keys: list[str] = []
-      with deps.ticker_override_lock(ticker_upper):
-        current = deps.load_ticker_overrides(ticker_upper)
-        if current is None or not current.projections:
-          return {
-            "status": "success",
-            "ticker": ticker_upper,
-            "source_skill": normalized_source_skill,
-            "scenario": normalized_scenario,
-            "keep_rate_keys": sorted(keep_set),
-            **({"stale_rate_keys": sorted(stale_set)} if stale_set is not None else {}),
-            **({"cleanup_mode": "explicit_stale_keys"} if stale_set is not None else {}),
-            "deleted_scenarios": [],
-            "deleted_rate_keys": [],
-          }
+      with model_writer_lock(overrides_lock_target(ticker_upper), ticker=ticker_upper):
+        with deps.ticker_override_lock(ticker_upper):
+          current = deps.load_ticker_overrides(ticker_upper)
+          if current is None or not current.projections:
+            return {
+              "status": "success",
+              "ticker": ticker_upper,
+              "source_skill": normalized_source_skill,
+              "scenario": normalized_scenario,
+              "keep_rate_keys": sorted(keep_set),
+              **({"stale_rate_keys": sorted(stale_set)} if stale_set is not None else {}),
+              **({"cleanup_mode": "explicit_stale_keys"} if stale_set is not None else {}),
+              "deleted_scenarios": [],
+              "deleted_rate_keys": [],
+            }
 
-        prune_result = deps.prune_projection_scenarios(
-          current.projections,
-          source_skill=normalized_source_skill,
-          keep_rate_keys=keep_set,
-          stale_rate_keys=stale_set,
-          scenario=normalized_scenario,
-        )
-        deleted_scenarios = prune_result["deleted_scenarios"]
-        deleted_rate_keys = prune_result["deleted_rate_keys"]
-        if prune_result["changed"]:
-          current.projections = prune_result["updated_projections"]
-          deps.save_ticker_overrides(current)
+          prune_result = deps.prune_projection_scenarios(
+            current.projections,
+            source_skill=normalized_source_skill,
+            keep_rate_keys=keep_set,
+            stale_rate_keys=stale_set,
+            scenario=normalized_scenario,
+          )
+          deleted_scenarios = prune_result["deleted_scenarios"]
+          deleted_rate_keys = prune_result["deleted_rate_keys"]
+          if prune_result["changed"]:
+            current.projections = prune_result["updated_projections"]
+            deps.save_ticker_overrides(current)
 
       return {
         "status": "success",
@@ -428,81 +434,82 @@ def model_override_handler(
     if not concept_id:
       return concept_required_payload(ticker_upper)
 
-    current = deps.load_ticker_overrides(ticker_upper) or deps.ticker_overrides_cls(
-      ticker=ticker_upper,
-      overrides={},
-      custom_concepts={},
-      file_meta={"ticker": ticker_upper, "schema_version": "1"},
-    )
-    concept_key = str(concept_id)
+    with model_writer_lock(overrides_lock_target(ticker_upper), ticker=ticker_upper):
+      current = deps.load_ticker_overrides(ticker_upper) or deps.ticker_overrides_cls(
+        ticker=ticker_upper,
+        overrides={},
+        custom_concepts={},
+        file_meta={"ticker": ticker_upper, "schema_version": "1"},
+      )
+      concept_key = str(concept_id)
 
-    if normalized_action == "set":
-      if override_fields is None:
-        return {
-          "status": "error",
-          "ticker": ticker_upper,
-          "error": "override_fields is required for action='set'",
-        }
-      try:
-        override_fields_payload = deps.coerce_json_dict_arg(
-          override_fields,
-          name="override_fields",
+      if normalized_action == "set":
+        if override_fields is None:
+          return {
+            "status": "error",
+            "ticker": ticker_upper,
+            "error": "override_fields is required for action='set'",
+          }
+        try:
+          override_fields_payload = deps.coerce_json_dict_arg(
+            override_fields,
+            name="override_fields",
+          )
+        except ValueError as exc:
+          return {"status": "error", "ticker": ticker_upper, "error": str(exc)}
+        current.overrides[concept_key] = deps.merge_override_fields(
+          current.overrides,
+          concept_key=concept_key,
+          override_fields=override_fields_payload,
         )
-      except ValueError as exc:
-        return {"status": "error", "ticker": ticker_upper, "error": str(exc)}
-      current.overrides[concept_key] = deps.merge_override_fields(
-        current.overrides,
-        concept_key=concept_key,
-        override_fields=override_fields_payload,
-      )
-      deps.save_ticker_overrides(current)
-      return concept_result_payload(
-        ticker_upper=ticker_upper,
-        concept_key=concept_key,
-      )
-
-    if normalized_action == "add_custom":
-      if custom_concept is None:
-        return {
-          "status": "error",
-          "ticker": ticker_upper,
-          "error": "custom_concept is required for action='add_custom'",
-        }
-      try:
-        custom_concept_payload = deps.coerce_json_dict_arg(
-          custom_concept,
-          name="custom_concept",
-        )
-      except ValueError as exc:
-        return {"status": "error", "ticker": ticker_upper, "error": str(exc)}
-      current.custom_concepts[concept_key] = deps.custom_concept_entry(
-        custom_concept_payload
-      )
-      deps.save_ticker_overrides(current)
-      return concept_result_payload(
-        ticker_upper=ticker_upper,
-        concept_key=concept_key,
-      )
-
-    if normalized_action == "remove":
-      remove_result = deps.remove_override_concept(
-        current.overrides,
-        current.custom_concepts,
-        concept_key=concept_key,
-      )
-      if not remove_result["removed"]:
+        deps.save_ticker_overrides(current)
         return concept_result_payload(
           ticker_upper=ticker_upper,
           concept_key=concept_key,
-          status="no_changes",
         )
-      current.overrides = remove_result["overrides"]
-      current.custom_concepts = remove_result["custom_concepts"]
-      deps.save_ticker_overrides(current)
-      return concept_result_payload(
-        ticker_upper=ticker_upper,
-        concept_key=concept_key,
-      )
+
+      if normalized_action == "add_custom":
+        if custom_concept is None:
+          return {
+            "status": "error",
+            "ticker": ticker_upper,
+            "error": "custom_concept is required for action='add_custom'",
+          }
+        try:
+          custom_concept_payload = deps.coerce_json_dict_arg(
+            custom_concept,
+            name="custom_concept",
+          )
+        except ValueError as exc:
+          return {"status": "error", "ticker": ticker_upper, "error": str(exc)}
+        current.custom_concepts[concept_key] = deps.custom_concept_entry(
+          custom_concept_payload
+        )
+        deps.save_ticker_overrides(current)
+        return concept_result_payload(
+          ticker_upper=ticker_upper,
+          concept_key=concept_key,
+        )
+
+      if normalized_action == "remove":
+        remove_result = deps.remove_override_concept(
+          current.overrides,
+          current.custom_concepts,
+          concept_key=concept_key,
+        )
+        if not remove_result["removed"]:
+          return concept_result_payload(
+            ticker_upper=ticker_upper,
+            concept_key=concept_key,
+            status="no_changes",
+          )
+        current.overrides = remove_result["overrides"]
+        current.custom_concepts = remove_result["custom_concepts"]
+        deps.save_ticker_overrides(current)
+        return concept_result_payload(
+          ticker_upper=ticker_upper,
+          concept_key=concept_key,
+        )
 
     return unsupported_model_override_action_payload(
       action=action,

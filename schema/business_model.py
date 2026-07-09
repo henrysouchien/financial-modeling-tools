@@ -67,6 +67,15 @@ RecommendedDepth = Literal["quick_and_dirty", "advanced"]
 
 _NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _AXIS_QNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*$")
+# Revenue KPI-source local-names that seed a segment's revenue from a single EDGAR
+# concept — mirrors build_mbc_seeds._SEGMENT_REVENUE_KPI_SOURCE_TAGS. Two absorb-segment
+# nodes sharing one of these + no edgar_member both resolve the consolidated total → 2x.
+_SEGMENT_REVENUE_KPI_SOURCE_TAGS = frozenset({
+    "revenuefromcontractwithcustomerexcludingassessedtax",
+    "revenues",
+    "salesrevenuegoodsnet",
+    "salesrevenuenet",
+})
 _RESERVED_NODE_IDS = frozenset({"self"})
 
 
@@ -212,6 +221,8 @@ class DriverNode(_ContractModel):
     kpi: bool = False
     kpi_source: str | None = None
     kpi_frequency: KpiFrequency | None = None
+    edgar_member: str | None = None
+    edgar_axis: str | None = None
     behavior: NodeBehavior | None = None
     management_target: str | None = None
     note: str | None = None
@@ -363,7 +374,75 @@ class Segment(_ContractModel):
                     seen_names.add(normalized_name)
                 if member:
                     seen_members.add(member)
+
+        # Node-level EDGAR member identity: when a blended segment absorbs several
+        # members, each member-backed revenue node declares its own member so the
+        # seeder can source the per-member value instead of the consolidated total.
+        absorbed_members = {
+            str(claim.member).strip()
+            for claim in (self.absorbs or [])
+            if str(claim.member or "").strip()
+        }
+        for node in _iter_decomposition_nodes(self.revenue_model.decomposition):
+            node_member = str(node.edgar_member or "").strip()
+            if node.edgar_axis is not None and not node_member:
+                raise ValueError(
+                    f"node {node.id!r} edgar_axis requires edgar_member"
+                )
+            if not node_member:
+                continue
+            if node.edgar_axis is None:
+                raise ValueError(f"node {node.id!r} edgar_member requires edgar_axis")
+            if not _AXIS_QNAME_RE.match(str(node.edgar_axis)):
+                raise ValueError(
+                    f"node {node.id!r} edgar_axis {node.edgar_axis!r} must be an XBRL QName "
+                    "(e.g., srt:ProductOrServiceAxis), not a family label"
+                )
+            if not absorbed_members:
+                raise ValueError(
+                    f"node {node.id!r} sets edgar_member but segment {self.id!r} "
+                    "does not absorb any EDGAR members"
+                )
+            if node_member not in absorbed_members:
+                raise ValueError(
+                    f"node {node.id!r} edgar_member {node_member!r} is not among segment "
+                    f"{self.id!r} absorbed members {sorted(absorbed_members)}"
+                )
+
+        # Partition guard: an absorb segment must PARTITION its contract revenue, not
+        # duplicate it. If more than one contract-revenue KPI node exists, every one
+        # must carry an edgar_member (so each seeds from its member's slice). Two
+        # untagged contract-revenue nodes both resolve the consolidated total → the 2x
+        # double-count. This fails loudly at BM validation instead of building silently.
+        if self.absorbs:
+            contract_revenue_nodes = [
+                node
+                for node in _iter_decomposition_nodes(self.revenue_model.decomposition)
+                if bool(node.kpi)
+                and str(node.kpi_source or "").rsplit(":", 1)[-1].lower()
+                in _SEGMENT_REVENUE_KPI_SOURCE_TAGS
+            ]
+            if len(contract_revenue_nodes) > 1:
+                untagged = [
+                    node.id
+                    for node in contract_revenue_nodes
+                    if not str(node.edgar_member or "").strip()
+                ]
+                if untagged:
+                    raise ValueError(
+                        f"absorb segment {self.id!r} has {len(contract_revenue_nodes)} "
+                        f"contract-revenue nodes but {untagged} lack edgar_member; each "
+                        "must declare its EDGAR member so revenue is partitioned per-member "
+                        "(a shared consolidated source across nodes double-counts revenue)"
+                    )
         return self
+
+
+def _iter_decomposition_nodes(nodes: list["DriverNode"] | None):
+    for node in nodes or []:
+        yield node
+        if node.children:
+            yield from _iter_decomposition_nodes(node.children)
 
 
 def _normalize_absorbed_claim_name(value: str | None) -> str:

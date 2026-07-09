@@ -70,14 +70,21 @@ def _bm_segment_snapshot_inline_values(
     inline_values: dict[str, dict[str, float]] = {}
     for segment in business_model.segments:
         if not (segment.edgar_axis and segment.edgar_member):
-            claimed_members = _absorbed_claim_members(segment)
-            if claimed_members and not segment.edgar_member:
-                logging.warning(
-                    "BM segment %s absorbs multiple EDGAR members %s; current inline seed "
-                    "format cannot emit per-member segment snapshot values, skipping "
-                    "snapshot inline values for this segment.",
-                    segment.id,
-                    claimed_members,
+            # Absorb (multi-member) segment: the segment names no single member,
+            # but each member-backed revenue node carries its own edgar_member.
+            # Seed each such node from its member's snapshot observations. This is
+            # id-agnostic on purpose — the blended nodes are named e.g.
+            # `recurring_revenue`/`implementation_revenue`, not `segment_revenue`,
+            # so `_is_segment_revenue_kpi_node` (id-gated) must NOT be used here.
+            if segment.absorbs:
+                _emit_absorbed_member_inline_values(
+                    segment,
+                    snapshot_by_member,
+                    axis,
+                    inline_values=inline_values,
+                    tags_equivalent=tags_equivalent,
+                    iter_business_model_nodes=iter_business_model_nodes,
+                    revenue_observations_to_values=revenue_observations_to_values,
                 )
             continue
         if not tags_equivalent(str(segment.edgar_axis), str(axis)):
@@ -203,6 +210,11 @@ def _iter_business_model_nodes(nodes: list[Any]):
 def _is_segment_revenue_kpi_node(node: Any) -> bool:
     if str(getattr(node, "id", "") or "") != "segment_revenue":
         return False
+    return _is_revenue_kpi_source_node(node)
+
+
+def _is_revenue_kpi_source_node(node: Any) -> bool:
+    """Contract-revenue KPI node, id-agnostic (for absorb-segment member nodes)."""
     if not bool(getattr(node, "kpi", False)):
         return False
     source = str(getattr(node, "kpi_source", "") or "").rsplit(":", 1)[-1].lower()
@@ -211,3 +223,47 @@ def _is_segment_revenue_kpi_node(node: Any) -> bool:
         _SEGMENT_REVENUE_KPI_SOURCE_TAGS,
     )
     return source in source_tags
+
+
+def _emit_absorbed_member_inline_values(
+    segment: Any,
+    snapshot_by_member: dict[str, Any],
+    axis: Any,
+    *,
+    inline_values: dict[str, dict[str, float]],
+    tags_equivalent: Any,
+    iter_business_model_nodes: Any,
+    revenue_observations_to_values: Any,
+) -> None:
+    """Seed each member-tagged contract-revenue node of an absorb segment from its
+    own EDGAR member's snapshot observations (recurring -> RecurringFeesMember, etc.),
+    instead of every node falling back to the consolidated total (the 2x double-count).
+    Non-member nodes (e.g. interest_income) are left to their own kpi_source fetch.
+    """
+    for node in iter_business_model_nodes(segment.revenue_model.decomposition):
+        node_member = str(getattr(node, "edgar_member", None) or "").strip()
+        if not node_member:
+            continue
+        if not _is_revenue_kpi_source_node(node):
+            continue
+        node_axis = str(getattr(node, "edgar_axis", None) or "").strip()
+        # Axis cross-check: a mis-axied member must not silently map (mirror line 83).
+        if node_axis and axis and not tags_equivalent(node_axis, str(axis)):
+            continue
+        snapshot_segment = next(
+            (
+                candidate
+                for member, candidate in snapshot_by_member.items()
+                if tags_equivalent(member, node_member)
+            ),
+            None,
+        )
+        if snapshot_segment is None or not snapshot_segment.revenue_observations:
+            continue
+        inline_values[f"{segment.id}:{node.id}"] = {
+            str(int(year)): float(value)
+            for year, value in sorted(
+                revenue_observations_to_values(snapshot_segment.revenue_observations).items()
+            )
+            if value is not None and math.isfinite(float(value))
+        }

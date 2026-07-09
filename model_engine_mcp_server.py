@@ -109,14 +109,22 @@ from schema.segments import (  # noqa: E402
   discover_all_axes as _discover_all_axes,
   segment_revenue_observation_list as _segment_revenue_observation_list,
 )
+from schema.handle import (  # noqa: E402
+  load_handle as _load_handle,
+  peek_handle as _peek_handle,
+)
+from schema.handle_token import (  # noqa: E402
+  ModelHandleToken,
+  ModelHandleTokenError,
+  validate_model_handle_token,
+)
 from schema.tools import (  # noqa: E402
-  _cache as _model_cache,
   clear_cache as _clear_cache,
   drivers as _drivers,
   find as _find,
   invalid_override_period_error as _invalid_override_period_error,
   invalid_override_value_error as _invalid_override_value_error,
-  load as _load_model_cache,
+  load as _load_model_bundle,
   model_tool_error_payload as _model_tool_error_payload,
   scenario as _scenario,
   sensitivity as _sensitivity,
@@ -146,6 +154,9 @@ from mcp_servers.model_engine.build_helpers import (  # noqa: E402
   serialize_overrides_write_report as _serialize_overrides_write_report,
   serialize_ticker_overrides as _serialize_ticker_overrides,
   serialize_year_values as _serialize_year_values,
+)
+from mcp_servers.model_engine.handle_tokens import (  # noqa: E402
+  model_handle_token_payload as _model_handle_token_payload_impl,
 )
 from mcp_servers.model_engine.bridge import (  # noqa: E402
   BRIDGE_PARTIAL_WARNING_KINDS as _BRIDGE_PARTIAL_WARNING_KINDS,
@@ -547,6 +558,20 @@ def _build_valuation_comps_fallback(
   )
 
 
+def _model_handle_token_payload(
+  *,
+  file_path: str,
+  historical_cutoff_year: int | None,
+  issued_by: str,
+) -> dict[str, Any]:
+  return _model_handle_token_payload_impl(
+    file_path=file_path,
+    historical_cutoff_year=historical_cutoff_year,
+    issued_by=issued_by,
+    load_handle=_load_handle,
+  )
+
+
 def _model_read_deps() -> _ModelReadDeps:
   return _ModelReadDeps(
     validate_file_path=_validate_file_path,
@@ -570,6 +595,7 @@ def _model_read_deps() -> _ModelReadDeps:
     invalid_override_period_error=_invalid_override_period_error,
     invalid_override_value_error=_invalid_override_value_error,
     scenario=_scenario,
+    model_handle_token_payload=_model_handle_token_payload,
   )
 
 

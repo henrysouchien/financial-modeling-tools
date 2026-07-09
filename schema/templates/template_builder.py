@@ -13,6 +13,7 @@ from ..models import (
     CellStyle,
     CompanyInfo,
     CustomizationType,
+    FinancialStatement,
     FinancialModel,
     FormulaSpec,
     FormulaType,
@@ -23,7 +24,9 @@ from ..models import (
     Section,
     SheetLayout,
     SheetType,
+    StatementSectionRole,
 )
+from ..build_diagnostic_sections import BS_SECTIONS
 from ..reader import read_model
 
 from .template_builder_config import (
@@ -122,6 +125,8 @@ from .template_builder_insertions import (
     _normalize_valuation_projection_links as _normalize_valuation_projection_links,
     _normalize_generic_cash_reconciliation as _normalize_generic_cash_reconciliation,
 )
+from .model_scale import apply_template_model_scales as apply_template_model_scales
+from .model_scale import assert_template_model_scales_declared as assert_template_model_scales_declared
 
 
 
@@ -328,6 +333,58 @@ def _assign_metadata(
         )
 
     return promoted_headers
+
+
+def _apply_balance_sheet_section_roles(model: FinancialModel) -> None:
+    item_by_id = {item.id: item for _, item in _iter_items(model)}
+    roles_by_item_id: dict[str, list[StatementSectionRole]] = {}
+
+    def add_role(
+        item_id: str,
+        *,
+        section: str,
+        role: str,
+        expected_concept_id: str | None = None,
+    ) -> None:
+        if item_id not in item_by_id:
+            raise AssertionError(f"BS section role references unknown item: {item_id}")
+        roles_by_item_id.setdefault(item_id, []).append(
+            StatementSectionRole(
+                statement=FinancialStatement.balance_sheet,
+                section=section,
+                role=role,
+                expected_concept_id=expected_concept_id,
+            )
+        )
+
+    for section, definition in BS_SECTIONS.items():
+        if definition.get("presentation_only"):
+            continue
+        for member in definition["sub_lines"]:
+            add_role(
+                member.template_item_id,
+                section=section,
+                role="member" if member.expected_concept_id else "catch_all",
+                expected_concept_id=member.expected_concept_id,
+            )
+        add_role(
+            definition["total_item_id"],
+            section=section,
+            role="section_total",
+        )
+        pre_subtotal_item_id = definition.get("pre_subtotal_item_id")
+        if pre_subtotal_item_id:
+            add_role(pre_subtotal_item_id, section=section, role="pre_subtotal")
+        included_subtotal_item_id = definition.get("also_includes_subtotal")
+        if included_subtotal_item_id:
+            add_role(
+                included_subtotal_item_id,
+                section=section,
+                role="included_subtotal",
+            )
+
+    for item in item_by_id.values():
+        item.statement_section_roles = roles_by_item_id.get(item.id)
 
 
 def _filter_overrides(
@@ -724,6 +781,10 @@ def _build_template_from_config(
     if config.normalize_valuation_projection_links:
         _normalize_valuation_projection_links(template)
     _include_treasury_stock_in_total_equity_historical(template)
+    if config.name == "generic":
+        _apply_balance_sheet_section_roles(template)
+        apply_template_model_scales(template)
+        assert_template_model_scales_declared(template)
 
     for sheet_name in KEPT_SHEETS:
         sheet = template.sheets[sheet_name]

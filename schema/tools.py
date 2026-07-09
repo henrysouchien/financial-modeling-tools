@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from . import serialization
@@ -13,7 +10,6 @@ from .analysis import (
     _downstream_nodes,  # noqa: F401 - compatibility alias for schema.tools imports
     _upstream_nodes,  # noqa: F401 - compatibility alias for schema.tools imports
 )
-from .dependency_graph import DependencyGraph
 from .model_readiness import (
     compute_model_quality_readiness,
     compute_model_projection_readiness,
@@ -21,12 +17,12 @@ from .model_readiness import (
     compute_model_scenario_output_readiness,
     compute_valuation_input_readiness,
 )
+from schema.handle import load_handle
+from schema.load_core import _ModelBundle
 from .models import (
     FinancialModel,
-    ItemType,
     LineItem,
 )
-from .reader import read_model
 from .renderer import _fixed_cell_anchor_period
 from .tools_periods import (
     _VALUES_MAX_RESPONSE_CELLS,  # noqa: F401 - compatibility alias for schema.tools imports
@@ -108,25 +104,6 @@ from .tools_summary import (
     _formula_type,  # noqa: F401 - compatibility alias for schema.tools imports
     _summarize_line_items,
 )
-from .valuation_schema_invariant import (
-    assert_valuation_template_schema,
-    should_enforce_valuation_template_schema,
-)
-
-
-@dataclass
-class _ModelBundle:
-    model: FinancialModel
-    graph: DependencyGraph
-    base_results: Dict[str, Dict[int, float]]
-    all_items: List[LineItem]
-    derived_ids: Set[str]
-    source: str
-    file_signature: Tuple[int, int] | None
-
-
-_cache: Dict[Tuple[str, int], _ModelBundle] = {}
-
 class ModelToolError(ValueError):
     """Structured agent-facing error for model-tool recovery."""
 
@@ -161,25 +138,31 @@ class ModelToolError(ValueError):
 def model_tool_error_payload(exc: Exception) -> Dict[str, Any]:
     if isinstance(exc, ModelToolError):
         return exc.to_payload()
-    return {
+    payload = {
         "status": "error",
         "error": str(exc),
         "error_type": type(exc).__name__,
     }
+    error_code = getattr(exc, "error_code", None)
+    if error_code:
+        payload["error_code"] = str(error_code)
+    model_quality_readiness = getattr(exc, "model_quality_readiness", None)
+    if model_quality_readiness is not None:
+        if hasattr(model_quality_readiness, "to_dict"):
+            payload["model_quality_readiness"] = model_quality_readiness.to_dict()
+        elif hasattr(model_quality_readiness, "model_dump"):
+            payload["model_quality_readiness"] = model_quality_readiness.model_dump(mode="json")
+        else:
+            payload["model_quality_readiness"] = model_quality_readiness
+    return payload
 
 
 def clear_cache(*, disk: bool = False) -> None:
-    _cache.clear()
+    from schema.handle import _handle_memo
+
+    _handle_memo.clear()
     if disk:
         serialization.clear_disk()
-
-
-def _file_signature(file_path: str) -> Tuple[int, int] | None:
-    try:
-        stat = Path(file_path).stat()
-    except OSError:
-        return None
-    return (stat.st_mtime_ns, stat.st_size)
 
 
 def load(
@@ -197,102 +180,12 @@ def load(
     state instead of falling back to the lossy Excel reader.
     """
 
-    cutoff = historical_cutoff_year if historical_cutoff_year is not None else datetime.now().year
-    key = (file_path, cutoff)
-    signature = _file_signature(file_path)
-
-    if model is None and key in _cache:
-        cached = _cache[key]
-        if cached.file_signature == signature:
-            _assert_loaded_valuation_template_schema(
-                cached.model,
-                file_path=file_path,
-                origin=f"schema.tools.load.cache_hit.{cached.source}",
-            )
-            return cached
-        _cache.pop(key, None)
-
-    cached_base_results = None
-    sidecar_needs_refresh = False
-    model_source = "explicit" if model is not None else "unknown"
-    if model is None:
-        sidecar_hit = serialization.try_load_sidecar(file_path)
-        if sidecar_hit is not None:
-            model, cached_base_results = sidecar_hit
-            sidecar_needs_refresh = cached_base_results is None
-            model_source = "sidecar_recomputed" if sidecar_needs_refresh else "sidecar"
-        else:
-            disk_hit = serialization.try_load(file_path, cutoff)
-            if disk_hit is not None:
-                model, cached_base_results = disk_hit
-                model_source = "disk_cache"
-
-    parsed_fresh = False
-    if model is None:
-        loaded = read_model(file_path, mode="full", historical_cutoff_year=cutoff)
-        if not isinstance(loaded, FinancialModel):
-            raise TypeError("read_model(..., mode='full') did not return FinancialModel")
-        model = loaded
-        parsed_fresh = True
-        model_source = "parsed_workbook"
-
-    _assert_loaded_valuation_template_schema(
-        model,
-        file_path=file_path,
-        origin=f"schema.tools.load.{model_source}",
-    )
-
-    graph = DependencyGraph()
-    graph.build(model)
-
-    all_items = list(model._index.values())
-    derived_ids = {item.id for item in all_items if item.item_type == ItemType.derived}
-    if cached_base_results is not None:
-        base_results = cached_base_results
-    else:
-        base_results = graph.compute({}, recompute=derived_ids)
-
-    if parsed_fresh or sidecar_needs_refresh or (persist and model is not None):
-        serialization.save(file_path, cutoff, model, base_results)
-    if sidecar_needs_refresh or (persist and model is not None):
-        if should_enforce_valuation_template_schema(model, workbook_path=file_path):
-            assert_valuation_template_schema(
-                model,
-                origin="schema.tools.load.persist_sidecar",
-                workbook_path=file_path,
-                sidecar_path=serialization.sidecar_path(file_path),
-                module_path=__file__,
-            )
-        serialization.save_sidecar(file_path, model, base_results)
-
-    bundle = _ModelBundle(
+    return load_handle(
+        file_path,
         model=model,
-        graph=graph,
-        base_results=base_results,
-        all_items=all_items,
-        derived_ids=derived_ids,
-        source=model_source,
-        file_signature=_file_signature(file_path),
-    )
-    _cache[key] = bundle
-    return bundle
-
-
-def _assert_loaded_valuation_template_schema(
-    model: FinancialModel,
-    *,
-    file_path: str,
-    origin: str,
-) -> None:
-    if not should_enforce_valuation_template_schema(model, workbook_path=file_path):
-        return
-    assert_valuation_template_schema(
-        model,
-        origin=origin,
-        workbook_path=file_path,
-        sidecar_path=serialization.sidecar_path(file_path),
-        module_path=__file__,
-    )
+        historical_cutoff_year=historical_cutoff_year,
+        persist=persist,
+    ).to_bundle()
 
 
 def summarize(
@@ -302,8 +195,8 @@ def summarize(
     historical_cutoff_year: Optional[int] = None,
     include_items: bool = False,
 ) -> Dict:
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
-    model_obj = bundle.model
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    model_obj = handle.model
     all_periods = _all_periods(model_obj)
     default_period = _default_period(model_obj) if all_periods else None
 
@@ -329,10 +222,10 @@ def summarize(
             }
         )
 
-    workbook_inventory = _workbook_inventory(file_path, sheets_summary, model_source=bundle.source)
+    workbook_inventory = _workbook_inventory(file_path, sheets_summary, model_source=handle.source)
     key_metrics = []
-    for item in _find_key_metrics(bundle.all_items):
-        values = bundle.base_results.get(item.id, {})
+    for item in _find_key_metrics(handle.all_items):
+        values = handle.computed.get(item.id, {})
         proj_annual = _annual_projection_periods(model_obj)
         hist_annual = _annual_historical_periods(model_obj, n=3)
 
@@ -349,12 +242,17 @@ def summarize(
 
     valuation_input_readiness = compute_valuation_input_readiness(
         model_obj,
-        computed_values=bundle.base_results,
+        computed_values=handle.computed,
     )
+    model_quality_readiness = compute_model_quality_readiness(
+        model_obj,
+        computed_values=handle.computed,
+        valuation_input_readiness=valuation_input_readiness,
+    ).model_dump(mode="json")
     result = {
         "sheets": sheets_summary,
         **workbook_inventory,
-        "line_item_count": len(bundle.all_items),
+        "line_item_count": len(handle.all_items),
         "time_range": {
             "historical_periods": _historical_periods(model_obj),
             "projection_periods": _projection_periods(model_obj),
@@ -364,23 +262,19 @@ def summarize(
         "key_metrics": key_metrics,
         "projection_readiness": compute_model_projection_readiness(
             model_obj,
-            computed_values=bundle.base_results,
+            computed_values=handle.computed,
         ).model_dump(mode="json"),
         "scenario_output_readiness": compute_model_scenario_output_readiness(
             model_obj,
-            computed_values=bundle.base_results,
+            computed_values=handle.computed,
         ).model_dump(mode="json"),
         "scenario_bridge_readiness": compute_model_scenario_bridge_readiness(
             model_obj,
         ).model_dump(mode="json"),
-        "model_quality_readiness": compute_model_quality_readiness(
-            model_obj,
-            computed_values=bundle.base_results,
-            valuation_input_readiness=valuation_input_readiness,
-        ).model_dump(mode="json"),
+        "model_quality_readiness": model_quality_readiness,
     }
     if include_items:
-        result["items"] = _summarize_line_items(model_obj, bundle.all_items)
+        result["items"] = _summarize_line_items(model_obj, handle.all_items)
     return result
 
 
@@ -392,17 +286,17 @@ def find(
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
 ) -> List[Dict]:
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
     if not query:
         return []
 
-    all_periods = _all_periods(bundle.model)
+    all_periods = _all_periods(handle.model)
     needle = query.lower()
-    item_locs = _item_locations(bundle.model)
-    parent_headers = _parent_headers(bundle.model)
-    ambiguous = _ambiguous_labels(bundle.all_items)
+    item_locs = _item_locations(handle.model)
+    parent_headers = _parent_headers(handle.model)
+    ambiguous = _ambiguous_labels(handle.all_items)
     rows = []
-    for item in bundle.all_items:
+    for item in handle.all_items:
         haystack = f"{item.id} {item.label}".lower()
         if needle not in haystack:
             continue
@@ -426,7 +320,7 @@ def find(
                 "section": context[1] if context else None,
                 "item_type": item.item_type.value,
                 "formula_type": _formula_type(item),
-                "sample_values": _sample_values(bundle.base_results.get(item.id, {}), all_periods),
+                "sample_values": _sample_values(handle.computed.get(item.id, {}), all_periods),
             }
         )
 
@@ -450,22 +344,22 @@ def values(
         deduped_item_ids.append(item_id)
         seen.add(item_id)
 
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
-    period_list, period_label = _resolve_period_list(periods, bundle.model)
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    period_list, period_label = _resolve_period_list(periods, handle.model)
     _validate_values_response_size(
         deduped_item_ids,
         period_list,
         periods=periods,
-        model=bundle.model,
+        model=handle.model,
     )
 
     rows = []
     for item_id in deduped_item_ids:
         try:
-            item = bundle.model.get_item(item_id)
+            item = handle.model.get_item(item_id)
         except KeyError:
-            suggestions = _suggest_items(bundle.model._index, item_id)
-            structured_error = _unknown_item_error(bundle.model, item_id, "item_id")
+            suggestions = _suggest_items(handle.model._index, item_id)
+            structured_error = _unknown_item_error(handle.model, item_id, "item_id")
             error_row = {
                 "id": item_id,
                 "error": structured_error.message,
@@ -478,10 +372,10 @@ def values(
             rows.append(error_row)
             continue
 
-        item_values = bundle.base_results.get(item_id, {})
+        item_values = handle.computed.get(item_id, {})
         value_periods = period_list
         if item.column is not None:
-            anchor_period = _fixed_cell_anchor_period(bundle.model, item)
+            anchor_period = _fixed_cell_anchor_period(handle.model, item)
             value_periods = [anchor_period] if anchor_period in set(period_list) else []
         rows.append(
             {
@@ -524,11 +418,11 @@ def drivers(
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
 ) -> Dict:
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
-    if item_id not in bundle.model._index:
-        raise _unknown_item_error(bundle.model, item_id, "item_id")
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    if item_id not in handle.model._index:
+        raise _unknown_item_error(handle.model, item_id, "item_id")
 
-    all_periods = _all_periods(bundle.model)
+    all_periods = _all_periods(handle.model)
     node_depth: Dict[str, int] = {}
     edge_set: Set[Tuple[str, str, int]] = set()
     stack: List[Tuple[str, int]] = [(item_id, 0)]
@@ -545,11 +439,11 @@ def drivers(
         if current_depth == depth:
             continue
 
-        for dep_id in bundle.graph.get_dependencies(node_id):
+        for dep_id in handle.graph.get_dependencies(node_id):
             edge_set.add((dep_id, node_id, 0))
             stack.append((dep_id, current_depth + 1))
 
-        for ref in bundle.graph.time_edges.get(node_id, set()):
+        for ref in handle.graph.time_edges.get(node_id, set()):
             if ref.t == 0:
                 continue
             edge_set.add((ref.id, node_id, ref.t))
@@ -557,7 +451,7 @@ def drivers(
 
     nodes = []
     for node_id, node_dist in sorted(node_depth.items(), key=lambda x: (x[1], x[0])):
-        item = bundle.model.get_item(node_id)
+        item = handle.model.get_item(node_id)
         nodes.append(
             {
                 "id": node_id,
@@ -565,7 +459,7 @@ def drivers(
                 "item_type": item.item_type.value,
                 "formula_type": _formula_type(item),
                 "distance": node_dist,
-                "sample_values": _sample_values(bundle.base_results.get(node_id, {}), all_periods),
+                "sample_values": _sample_values(handle.computed.get(node_id, {}), all_periods),
             }
         )
 
@@ -595,9 +489,9 @@ def scenario(
     historical_cutoff_year: Optional[int] = None,
     recompute_policy: Literal["projection_safe", "legacy_global"] = "projection_safe",
 ) -> Dict:
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
     return _run_scenario(
-        bundle,
+        handle,
         overrides,
         compare_items,
         recompute_policy=recompute_policy,
@@ -610,8 +504,8 @@ def period_guidance(
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
 ) -> Dict[str, Any]:
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
-    return _period_guidance(bundle.model)
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    return _period_guidance(handle.model)
 
 
 def invalid_override_period_error(

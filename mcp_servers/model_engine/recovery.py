@@ -84,7 +84,7 @@ def bridge_recovery(reason: str | None) -> dict | None:
   if reason == "model_not_in_cache":
     return {
       "next_actions": [
-        "Call model_summarize(file_path=...) or model_find(file_path=..., query='revenue') to load the model cache/sidecar for this workbook.",
+        "Call model_summarize(file_path=...) or model_find(file_path=..., query='revenue') to verify the workbook and sidecar can be loaded.",
         "If the file was rebuilt or moved, use the latest model_build output_path and rerun the bridge.",
         "If no sidecar exists, rerun the orchestrated build path before calling model_bridge_scenarios.",
       ]

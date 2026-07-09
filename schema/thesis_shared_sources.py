@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
@@ -11,12 +12,14 @@ from .thesis_shared_slice_helpers import (
 )
 
 
-SourceType = Literal["filing", "transcript", "investor_deck", "other", "skill_artifact"]
+SourceType = Literal["filing", "transcript", "document", "investor_deck", "other", "skill_artifact"]
 SourceId = Annotated[
     str, StringConstraints(strip_whitespace=True, pattern=r"^src_[1-9]\d*$")
 ]
+_CANONICAL_DOCUMENT_SOURCE_ID_RE = re.compile(r"^doc:[0-9a-f]{32}$")
+_DOCUMENT_SPINE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 ExcerptLocatorKind = Literal[
-    "text_range", "section", "page", "external_anchor", "reader_anchor", "unknown"
+    "text_range", "section", "page", "external_anchor", "reader_anchor", "document_quote", "unknown"
 ]
 ReaderTableValueSource = Literal["edgar_financials_table", "edgar_statement", "xbrl_fact"]
 ScalarValue: TypeAlias = str | int | float | bool
@@ -82,10 +85,13 @@ class ExcerptLocator(_ContractModel):
     page: int | None = None
     anchor: str | None = None
     reader_anchor_version: Literal["v2"] | None = None
-    anchor_kind: Literal["filing_quote", "filing_mapped", "filing_table_cell"] | None = None
+    anchor_kind: Literal["filing_quote", "filing_mapped", "filing_table_cell", "document_quote"] | None = None
     confidence: Literal["quote", "section_only", "none", "exact", "high"] | None = None
     source_id: str | None = None
     document_id: str | None = None
+    page_number: int | None = None
+    spine_hash: str | None = None
+    extraction_version: int | None = None
     source_html_hash: str | None = None
     corpus_content_hash: str | None = None
     visible_text_anchor: dict[str, Any] | None = None
@@ -114,6 +120,13 @@ class ExcerptLocator(_ContractModel):
             raise ValueError("section locator requires section_header")
         if self.kind == "external_anchor" and not self.anchor:
             raise ValueError("external_anchor locator requires anchor")
+        if self.kind == "document_quote":
+            if self.page_number is not None and self.page_number < 1:
+                raise ValueError("document_quote locator page_number must be >= 1")
+            if self.spine_hash is not None and not _DOCUMENT_SPINE_HASH_RE.fullmatch(self.spine_hash):
+                raise ValueError("document_quote locator spine_hash must be 64 lowercase hex")
+            if self.extraction_version is not None and self.extraction_version < 1:
+                raise ValueError("document_quote locator extraction_version must be >= 1")
         if self.kind == "reader_anchor":
             required = {
                 "reader_anchor_version": self.reader_anchor_version,
@@ -156,7 +169,7 @@ class ExcerptLocator(_ContractModel):
                     raise ValueError("mapped reader_anchor locator requires exact or high confidence")
                 if self.table_citation_record_id is not None or self.table_context is not None:
                     raise ValueError("mapped reader_anchor locator cannot carry table citation fields")
-            elif self.anchor_kind == "filing_quote":
+            elif self.anchor_kind in {"filing_quote", "document_quote"}:
                 if (
                     self.char_start is not None
                     or self.char_end is not None
@@ -225,6 +238,7 @@ class SourceRecord(_ContractModel):
     text: str
     annotation_id: str | None = None
     provider: str | None = None
+    document_id: str | None = None
     endpoint_or_filing_id: str | None = None
     key_fields: dict[str, ScalarValue] | None = None
     retrieved_at: str | None = None
@@ -243,6 +257,9 @@ class SourceRecord(_ContractModel):
     artifact_id: str | None = None
     skill_run_id: str | None = None
     source_path: str | None = None
+    page_number: int | None = None
+    spine_hash: str | None = None
+    extraction_version: int | None = None
 
     @model_validator(mode="after")
     def _validate_source_record(self) -> "SourceRecord":
@@ -252,6 +269,34 @@ class SourceRecord(_ContractModel):
             and self.char_end < self.char_start
         ):
             raise ValueError("char_end must be greater than or equal to char_start")
+        document_identity_fields = {
+            "document_id": self.document_id,
+            "page_number": self.page_number,
+            "spine_hash": self.spine_hash,
+            "extraction_version": self.extraction_version,
+        }
+        doc_like_ids = [
+            value
+            for value in (self.source_id, self.endpoint_or_filing_id, self.document_id)
+            if isinstance(value, str) and value.strip().lower().startswith("doc:")
+        ]
+        if self.type != "document" and (doc_like_ids or any(value is not None for value in document_identity_fields.values())):
+            raise ValueError("doc:<hash> source identity requires type='document'")
+        if self.type == "document":
+            if not _CANONICAL_DOCUMENT_SOURCE_ID_RE.fullmatch(self.source_id):
+                raise ValueError("document source_id must be canonical doc:<32 lowercase hex>")
+            if self.document_id is not None and self.document_id != self.source_id:
+                raise ValueError("document document_id must match source_id")
+            if self.endpoint_or_filing_id is not None and not _CANONICAL_DOCUMENT_SOURCE_ID_RE.fullmatch(
+                self.endpoint_or_filing_id
+            ):
+                raise ValueError("document endpoint_or_filing_id must be canonical doc:<32 lowercase hex>")
+            if self.page_number is not None and self.page_number < 1:
+                raise ValueError("document page_number must be >= 1")
+            if self.spine_hash is not None and not _DOCUMENT_SPINE_HASH_RE.fullmatch(self.spine_hash):
+                raise ValueError("document spine_hash must be 64 lowercase hex")
+            if self.extraction_version is not None and self.extraction_version < 1:
+                raise ValueError("document extraction_version must be >= 1")
         skill_fields = {
             "skill_name": self.skill_name,
             "artifact_path": self.artifact_path,

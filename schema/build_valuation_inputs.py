@@ -52,6 +52,19 @@ _VALUATION_TERMINAL_INPUT_PREFIXES = (
     "tpl.v.dcf.terminal_growth_",
     "tpl.v.dcf.exit_multiple_",
 )
+_VALUATION_TERMINAL_DEFAULTS = {
+    "tpl.v.dcf.terminal_growth_bull": 0.04,
+    "tpl.v.dcf.terminal_growth_base": 0.03,
+    "tpl.v.dcf.terminal_growth_bear": 0.01,
+    "tpl.v.dcf.exit_multiple_bull": 25.0,
+    "tpl.v.dcf.exit_multiple_base": 18.0,
+    "tpl.v.dcf.exit_multiple_bear": 15.0,
+}
+_VALUATION_TERMINAL_DEFAULT_SOURCE = "template.valuation_terminal_default"
+_VALUATION_TERMINAL_DEFAULT_FIELDS = {
+    "tpl.v.dcf.terminal_growth_base": "terminal_growth_rate",
+    "tpl.v.dcf.exit_multiple_base": "exit_multiple",
+}
 _VALUATION_REQUIRED_INPUTS = (
     "stock_price",
     "raw_beta",
@@ -191,6 +204,16 @@ def _set_valuation_input_value(
     return True
 
 
+def _valuation_input_has_value(model: FinancialModel, item_id: str) -> bool:
+    try:
+        item = model.get_item(item_id)
+    except KeyError:
+        return False
+    if item.values is None:
+        return False
+    return any(cell.value is not None for cell in item.values.values.values())
+
+
 def _extract_first_numeric_with_source(
     fmp_data: dict | None,
     endpoints: tuple[str, ...],
@@ -222,6 +245,9 @@ def populate_valuation_inputs(
     model: FinancialModel,
     fmp_data: dict | None,
     equity_risk_premium: float | None = None,
+    equity_risk_premium_source: str | None = None,
+    equity_risk_premium_rationale: str | None = None,
+    equity_risk_premium_as_of: str | None = None,
     valuation: dict[str, Any] | None = None,
 ) -> ValuationInputReadiness:
     """Populate only sourced/explicit fixed-cell valuation inputs."""
@@ -276,11 +302,23 @@ def populate_valuation_inputs(
         "_VALUATION_TERMINAL_INPUTS",
         _VALUATION_TERMINAL_INPUTS,
     )
+    valuation_terminal_defaults = _parent_attr(
+        "_VALUATION_TERMINAL_DEFAULTS",
+        _VALUATION_TERMINAL_DEFAULTS,
+    )
+    valuation_terminal_default_fields = _parent_attr(
+        "_VALUATION_TERMINAL_DEFAULT_FIELDS",
+        _VALUATION_TERMINAL_DEFAULT_FIELDS,
+    )
     value_provenance = _parent_attr("ValueProvenance", ValueProvenance)
     value_series_cls = _parent_attr("ValueSeries", ValueSeries)
     value_cell_cls = _parent_attr("ValueCell", ValueCell)
     formula_spec_cls = _parent_attr("FormulaSpec", FormulaSpec)
     formula_type = _parent_attr("FormulaType", FormulaType)
+    valuation_input_has_value = _parent_attr(
+        "_valuation_input_has_value",
+        _valuation_input_has_value,
+    )
 
     clear_valuation_input_values(model)
     sources: dict[str, str] = {}
@@ -357,7 +395,10 @@ def populate_valuation_inputs(
             provenance=value_provenance.input,
         ):
             populated.add("equity_risk_premium")
-            sources["equity_risk_premium"] = "explicit.model_build_context"
+            sources["equity_risk_premium"] = (
+                equity_risk_premium_source
+                or "explicit.model_build_context"
+            )
 
     stored_beta_floor = stored_inputs.get("beta_floor")
     beta_floor_value = stored_beta_floor.value_decimal if stored_beta_floor is not None else None
@@ -404,6 +445,35 @@ def populate_valuation_inputs(
         ):
             populated.add(field_name)
             sources[field_name] = stored.source or f"ticker_overrides.valuation.{field_name}"
+
+    defaulted_terminal_item_ids: list[str] = []
+    for item_id, default_value in valuation_terminal_defaults.items():
+        if valuation_input_has_value(model, item_id):
+            continue
+        if set_valuation_input_value(
+            model,
+            item_id,
+            float(default_value),
+            projection_periods=projection_periods,
+            provenance=value_provenance.input,
+        ):
+            defaulted_terminal_item_ids.append(item_id)
+            field_name = valuation_terminal_default_fields.get(item_id)
+            if field_name is not None:
+                populated.add(field_name)
+                sources.setdefault(field_name, _VALUATION_TERMINAL_DEFAULT_SOURCE)
+    if defaulted_terminal_item_ids:
+        flags.append(
+            {
+                "code": "terminal_assumptions_defaulted",
+                "severity": "warning",
+                "message": (
+                    "Terminal growth / exit multiple inputs were not fully authored; "
+                    "seeded template defaults (base g=3.0%, exit 18x). DCF terminal "
+                    "value may use defaults, not company-specific inputs."
+                ),
+            }
+        )
 
     missing = [field for field in valuation_required_inputs if field not in populated]
     if any(field in missing for field in ("stock_price", "raw_beta", "adjusted_beta")):

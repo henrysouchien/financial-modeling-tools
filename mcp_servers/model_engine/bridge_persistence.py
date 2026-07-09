@@ -7,6 +7,7 @@ import uuid
 
 from schema.overrides_projections import ProjectionEntry
 from schema.scenario_bridge import BridgeWarning, factor_values_by_period
+from schema.scenario_ordering import scenario_ordering_issues
 
 from .bridge import empty_bridge_projection_persistence
 
@@ -90,30 +91,15 @@ def bridge_scenario_ordering_issues(
   bull_values: dict[str, float],
   base_values: dict[str, float],
   bear_values: dict[str, float],
+  strict_through_period: int | None = None,
 ) -> list[str]:
-  issues: list[str] = []
-  for period in sorted(set(bull_values) & set(bear_values)):
-    bull = float(bull_values[period])
-    bear = float(bear_values[period])
-    base = base_values.get(period)
-    if base is None:
-      issues.append(f"{period}:bull={bull:g},base=missing,bear={bear:g},expected=base_value_present")
-      continue
-    base = float(base)
-    detail = f"{period}:bull={bull:g},base={base:g},bear={bear:g}"
-    if abs(bull - bear) <= _SCENARIO_ORDERING_EPS:
-      issues.append(f"{detail},expected=bull/base/bear_distinct")
-    elif bull > bear:
-      if bull <= base + _SCENARIO_ORDERING_EPS:
-        issues.append(f"{detail},expected=bull>base")
-      if bear >= base - _SCENARIO_ORDERING_EPS:
-        issues.append(f"{detail},expected=bear<base")
-    else:
-      if bull >= base - _SCENARIO_ORDERING_EPS:
-        issues.append(f"{detail},expected=bull<base")
-      if bear <= base + _SCENARIO_ORDERING_EPS:
-        issues.append(f"{detail},expected=bear>base")
-  return issues
+  return scenario_ordering_issues(
+    bull_values=bull_values,
+    base_values=base_values,
+    bear_values=bear_values,
+    strict_through_period=strict_through_period,
+    eps=_SCENARIO_ORDERING_EPS,
+  )
 
 
 def bridge_source_id_slug(value: str) -> str:
@@ -333,6 +319,7 @@ def bridge_projection_persistence(
   skill_run_id: str | None,
   model_build_id: str | None,
   model_override_fn: Callable[..., dict],
+  strict_through_period: int | None = None,
 ) -> dict:
   persistence = empty_bridge_projection_persistence()
   failure_details: list[dict] = []
@@ -411,6 +398,7 @@ def bridge_projection_persistence(
         bull_values=bull_values,
         base_values=existing_base_values,
         bear_values=bear_values,
+        strict_through_period=strict_through_period,
       )
       if ordering_issues:
         persistence["failures"] += 1

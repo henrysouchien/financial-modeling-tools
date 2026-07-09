@@ -20,7 +20,7 @@ from .business_model_compiler_nodes import (
 from .business_model_compiler_plans import _SegmentCompilePlan, _reconcile_segments
 from .driver_resolver import resolve_driver_key
 from .model_build_context import ModelBuildContext, SegmentProfileSnapshot
-from .models import FinancialModel, FormulaSpec, ItemType, LineItem, LineItemRef
+from .models import FinancialModel, FormulaSpec, ItemType, LineItem, LineItemRef, ModelScale, Unit
 from .segments import (
     SegmentInfo as SegmentInfo,
     SegmentProfile,
@@ -172,7 +172,14 @@ def compile_business_model(
             if plan.segment_index == 1
             else None
         )
-        direct_revenue_growth_node_ids = _direct_consolidation_growth_node_ids(plan.segment)
+        direct_consolidation_node_ids = _driver_expr_node_refs(
+            plan.segment.revenue_model.consolidation_formula
+        )
+        direct_revenue_growth_node_ids = (
+            _direct_consolidation_growth_node_ids(plan.segment)
+            if len(direct_consolidation_node_ids) == 1
+            else set()
+        )
         current_row = _materialize_segment_tree(
             segment=plan.segment,
             node_lookup=node_lookup,
@@ -529,6 +536,19 @@ def _register_driver_assumption_plan_keys(
             registry,
             f"{entry.segment_id}.{entry.driver_node_id}",
         )
+        if primary_item_id is None and entry.existing_driver_key:
+            # Consolidated-opex drivers (and any entry whose namespaced
+            # `{segment_id}.{driver_node_id}` identity has no independent
+            # resolution path) bind to their declared `existing_driver_key`.
+            # Falling back to it lets the alias loop below register the
+            # `consolidated.<node>` / `bm.consolidated.<node>` forms the
+            # model-engine looks drivers up by. Conservative: only fires when
+            # the declared binding itself resolves, so a genuinely-unmapped
+            # driver still leaves the namespaced key unregistered (fails loud).
+            primary_item_id = _resolve_driver_plan_alias_item_id(
+                registry,
+                entry.existing_driver_key,
+            )
         if primary_item_id is not None:
             registry.driver_keys.setdefault(entry.driver_key, primary_item_id)
         for alias in entry.aliases:
@@ -676,6 +696,7 @@ def _materialize_node(
                 label=node.label,
                 row=current_row,
                 unit=node.unit,
+                model_scale=_node_model_scale(node),
                 item_type=ItemType.input,
                 historical=None,
                 projected=None,
@@ -690,7 +711,10 @@ def _materialize_node(
             raise BusinessModelCompileError(f"growth node {registry_key!r} must compile to assumption_row")
 
         rate_id = f"{item_id}__{expr.params.rate_key}"
-        direct_revenue_growth = node.id in direct_revenue_growth_node_ids
+        direct_revenue_growth = (
+            node.id in direct_revenue_growth_node_ids
+            and len(direct_revenue_growth_node_ids) == 1
+        )
         historical = (
             _ref_formula(segment_revenue_fm_id)
             if direct_revenue_growth and not has_segment_revenue_observations
@@ -703,6 +727,7 @@ def _materialize_node(
                 label=node.label,
                 row=current_row,
                 unit=node.unit,
+                model_scale=_node_model_scale(node),
                 item_type=ItemType.input,
                 historical=historical,
                 projected=_growth_formula(item_id, rate_id),
@@ -716,6 +741,7 @@ def _materialize_node(
                 label=" y/y % chg.",
                 row=current_row + 1,
                 unit=prototypes["rate_row"].unit,
+                model_scale=None,
                 item_type=ItemType.input,
                 historical=None,
                 projected=(
@@ -747,6 +773,7 @@ def _materialize_node(
                 label=node.label,
                 row=current_row,
                 unit=node.unit,
+                model_scale=_node_model_scale(node),
                 item_type=ItemType.derived,
                 historical=formula,
                 projected=formula,
@@ -762,6 +789,7 @@ def _materialize_node(
             label=node.label,
             row=current_row,
             unit=node.unit,
+            model_scale=_node_model_scale(node),
             item_type=ItemType.derived,
             historical=None,
             projected=formula,
@@ -778,30 +806,41 @@ def _node_item(
     label: str,
     row: int,
     unit: Any,
+    model_scale: ModelScale | None,
     item_type: ItemType,
     historical: FormulaSpec | None,
     projected: FormulaSpec | None,
     formula_periods: list[int] | None,
 ) -> LineItem:
-    return prototype.model_copy(
-        deep=True,
-        update={
-            "id": item_id,
-            "label": label,
-            "row": row,
-            "unit": unit,
-            "item_type": item_type,
-            "historical": historical,
-            "projected": projected,
-            "formula_periods": formula_periods,
-            "values": None,
-            "overrides": None,
-            "template_token": None,
-            "build_notes": None,
-            "repeat_group_id": None,
-            "repeat_group_role": None,
-        },
-    )
+    updates: dict[str, Any] = {
+        "id": item_id,
+        "label": label,
+        "row": row,
+        "unit": unit,
+        "item_type": item_type,
+        "historical": historical,
+        "projected": projected,
+        "formula_periods": formula_periods,
+        "values": None,
+        "overrides": None,
+        "template_token": None,
+        "build_notes": None,
+        "repeat_group_id": None,
+        "repeat_group_role": None,
+    }
+    if model_scale is not None:
+        updates["model_scale"] = model_scale
+    return prototype.model_copy(deep=True, update=updates)
+
+
+def _node_model_scale(node: DriverNode) -> ModelScale:
+    if node.model_scale is not None:
+        return node.model_scale
+    if node.unit is not Unit.dollars:
+        return "units"
+    if node.driver is not None and node.driver.type == "external" and set(node.factors) == {"price"}:
+        return "units"
+    return "millions"
 
 
 def _scenario_label(segment_name: str) -> str:

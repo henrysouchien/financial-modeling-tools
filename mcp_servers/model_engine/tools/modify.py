@@ -84,15 +84,14 @@ def build_model_modify_tool_functions(
     force_overwrite: bool = False,
     best_effort: bool = False,
     historical_cutoff_year: int | None = None,
+    model_handle_token: dict[str, Any] | None = None,
   ) -> dict:
     """Apply persistent modifications to a built financial model.
 
-    Discovery: file_path must be a model_build output whose model cache is warm in
-    this session. Use model_find/model_values/model_drivers to identify item ids
-    before constructing operations.
-
-    Requires model_build to have run for this file_path in the current session
-    (model cache must be warm). Cache miss returns structured error.
+    Discovery: use model_find/model_values/model_drivers to identify item ids
+    before constructing operations. Cold-but-loadable models auto-load from the
+    sidecar, disk, or workbook; only genuinely-unloadable models return a
+    structured cache_miss error.
 
     Operations are applied in order on a deep-copy snapshot. All-or-nothing by
     default; best_effort=True continues past per-op errors (still deep-copies).
@@ -103,6 +102,10 @@ def build_model_modify_tool_functions(
     target='both' does both.
 
     force_overwrite=True bypasses the sha256 stale-file check.
+    If model_handle_token is available from a prior model_summarize,
+    model_values, model_scenario, or model_build response, pass it unchanged;
+    the token supplies the authoritative workbook path and cutoff after
+    validation. Do not hand-write token fields.
 
     Persistence caveat: edits to bm.* rows or custom_concept target_item_ids
     persist in the rendered workbook but are clobbered by the next model_build
@@ -122,6 +125,7 @@ def build_model_modify_tool_functions(
       force_overwrite=force_overwrite,
       best_effort=best_effort,
       historical_cutoff_year=historical_cutoff_year,
+      model_handle_token=model_handle_token,
     )
 
   return ModelModifyToolFunctions(model_modify=model_modify)

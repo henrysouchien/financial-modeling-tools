@@ -189,7 +189,9 @@ class ViolationDetail(_RecommendationsModel):
     category: str
     description: str
     current_value: float
-    limit: float
+    # nullable: no configured limit — e.g. info-severity observations or
+    # limits_not_configured portfolios (bg_606: required-float forced agents to fabricate limits)
+    limit: float | None = None
     driver_positions: list[str] = Field(default_factory=list)
 
 

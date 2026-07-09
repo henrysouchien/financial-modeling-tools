@@ -8,6 +8,9 @@ import re
 import statistics
 from typing import Any
 
+from memory.ticker_utils import normalize_ticker
+from api.research.source_html import provider_symbol, provider_symbols_csv
+
 try:
   import fmp
 except ModuleNotFoundError:  # pragma: no cover - depends on optional package env
@@ -17,12 +20,20 @@ except ModuleNotFoundError:  # pragma: no cover - depends on optional package en
 FMP_PRICE_FIELDS = ("price", "currentPrice", "previousClose")
 FMP_EPS_AVG_FIELDS = ("epsAvg", "epsavg", "estimatedEpsAvg")
 FMP_PE_FIELDS = ("peRatio", "peRatioTTM", "priceEarningsRatio", "priceToEarningsRatio")
-FMP_PEG_FIELDS = ("pegRatio", "pegRatioTTM")
+FMP_PEG_FIELDS = (
+  "pegRatio",
+  "pegRatioTTM",
+  "priceToEarningsGrowthRatio",
+  "priceToEarningsGrowthRatioTTM",
+)
 FMP_EV_EBITDA_FIELDS = (
   "enterpriseValueOverEBITDA",
   "enterpriseValueOverEbitda",
   "evToEbitda",
   "evEbitda",
+  "enterpriseValueMultiple",
+  "enterpriseValueMultipleTTM",
+  "evToEBITDA",
 )
 
 
@@ -32,7 +43,7 @@ def comps_build_recovery() -> dict[str, list[str]]:
       "Pass the v1.2 industry_peer_comparison payload with a non-empty sections list.",
       (
         "If industry_peer_comparison returned only peers, enable "
-        "INDUSTRY_ANALYSIS_V1_2_ENABLED=true in the portfolio-mcp runtime and rerun it."
+        "INDUSTRY_ANALYSIS_V1_2_ENABLED=true in the portfolio-reads-mcp runtime and rerun it."
       ),
     ]
   }
@@ -147,10 +158,30 @@ def quote_prices_by_symbol(records: list[dict[str, Any]]) -> dict[str, float]:
   return prices
 
 
+def _collapsed_quote_prices_by_symbol(records: list[dict[str, Any]]) -> dict[str, float]:
+  return {
+    normalize_ticker(symbol): price
+    for symbol, price in quote_prices_by_symbol(records).items()
+  }
+
+
 def extract_peer_symbols(records: list[dict[str, Any]], ticker: str, *, max_peers: int) -> list[str]:
   ticker_upper = ticker.upper()
   peers: list[str] = []
+
+  def _add(candidate: Any) -> bool:
+    """Append a normalized peer; return True when max_peers is reached."""
+    if not isinstance(candidate, str):
+      return False
+    peer = candidate.strip().upper()
+    if not peer or peer == ticker_upper or peer in peers:
+      return False
+    peers.append(peer)
+    return len(peers) >= max_peers
+
   for record in records:
+    # Legacy schema: a single record carrying an array of peer symbols.
+    matched_array = False
     for field in ("peersList", "peerList", "peers", "symbols"):
       raw = record.get(field)
       if raw is None:
@@ -167,15 +198,13 @@ def extract_peer_symbols(records: list[dict[str, Any]], ticker: str, *, max_peer
           values = stripped.split(",")
       if not isinstance(values, list):
         continue
+      matched_array = True
       for value in values:
-        if not isinstance(value, str):
-          continue
-        peer = value.strip().upper()
-        if not peer or peer == ticker_upper or peer in peers:
-          continue
-        peers.append(peer)
-        if len(peers) >= max_peers:
+        if _add(value):
           return peers
+    # Current FMP stock_peers schema: one row per peer with a flat `symbol` field.
+    if not matched_array and _add(record.get("symbol")):
+      return peers
   return peers
 
 
@@ -247,6 +276,7 @@ def valuation_comp_entry_from_fmp(
   estimate_records: list[dict[str, Any]],
   key_metric_records: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
+  # Public keyword kept for compatibility; records now carry ratios trailing multiples.
   eps_avg = fy1_eps_avg(estimate_records)
   forward_pe = price / eps_avg if price is not None and eps_avg else None
   trailing_low, trailing_median, trailing_high = trailing_pe_range(key_metric_records)
@@ -288,35 +318,35 @@ def build_valuation_comps_fallback(
 
   ticker_upper = ticker.upper()
   fetcher = fetcher or default_fmp_fetch()
-  peer_records = fetch_fmp_records("stock_peers", fetcher=fetcher, symbol=ticker_upper)
+  peer_records = fetch_fmp_records("stock_peers", fetcher=fetcher, symbol=provider_symbol(ticker_upper))
   peers = extract_peer_symbols(peer_records, ticker_upper, max_peers=max_peers)
   symbols = [ticker_upper, *peers]
-  quote_records = fetch_fmp_records("quote", fetcher=fetcher, symbol=",".join(symbols))
-  prices = quote_prices_by_symbol(quote_records)
+  quote_records = fetch_fmp_records("quote", fetcher=fetcher, symbol=provider_symbols_csv(",".join(symbols)))
+  prices = _collapsed_quote_prices_by_symbol(quote_records)
   if ticker_upper not in prices:
-    prices.update(quote_prices_by_symbol(financials_records(financials, "quote")))
+    prices.update(_collapsed_quote_prices_by_symbol(financials_records(financials, "quote")))
 
   entries: dict[str, dict[str, Any]] = {}
   for symbol in symbols:
     estimates = fetch_fmp_records(
       "analyst_estimates",
       fetcher=fetcher,
-      symbol=symbol,
+      symbol=provider_symbol(symbol),
       period="annual",
       limit=4,
     )
-    key_metrics = fetch_fmp_records(
-      "key_metrics",
+    ratios = fetch_fmp_records(
+      "ratios",
       fetcher=fetcher,
-      symbol=symbol,
+      symbol=provider_symbol(symbol),
       period="annual",
       limit=10,
     )
     entry = valuation_comp_entry_from_fmp(
       symbol,
-      price=prices.get(symbol),
+      price=prices.get(normalize_ticker(symbol)),
       estimate_records=estimates,
-      key_metric_records=key_metrics,
+      key_metric_records=ratios,
     )
     if entry is not None:
       entries[symbol] = entry

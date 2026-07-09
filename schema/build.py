@@ -21,6 +21,7 @@ from .build_diagnostics import (
     _write_diagnostic_log,
     run_build_diagnostic,
 )
+from .build_diagnostic_types import SourceArbitrationCheck
 from .build_formula_refs import (
     _all_refs_same_period as _all_refs_same_period,
     _available_periods as _available_periods,
@@ -94,6 +95,13 @@ from .build_company_info import (
     update_company_info as update_company_info,
 )
 from .build_model_items import _iter_items as _iter_items
+from .build_source_arbitration import (
+    SourceArbitrationMode,
+    validate_source_arbitration_mode,
+)
+from .build_source_arbitration_application import (
+    apply_source_arbitration as apply_source_arbitration,
+)
 from .build_value_writers import (
     _set_constant_override as _set_constant_override,
     _set_imported_value as _set_imported_value,
@@ -126,6 +134,8 @@ from .build_valuation_inputs import (
     _VALUATION_ECONOMIC_INPUTS as _VALUATION_ECONOMIC_INPUTS,
     _VALUATION_PLACEHOLDER_VALUES as _VALUATION_PLACEHOLDER_VALUES,
     _VALUATION_REQUIRED_INPUTS as _VALUATION_REQUIRED_INPUTS,
+    _VALUATION_TERMINAL_DEFAULT_FIELDS as _VALUATION_TERMINAL_DEFAULT_FIELDS,
+    _VALUATION_TERMINAL_DEFAULTS as _VALUATION_TERMINAL_DEFAULTS,
     _VALUATION_TERMINAL_INPUTS as _VALUATION_TERMINAL_INPUTS,
     _VALUATION_TERMINAL_INPUT_PREFIXES as _VALUATION_TERMINAL_INPUT_PREFIXES,
     _adjust_raw_beta as _adjust_raw_beta,
@@ -135,6 +145,7 @@ from .build_valuation_inputs import (
     _read_value as _read_value,
     _set_valuation_input_value as _set_valuation_input_value,
     _stored_valuation_inputs as _stored_valuation_inputs,
+    _valuation_input_has_value as _valuation_input_has_value,
     populate_valuation_inputs as populate_valuation_inputs,
 )
 from .valuation_schema_invariant import assert_valuation_template_schema
@@ -144,6 +155,9 @@ from .build_validation_inputs import (
     _fetch_validation_fmp_concept_buffer as _fetch_validation_fmp_concept_buffer,
     _make_validation_input as _make_validation_input,
     _validation_opt_in_concepts as _validation_opt_in_concepts,
+)
+from .build_source_arbitration_inputs import (
+    _make_source_arbitration_input as _make_source_arbitration_input,
 )
 from .build_types import (
     BuildResult as BuildResult,
@@ -252,6 +266,11 @@ from .build_reported_periods import (
     _reported_period_end_value as _reported_period_end_value,
 )
 from .build_non_gaap_addbacks import (
+    _FM_ACQUIRED_INTANGIBLE_AMORTIZATION_ID as _FM_ACQUIRED_INTANGIBLE_AMORTIZATION_ID,
+    _INTANGIBLE_ADDITIONS_ID as _INTANGIBLE_ADDITIONS_ID,
+    _INTANGIBLE_ASSETS_NET_ID as _INTANGIBLE_ASSETS_NET_ID,
+    _PROJECTED_ACQUIRED_INTANGIBLE_AMORTIZATION_ID as _PROJECTED_ACQUIRED_INTANGIBLE_AMORTIZATION_ID,
+    _PROJECTED_ACQUIRED_INTANGIBLE_EXPENSE_ID as _PROJECTED_ACQUIRED_INTANGIBLE_EXPENSE_ID,
     _PROJECTED_DA_BASE_ID as _PROJECTED_DA_BASE_ID,
     _PROJECTED_DA_RATE_ID as _PROJECTED_DA_RATE_ID,
     _PROJECTED_DA_TOTAL_ID as _PROJECTED_DA_TOTAL_ID,
@@ -261,13 +280,34 @@ from .build_non_gaap_addbacks import (
     _PROJECTED_SBC_RATE_IDS as _PROJECTED_SBC_RATE_IDS,
     _PROJECTED_SBC_TOTAL_ID as _PROJECTED_SBC_TOTAL_ID,
     _REVENUE_ITEM_ID as _REVENUE_ITEM_ID,
+    _TAX_ACQUIRED_INTANGIBLE_AMORTIZATION_ID as _TAX_ACQUIRED_INTANGIBLE_AMORTIZATION_ID,
+    _clear_fallback_overrides as _clear_fallback_overrides,
+    _drop_protected_periods as _drop_protected_periods,
     _coerce_optional_float as _coerce_optional_float,
     _computed_model_values as _computed_model_values,
     _computed_value as _computed_value,
+    _latest_intangible_runoff_ratio_from_computed_values as _latest_intangible_runoff_ratio_from_computed_values,
+    _latest_positive_balance_from_computed_values as _latest_positive_balance_from_computed_values,
     _latest_ratio_from_computed_values as _latest_ratio_from_computed_values,
     _missing_projection_periods as _missing_projection_periods,
+    _project_acquired_intangible_amortization_values as _project_acquired_intangible_amortization_values,
     _seed_projected_non_gaap_addbacks as _seed_projected_non_gaap_addbacks,
     _set_projection_input_values as _set_projection_input_values,
+    _set_projection_revenue_driver_values as _set_projection_revenue_driver_values,
+    _stale_fallback_periods as _stale_fallback_periods,
+)
+from .build_working_capital_policy import (
+    _INVENTORY_ASSUMPTION_ITEM_ID as _INVENTORY_ASSUMPTION_ITEM_ID,
+    _INVENTORY_BALANCE_ITEM_ID as _INVENTORY_BALANCE_ITEM_ID,
+    _INVENTORY_CHANGE_ITEM_ID as _INVENTORY_CHANGE_ITEM_ID,
+    _INVENTORY_DRIVER_ITEM_ID as _INVENTORY_DRIVER_ITEM_ID,
+    _INVENTORY_MATERIALITY_REVENUE_RATIO as _INVENTORY_MATERIALITY_REVENUE_RATIO,
+    _INVENTORY_POLICY_NOTE as _INVENTORY_POLICY_NOTE,
+    _INVENTORY_REVENUE_ITEM_ID as _INVENTORY_REVENUE_ITEM_ID,
+    _apply_projected_inventory_policy as _apply_projected_inventory_policy,
+    _extend_projected_formula_periods as _extend_projected_formula_periods,
+    _inventory_is_material as _inventory_is_material,
+    _latest_positive_computed_value as _latest_positive_computed_value,
 )
 from .build_scenarios import (
     _SCENARIO_CASE_PATTERNS as _SCENARIO_CASE_PATTERNS,
@@ -429,6 +469,7 @@ from .source_values import (
     normalize_edgar_source_value as normalize_edgar_source_value,
 )
 from .registry_cache import EquivalenceGroup, get_registry_cache as get_registry_cache  # noqa: F401 - compatibility facade
+from .source_arbitration_input import SourceArbitrationDiagnosticInput
 from .templates import load_data_taxonomy, load_sia_generic_template
 from .validation_input import ValidationInput
 
@@ -485,6 +526,99 @@ def load_template() -> FinancialModel:
     return model
 
 
+def _source_arbitration_final_source_map(
+    source_arbitration: SourceArbitrationCheck | None,
+) -> dict[str, dict[int, str]]:
+    if source_arbitration is None:
+        return {}
+    return {
+        str(concept_id): {int(year): str(source) for year, source in by_year.items()}
+        for concept_id, by_year in (
+            source_arbitration.final_source_by_concept_year.items()
+        )
+    }
+
+
+def _model_quality_blocked_message(readiness: ModelQualityReadiness) -> str:
+    blocked_domains = sorted(
+        domain
+        for domain, domain_readiness in readiness.domains.items()
+        if domain_readiness.status == "blocked"
+    )
+    blocking_issue_codes = sorted(
+        {issue.code for issue in readiness.issues if issue.severity == "blocking"}
+    )
+    domains_text = ", ".join(blocked_domains) or "none"
+    issues_text = ", ".join(blocking_issue_codes) or "none"
+    return (
+        "model_quality_readiness blocked; "
+        f"blocked_domains={domains_text}; blocking_issues={issues_text}"
+    )
+
+
+_MODEL_QUALITY_HARD_BLOCK_ISSUE_CODES = frozenset(
+    {
+        "capital_structure_debt_magnitude_blocking",
+        "capital_structure_long_term_debt_negative",
+        "capital_structure_total_capital_invalid",
+        "capital_structure_value_invalid",
+        "capital_structure_wacc_out_of_band",
+        "capital_structure_weight_out_of_bounds",
+    }
+)
+
+
+class ModelQualityReadinessBlockedError(RuntimeError):
+    """Raised when build output fails the model-quality door."""
+
+    error_code = "model_quality_readiness_blocked"
+
+    def __init__(
+        self,
+        readiness: ModelQualityReadiness,
+        *,
+        projection_readiness: ModelProjectionReadiness | None = None,
+    ) -> None:
+        self.model_quality_readiness = readiness
+        self.projection_readiness = projection_readiness
+        super().__init__(_model_quality_blocked_message(readiness))
+
+
+def _raise_if_model_quality_blocked(
+    readiness: ModelQualityReadiness,
+    *,
+    projection_readiness: ModelProjectionReadiness | None = None,
+    enforce_status_block: bool = False,
+) -> None:
+    if enforce_status_block and (
+        readiness.status == "blocked" or any(issue.severity == "blocking" for issue in readiness.issues)
+    ):
+        raise ModelQualityReadinessBlockedError(
+            readiness,
+            projection_readiness=projection_readiness,
+        )
+    if any(
+        issue.severity == "blocking"
+        and issue.code in _MODEL_QUALITY_HARD_BLOCK_ISSUE_CODES
+        for issue in readiness.issues
+    ):
+        raise ModelQualityReadinessBlockedError(
+            readiness,
+            projection_readiness=projection_readiness,
+        )
+
+
+def _computed_base_results(model: FinancialModel) -> dict[str, dict[int, float]]:
+    graph = DependencyGraph()
+    graph.build(model)
+    derived_ids = {
+        item.id
+        for item in model._index.values()
+        if item.item_type == ItemType.derived
+    }
+    return graph.compute({}, recompute=derived_ids)
+
+
 def build_model(
     ticker: str,
     company_name: str,
@@ -508,13 +642,19 @@ def build_model(
     historical_sources: HistoricalSources | None = None,
     presentation_tree: PresentationTree | None = None,
     validation_mode: bool = False,
+    source_arbitration_mode: SourceArbitrationMode = "off",
     run_diagnostics: bool = False,
     equity_risk_premium: float | None = None,
+    equity_risk_premium_source: str | None = None,
+    equity_risk_premium_rationale: str | None = None,
+    equity_risk_premium_as_of: str | None = None,
     valuation_comps: ValuationCompsPayload | dict[str, Any] | None = None,
     overrides_dir: Path | None = None,
+    enforce_model_quality_status_block: bool = False,
 ) -> BuildResult:
     """Build a populated model and optional workbook from the SIA template."""
 
+    source_arbitration_mode = validate_source_arbitration_mode(source_arbitration_mode)
     model = load_template()
     source = str(source).lower()
     profile: Optional[SegmentProfile] = None
@@ -722,6 +862,24 @@ def build_model(
     if compiled_registry is not None and mbc_drivers:
         _apply_mbc_seeds(model, mbc_drivers, compiled_registry)
     historical_periods = [int(period) for period in model.time_structure.historical_periods]
+    source_arbitration_input: SourceArbitrationDiagnosticInput | None = None
+    source_arbitration_check: SourceArbitrationCheck | None = None
+    if source_arbitration_mode != "off":
+        source_arbitration_input = _make_source_arbitration_input(
+            ticker=ticker,
+            taxonomy=taxonomy,
+            historical_periods=historical_periods,
+            fmp_data=fmp_data,
+            edgar_fetcher=edgar_fetcher,
+            stats=stats,
+            mode=source_arbitration_mode,
+        )
+        if source_arbitration_mode == "apply":
+            source_arbitration_check = apply_source_arbitration(
+                model,
+                source_arbitration_input,
+                taxonomy=taxonomy,
+            )
     if formula_first and presentation_tree is not None:
         _apply_presentation_catch_all_residuals(
             model,
@@ -755,6 +913,9 @@ def build_model(
         model,
         fmp_data,
         equity_risk_premium=equity_risk_premium,
+        equity_risk_premium_source=equity_risk_premium_source,
+        equity_risk_premium_rationale=equity_risk_premium_rationale,
+        equity_risk_premium_as_of=equity_risk_premium_as_of,
         valuation=ticker_overrides.valuation if ticker_overrides is not None else None,
     )
     populate_valuation_comps(model, valuation_comps)
@@ -787,21 +948,45 @@ def build_model(
             skipped.get("item_id"),
             skipped.get("reason"),
         )
+    inventory_policy_result = _apply_projected_inventory_policy(model)
+    for seeded_item_id in inventory_policy_result.get("seeded", []):
+        logging.info("Seeded projected inventory policy fallback for %s", seeded_item_id)
+    for extended_item_id in inventory_policy_result.get("extended", []):
+        logging.info("Extended projected inventory policy horizon for %s", extended_item_id)
+    for skipped in inventory_policy_result.get("skipped", []):
+        logging.warning(
+            "Skipped projected inventory policy repair for %s: %s",
+            skipped.get("item_id"),
+            skipped.get("reason"),
+        )
     _populate_scenario_eps(model, compute_scenario_eps(model))
     _populate_scenario_inputs(model)
     model.build_index()
+    computed_values = _computed_base_results(model)
     projection_readiness = compute_model_projection_readiness(
         model,
         compiled_registry=compiled_registry,
         segment_profile=profile if compiled_registry is None else None,
         seed_projections=seed_projections_result,
+        computed_values=computed_values,
+        guard_config=ticker_overrides.guards if ticker_overrides is not None else None,
     )
-    scenario_output_readiness = compute_model_scenario_output_readiness(model)
+    scenario_output_readiness = compute_model_scenario_output_readiness(
+        model,
+        computed_values=computed_values,
+    )
     scenario_bridge_readiness = compute_model_scenario_bridge_readiness(model)
     model_quality_readiness = compute_model_quality_readiness(
         model,
+        computed_values=computed_values,
         valuation_input_readiness=valuation_input_readiness,
         segment_profile=profile,
+        guard_config=ticker_overrides.guards if ticker_overrides is not None else None,
+    )
+    _raise_if_model_quality_blocked(
+        model_quality_readiness,
+        projection_readiness=projection_readiness,
+        enforce_status_block=enforce_model_quality_status_block,
     )
     diagnostic: DiagnosticReport | None = None
     validation_input: ValidationInput | None = None
@@ -817,6 +1002,7 @@ def build_model(
     should_run_diagnostics = (
         source == "edgar"
         or validation_mode
+        or source_arbitration_mode != "off"
         or run_diagnostics
         or presentation_tree is not None
     )
@@ -831,6 +1017,8 @@ def build_model(
                 derivable_items=derivable_items,
                 presentation_tree=presentation_tree,
                 validation_input=validation_input,
+                source_arbitration_input=source_arbitration_input,
+                source_arbitration_check=source_arbitration_check,
             )
             _write_diagnostic_log(diagnostic)
         except Exception:
@@ -851,6 +1039,12 @@ def build_model(
     if output_path:
         write_xlsx(plan, output_path)
 
+    source_arbitration_result = (
+        diagnostic.source_arbitration
+        if diagnostic is not None
+        else source_arbitration_check or SourceArbitrationCheck()
+    )
+
     return BuildResult(
         model=model,
         render_plan=plan,
@@ -870,6 +1064,10 @@ def build_model(
         scenario_bridge_readiness=scenario_bridge_readiness,
         model_quality_readiness=model_quality_readiness,
         valuation_input_readiness=valuation_input_readiness,
+        source_arbitration=source_arbitration_result,
+        source_arbitration_final_source_by_concept_year=(
+            _source_arbitration_final_source_map(source_arbitration_result)
+        ),
     )
 
 
@@ -877,6 +1075,7 @@ __all__ = [
     "BuildResult",
     "EdgarFetcher",
     "EdgarWarmResult",
+    "ModelQualityReadinessBlockedError",
     "PopulateStats",
     "ValuationCompEntry",
     "ValuationCompsPayload",

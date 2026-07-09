@@ -9,6 +9,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from api.research.source_html import provider_symbol
+
 
 def apply_override_directory_env(
   *,
@@ -117,7 +119,7 @@ def make_edgar_fetcher(
     axis_key: str | None = None,
   ) -> dict:
     params = {
-      "ticker": ticker,
+      "ticker": provider_symbol(ticker),
       "metric_name": metric_name,
       "end_year": int(end_year),
       "end_quarter": 4,

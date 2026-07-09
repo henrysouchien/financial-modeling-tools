@@ -7,6 +7,7 @@
     "fmp_field": "revenue",
     "fmp_endpoint": "income_statement",
     "preferred_source": "edgar",
+    "source_arbitration_policy": "edgar_authoritative",
     "validation_tolerance_pct": 0.05,
     "notes": "Use EDGAR for segment detail; FMP is the clean consolidated fallback."
   },

@@ -30,7 +30,7 @@ _EXCHANGE_SUFFIXES = (
     ".L",
     ".T",
 )
-_SHARE_CLASS_SUFFIXES = (".A", ".B")
+_SHARE_CLASS_SUFFIXES = (".A", ".B", "-A", "-B")
 _LEVEL_VALUES = frozenset({"low", "medium", "high"})
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VALUATION_METHODS = frozenset({"dcf", "multiples", "sum_of_parts", "hybrid", "relative"})
@@ -90,7 +90,7 @@ def _normalize_ticker(value: object) -> str:
             raw = raw[: -len(suffix)]
             break
     for suffix in _SHARE_CLASS_SUFFIXES:
-        if raw.endswith(suffix):
+        if raw.endswith(suffix) and len(raw) > len(suffix):
             raw = raw[: -len(suffix)] + suffix[-1]
             break
     if not _TICKER_RE.match(raw):

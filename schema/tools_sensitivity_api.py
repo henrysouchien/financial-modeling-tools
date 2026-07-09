@@ -6,6 +6,7 @@ import sys
 from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from .analysis import _default_period, _downstream_nodes, _upstream_nodes
+from .handle import load_handle
 from .models import FinancialModel
 from .tools_items import (
     _ambiguous_labels,
@@ -40,21 +41,6 @@ def _parent_attr(name: str, default: Any) -> Any:
     return getattr(parent, name, default)
 
 
-def _load_via_parent(
-    file_path: str,
-    *,
-    model: Optional[FinancialModel] = None,
-    historical_cutoff_year: Optional[int] = None,
-) -> Any:
-    from .tools import load
-
-    return load(
-        file_path,
-        model=model,
-        historical_cutoff_year=historical_cutoff_year,
-    )
-
-
 def sensitivity(
     file_path: str,
     target_id: str,
@@ -71,7 +57,6 @@ def sensitivity(
     ] = None,
     recompute_policy: Literal["projection_safe", "legacy_global"] = "projection_safe",
 ) -> Dict:
-    load = _parent_attr("load", _load_via_parent)
     unknown_item_error = _parent_attr("_unknown_item_error", _unknown_item_error)
     projection_periods_fn = _parent_attr("_projection_periods", _projection_periods)
     default_period = _parent_attr("_default_period", _default_period)
@@ -108,15 +93,15 @@ def sensitivity(
         _dedupe_sensitivity_impacts,
     )
 
-    bundle = load(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
-    if target_id not in bundle.model._index:
-        raise unknown_item_error(bundle.model, target_id, "target_id")
+    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    if target_id not in handle.model._index:
+        raise unknown_item_error(handle.model, target_id, "target_id")
 
-    projection_periods = projection_periods_fn(bundle.model)
+    projection_periods = projection_periods_fn(handle.model)
     if not projection_periods:
-        projection_periods = [default_period(bundle.model)]
+        projection_periods = [default_period(handle.model)]
     target_period = projection_periods[-1]
-    base_target_value = bundle.base_results.get(target_id, {}).get(target_period)
+    base_target_value = handle.computed.get(target_id, {}).get(target_period)
 
     candidate_filter = resolve_candidate_filter(candidate_filter)
     explicit_candidate_ids = normalize_candidate_ids(candidate_ids)
@@ -126,14 +111,14 @@ def sensitivity(
         recompute_policy,
     )
     if recompute_policy == "legacy_global":
-        upstream = upstream_nodes(bundle.graph, target_id)
+        upstream = upstream_nodes(handle.graph, target_id)
     else:
-        upstream = bundle.graph.upstream_for_periods([target_id], projection_periods)
+        upstream = handle.graph.upstream_for_periods([target_id], projection_periods)
     upstream.discard(target_id)
-    filtered_upstream = filter_sensitivity_candidates(bundle.model, upstream, candidate_filter)
-    alias_group_by_id = build_ref_alias_groups(bundle.model)
-    item_locations = item_locations_fn(bundle.model)
-    ambiguous_labels = ambiguous_labels_fn(bundle.all_items)
+    filtered_upstream = filter_sensitivity_candidates(handle.model, upstream, candidate_filter)
+    alias_group_by_id = build_ref_alias_groups(handle.model)
+    item_locations = item_locations_fn(handle.model)
+    ambiguous_labels = ambiguous_labels_fn(handle.all_items)
     candidate_scope = (
         "explicit_workbook_ids"
         if explicit_candidate_ids is not None
@@ -157,7 +142,7 @@ def sensitivity(
         impact_per_unit: Optional[float] = None,
         impact_basis: Optional[str] = None,
     ) -> Dict[str, Any]:
-        item = bundle.model.get_item(candidate_id)
+        item = handle.model.get_item(candidate_id)
         context = item_locations.get(candidate_id)
         context_label = format_context_label(context)
         display_label = item.label
@@ -202,30 +187,30 @@ def sensitivity(
 
     if explicit_candidate_ids is not None:
         for candidate_id in explicit_candidate_ids:
-            if candidate_id not in bundle.model._index:
-                raise unknown_item_error(bundle.model, candidate_id, "candidate_id")
+            if candidate_id not in handle.model._index:
+                raise unknown_item_error(handle.model, candidate_id, "candidate_id")
         candidates = list(explicit_candidate_ids)
         precollapsed_aliases: Dict[str, List[str]] = {}
     else:
         candidates = sorted(filtered_upstream)
         candidates, precollapsed_aliases = collapse_alias_candidates(
             candidates,
-            bundle.model,
+            handle.model,
             alias_group_by_id,
         )
     candidate_count_total = len(explicit_candidate_ids) if explicit_candidate_ids is not None else len(candidates)
     selected_max_candidates = (
         None
         if explicit_candidate_ids is not None
-        else resolve_max_candidates(bundle.model, candidate_filter, max_candidates)
+        else resolve_max_candidates(handle.model, candidate_filter, max_candidates)
     )
     if selected_max_candidates is not None and len(candidates) > selected_max_candidates:
-        candidates = rank_candidates_for_sensitivity(candidates, bundle.model, bundle.graph, target_id)
+        candidates = rank_candidates_for_sensitivity(candidates, handle.model, handle.graph, target_id)
         candidates = candidates[:selected_max_candidates]
     candidate_count_evaluated = len(candidates)
 
     recompute_cache = (
-        {candidate_id: downstream_nodes(bundle.graph, candidate_id) for candidate_id in candidates}
+        {candidate_id: downstream_nodes(handle.graph, candidate_id) for candidate_id in candidates}
         if recompute_policy == "legacy_global"
         else {}
     )
@@ -248,7 +233,7 @@ def sensitivity(
             )
             continue
 
-        base_candidate_values = bundle.base_results.get(candidate_id, {})
+        base_candidate_values = handle.computed.get(candidate_id, {})
         bumped_values: Dict[int, float] = {}
         for period in projection_periods:
             base_val = base_candidate_values.get(period)
@@ -277,24 +262,24 @@ def sensitivity(
         active_periods = {period for period in projection_periods if period >= min(bumped_values)}
         if recompute_policy == "legacy_global":
             recompute_ids = recompute_cache[candidate_id]
-            promoted_projected = promote_projected_fallbacks(bundle.model, recompute_ids)
+            promoted_projected = promote_projected_fallbacks(handle.model, recompute_ids)
             compute_kwargs: Dict[str, Any] = {}
         else:
-            recompute_ids = bundle.graph.downstream_for_periods([candidate_id], active_periods)
+            recompute_ids = handle.graph.downstream_for_periods([candidate_id], active_periods)
             promoted_projected = {}
             compute_kwargs = {"propagate_roots": set()}
         try:
-            scenario_results = bundle.graph.compute(
+            scenario_results = handle.graph.compute(
                 scenario_inputs,
                 recompute=recompute_ids,
                 cycle_fallback_policy="auto_propagate",
                 periods=active_periods,
-                seed_results=bundle.base_results,
+                seed_results=handle.computed,
                 **compute_kwargs,
             )
         finally:
             for item_id, original_projected in promoted_projected.items():
-                bundle.model.get_item(item_id).projected = original_projected
+                handle.model.get_item(item_id).projected = original_projected
         scenario_target_value = scenario_results.get(target_id, {}).get(target_period)
 
         delta = None
@@ -355,7 +340,7 @@ def sensitivity(
         )
 
     if explicit_candidate_ids is None:
-        impacts = dedupe_sensitivity_impacts(impacts, bundle.model, alias_group_by_id)
+        impacts = dedupe_sensitivity_impacts(impacts, handle.model, alias_group_by_id)
         for row in impacts:
             aliases = set(row.get("alias_ids", []))
             aliases.update(precollapsed_aliases.get(row["id"], []))

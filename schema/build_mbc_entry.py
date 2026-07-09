@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from .build_source_arbitration import SourceArbitrationMode
+from .driver_resolver import load_scale_correction_rules
 from .model_build_context import Driver, HistoricalSources, ModelBuildContext, SegmentConfig
 from .models import (
     FinancialModel,
@@ -24,6 +28,10 @@ if TYPE_CHECKING:
     from .business_model_compiler import CompiledDriverRegistry
     from .build import BuildResult, ValuationCompsPayload
     from .segments import SegmentProfile
+
+
+_SCALE_CORRECTION_MIN_RATIO = 1_000.0
+_SCALE_CORRECTION_MIN_COMPARATOR_ABS = 1.0
 
 
 def _parent_attr(name: str, default: Any) -> Any:
@@ -89,8 +97,10 @@ def build_model_from_mbc(
     business_model: "BusinessModel | None" = None,
     valuation_comps: "ValuationCompsPayload | dict[str, Any] | None" = None,
     validation_mode: bool = False,
+    source_arbitration_mode: SourceArbitrationMode = "off",
     run_diagnostics: bool = False,
     overrides_dir: Path | None = None,
+    enforce_model_quality_status_block: bool = False,
 ) -> BuildResult:
     """Build a model using ModelBuildContext as the authoritative scalar input source."""
 
@@ -149,10 +159,15 @@ def build_model_from_mbc(
         mbc_drivers=mbc.drivers if business_model else None,
         historical_sources=historical_sources,
         validation_mode=validation_mode,
+        source_arbitration_mode=source_arbitration_mode,
         run_diagnostics=run_diagnostics,
         equity_risk_premium=mbc.valuation.inputs.equity_risk_premium,
+        equity_risk_premium_source=mbc.valuation.inputs.equity_risk_premium_source,
+        equity_risk_premium_rationale=mbc.valuation.inputs.equity_risk_premium_rationale,
+        equity_risk_premium_as_of=mbc.valuation.inputs.equity_risk_premium_as_of,
         valuation_comps=valuation_comps,
         overrides_dir=overrides_dir,
+        enforce_model_quality_status_block=enforce_model_quality_status_block,
     )
     result_model = getattr(result, "model", None)
     if isinstance(result_model, FinancialModel):
@@ -189,6 +204,7 @@ def _apply_mbc_seeds(
     value_cell_type = _parent_attr("ValueCell", ValueCell)
     value_provenance = _parent_attr("ValueProvenance", ValueProvenance)
     value_series_type = _parent_attr("ValueSeries", ValueSeries)
+    from .scenario_bridge import normalize_value_for_model
 
     historical_periods = (
         model.time_structure.historical_periods
@@ -231,12 +247,121 @@ def _apply_mbc_seeds(
         if has_formula and not is_bm_rate_row:
             requested = [period for period in requested if period in historical_set]
 
+        value_scale = getattr(driver, "value_scale", "model")
+        fields_set = (
+            getattr(driver, "model_fields_set", None)
+            or getattr(driver, "__fields_set__", set())
+            or set()
+        )
+        value_scale_field_present = "value_scale" in fields_set
+        value_scale_explicit = value_scale == "display" and value_scale_field_present
+        normalized_value = normalize_value_for_model(
+            model,
+            item_id,
+            driver.value,
+            value_scale=value_scale,
+            value_scale_explicit=value_scale_explicit,
+            pct_decimal_passthrough=False,
+        )
+        normalized_value = _maybe_auto_correct_mbc_seed_scale(
+            model,
+            item,
+            driver_key=normalized_driver_key,
+            item_id=item_id,
+            value=normalized_value,
+            value_scale_field_present=value_scale_field_present,
+            historical_periods=historical_periods,
+        )
         for period in requested:
             item.values.values[period] = value_cell_type(
                 period=period,
-                value=driver.value,
+                value=normalized_value,
                 provenance=value_provenance.input,
             )
+
+
+def _maybe_auto_correct_mbc_seed_scale(
+    model: FinancialModel,
+    item: Any,
+    *,
+    driver_key: str,
+    item_id: str,
+    value: Any,
+    value_scale_field_present: bool,
+    historical_periods: list[int],
+) -> Any:
+    if _unit_text(getattr(item, "unit", None)) != "dollars":
+        return value
+    if str(getattr(item, "model_scale", "units") or "units") != "millions":
+        return value
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return value
+    if not math.isfinite(numeric):
+        return value
+
+    rule = _scale_correction_rule(driver_key, item_id)
+    if rule is None:
+        return value
+    comparator = _latest_historical_value(model, rule["comparator_item_id"], historical_periods)
+    if comparator is None or abs(comparator) < _SCALE_CORRECTION_MIN_COMPARATOR_ABS:
+        return value
+    ratio = abs(numeric) / abs(comparator)
+    if ratio < _SCALE_CORRECTION_MIN_RATIO:
+        return value
+
+    corrected = numeric / 1_000_000.0
+    logging.warning(
+        "Auto-scaled MBC driver seed by magnitude from display dollars to model millions "
+        "for %s (%s): raw=%s corrected=%s comparator=%s latest_historical=%s "
+        "ratio=%s value_scale_present=%s",
+        driver_key,
+        item_id,
+        numeric,
+        corrected,
+        rule["comparator_item_id"],
+        comparator,
+        ratio,
+        value_scale_field_present,
+    )
+    return corrected
+
+
+def _scale_correction_rule(driver_key: str, item_id: str) -> dict[str, str] | None:
+    rules = load_scale_correction_rules()
+    rule = rules.get(driver_key)
+    if rule is not None and rule.get("target_item_id") == item_id:
+        return rule
+    return next((candidate for candidate in rules.values() if candidate.get("target_item_id") == item_id), None)
+
+
+def _latest_historical_value(
+    model: FinancialModel,
+    item_id: str,
+    historical_periods: list[int],
+) -> float | None:
+    try:
+        item = model.get_item(item_id)
+    except KeyError:
+        return None
+    values = getattr(getattr(item, "values", None), "values", None)
+    if not isinstance(values, dict):
+        return None
+    for period in sorted({int(period) for period in historical_periods}, reverse=True):
+        cell = values.get(period)
+        raw = getattr(cell, "value", cell)
+        try:
+            numeric = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            return numeric
+    return None
+
+
+def _unit_text(value: Any) -> str:
+    return str(getattr(value, "value", value) or "").strip()
 
 
 def _is_business_model_rate_driver_key(driver_key: str, item_id: str) -> bool:

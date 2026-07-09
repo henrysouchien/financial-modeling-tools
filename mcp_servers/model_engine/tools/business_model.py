@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from schema.model_writer_lock import model_writer_lock
+from schema.overrides import overrides_lock_target
+
 
 @dataclass(frozen=True)
 class BusinessModelToolDeps:
@@ -138,13 +141,15 @@ def business_model_to_overrides_handler(
       Path(str(bridge_report_path)).read_text(encoding="utf-8")
     )
 
-  report = deps.business_model_to_overrides(
-    parsed_business_model,
-    ticker,
-    dry_run=dry_run,
-    prune=prune,
-    bridge_report=bridge_report,
-  )
+  ticker_upper = str(ticker or "").strip().upper()
+  with model_writer_lock(overrides_lock_target(ticker_upper), ticker=ticker_upper):
+    report = deps.business_model_to_overrides(
+      parsed_business_model,
+      ticker,
+      dry_run=dry_run,
+      prune=prune,
+      bridge_report=bridge_report,
+    )
   return deps.serialize_overrides_write_report(report)
 
 

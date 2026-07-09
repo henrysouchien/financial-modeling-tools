@@ -5,6 +5,10 @@ from typing import Any, Literal, TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .dependency_graph import DependencyGraph as DependencyGraph
+from .growth_carry_forward_guard import (
+    GrowthCarryForwardFinding,
+    growth_carry_forward_findings,
+)
 from .model_readiness_common import (
     _computed_values,
     _has_any_value,
@@ -36,6 +40,7 @@ from .model_readiness_quality import (
     ModelQualityReadinessIssue,
     ModelQualityReadinessSeverity,
     ModelQualityReadinessStatus,
+    _capital_structure_quality_issues,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _dependency_issue,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _inventory_material,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _model_quality_summary,  # noqa: F401 - compatibility alias for schema.model_readiness imports
@@ -43,8 +48,11 @@ from .model_readiness_quality import (
     _quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _quality_projection_issue,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _segment_basis_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
+    _scenario_bridge_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
+    _scenario_output_direction_issues,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _share_count_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _upstream_item_ids,
+    _valuation_input_flags,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _valuation_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _working_capital_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     compute_model_quality_readiness,
@@ -126,6 +134,11 @@ class ModelProjectionReadinessIssue(BaseModel):
     segment_name: str | None = None
     missing_periods: list[int] = Field(default_factory=list)
     related_item_ids: list[str] = Field(default_factory=list)
+    unowned_periods: list[int] = Field(default_factory=list)
+    carried_rate: float | None = None
+    bound: float | None = None
+    scenario_row_item_id: str | None = None
+    fix: str | None = None
 
     @model_validator(mode="after")
     def _populate_category(self) -> "ModelProjectionReadinessIssue":
@@ -153,6 +166,7 @@ def compute_model_projection_readiness(
     segment_profile: "SegmentProfile | None" = None,
     seed_projections: Any | None = None,
     computed_values: dict[str, dict[int, float]] | None = None,
+    guard_config: Any | None = None,
 ) -> ModelProjectionReadiness:
     """Return an agent-facing projection-readiness summary for a built model."""
 
@@ -218,6 +232,7 @@ def compute_model_projection_readiness(
                 compiled_registry=compiled_registry,
                 values=values,
                 projection_periods=projection_periods,
+                guard_config=guard_config,
             )
         )
         _downgrade_primary_missing_for_seedable_bm(issues)
@@ -266,10 +281,20 @@ def _compiled_bm_projection_issues(
     compiled_registry: "CompiledDriverRegistry",
     values: dict[str, dict[int, float]],
     projection_periods: list[int],
+    guard_config: Any | None = None,
 ) -> list[ModelProjectionReadinessIssue]:
     issues: list[ModelProjectionReadinessIssue] = []
     historical_periods = _historical_periods(model)
     segment_profile = compiled_registry.segment_profile
+    growth_carry_forward_by_segment = {
+        finding.segment_id: finding
+        for finding in growth_carry_forward_findings(
+            model,
+            values=values,
+            projection_periods=projection_periods,
+            guard_config=guard_config,
+        )
+    }
 
     for segment_id, segment_index in sorted(compiled_registry.segment_mapping.items(), key=lambda item: item[1]):
         segment_info = (
@@ -311,6 +336,7 @@ def _compiled_bm_projection_issues(
             gaps=driver_gaps,
             historical_periods=historical_periods,
         )
+        growth_carry_forward_finding = growth_carry_forward_by_segment.get(segment_id)
         if has_actuals and structural_gaps:
             issues.append(
                 ModelProjectionReadinessIssue(
@@ -328,7 +354,7 @@ def _compiled_bm_projection_issues(
                     related_item_ids=list(structural_gaps),
                 )
             )
-        elif has_actuals and seedable_gaps:
+        elif has_actuals and seedable_gaps and growth_carry_forward_finding is None:
             issues.append(
                 ModelProjectionReadinessIssue(
                     code="bm_driver_projection_seed_missing",
@@ -342,6 +368,13 @@ def _compiled_bm_projection_issues(
                     segment_name=getattr(segment_info, "name", None),
                     missing_periods=_union_missing_periods(seedable_gaps),
                     related_item_ids=list(seedable_gaps),
+                )
+            )
+        if growth_carry_forward_finding is not None:
+            issues.append(
+                _growth_carry_forward_projection_issue(
+                    growth_carry_forward_finding,
+                    segment_name=getattr(segment_info, "name", None),
                 )
             )
         missing = _missing_periods(revenue_values, projection_periods)
@@ -378,6 +411,44 @@ def _compiled_bm_projection_issues(
             )
         )
     return issues
+
+
+def _growth_carry_forward_projection_issue(
+    finding: GrowthCarryForwardFinding,
+    *,
+    segment_name: str | None = None,
+) -> ModelProjectionReadinessIssue:
+    if finding.scenario_row_item_id is not None:
+        detail = (
+            f"segment {finding.segment_id!r} reads scenario row "
+            f"{finding.scenario_row_item_id!r} via offset_scenario, but "
+            f"{len(finding.unowned_periods)} projection period(s) still carry forward "
+            f"{finding.effective_growth_item_id!r} at {finding.carried_rate:g}, above the "
+            f"{finding.bound:g} guardrail"
+        )
+    else:
+        detail = (
+            f"segment {finding.segment_id!r} has partially authored revenue-growth assumptions, "
+            f"but {len(finding.unowned_periods)} projection period(s) still carry forward "
+            f"{finding.effective_growth_item_id!r} at {finding.carried_rate:g}, above the "
+            f"{finding.bound:g} guardrail"
+        )
+    return ModelProjectionReadinessIssue(
+        code="bm_driver_projection_seed_missing",
+        severity="blocking",
+        category="seedable",
+        detail=detail,
+        item_id=finding.driver_item_id,
+        segment_id=finding.segment_id,
+        segment_name=segment_name,
+        missing_periods=list(finding.unowned_periods),
+        related_item_ids=[finding.effective_growth_item_id],
+        unowned_periods=list(finding.unowned_periods),
+        carried_rate=finding.carried_rate,
+        bound=finding.bound,
+        scenario_row_item_id=finding.scenario_row_item_id,
+        fix=finding.fix,
+    )
 
 
 def _segment_history_basis_issues(
@@ -682,6 +753,12 @@ _ROLLUP_COLLAPSE_ANCHORS: dict[str, tuple[str, ...]] = {
         "tpl.fm.income_statement.operating_income",
     ),
 }
+_ROLLUP_REQUIRED_INPUT_ANCHORS: dict[str, tuple[str, ...]] = {
+    "tpl.fm.income_statement.total_operating_expenses": (
+        "tpl.fm.income_statement.operating_income",
+        "tpl.fm.income_statement.total_revenue",
+    ),
+}
 
 
 def _formula_rollup_missing_input_issues(
@@ -690,6 +767,7 @@ def _formula_rollup_missing_input_issues(
     projection_periods: list[int],
 ) -> list[ModelProjectionReadinessIssue]:
     issues: list[ModelProjectionReadinessIssue] = []
+    active_periods = _historical_periods(model) + list(projection_periods)
 
     for item_id, anchor_ids in _ROLLUP_COLLAPSE_ANCHORS.items():
         if item_id not in model._index:
@@ -736,6 +814,58 @@ def _formula_rollup_missing_input_issues(
                 ),
                 item_id=item_id,
                 missing_periods=collapsed_periods,
+                related_item_ids=sorted(set(missing_ref_ids).union(anchor_ids)),
+            )
+        )
+
+    for item_id, anchor_ids in _ROLLUP_REQUIRED_INPUT_ANCHORS.items():
+        if item_id not in model._index:
+            continue
+        item = model.get_item(item_id)
+        if item.projected is None:
+            continue
+
+        direct_ref_ids = sorted(
+            ref_id
+            for ref_id in _formula_ref_item_ids(item.projected)
+            if _has_any_value(values.get(ref_id, {}), active_periods)
+        )
+        missing_by_ref = {
+            ref_id: missing
+            for ref_id in direct_ref_ids
+            if (missing := _missing_periods(values.get(ref_id, {}), projection_periods))
+        }
+        if not missing_by_ref:
+            continue
+
+        output_values = values.get(item_id, {})
+        incomplete_periods: list[int] = []
+        for period in projection_periods:
+            if not any(period in missing for missing in missing_by_ref.values()):
+                continue
+            if _is_material_nonzero(output_values.get(period)) or any(
+                _is_material_nonzero(values.get(anchor_id, {}).get(period)) for anchor_id in anchor_ids
+            ):
+                incomplete_periods.append(period)
+
+        if not incomplete_periods:
+            continue
+
+        missing_ref_ids = [
+            ref_id
+            for ref_id, missing in missing_by_ref.items()
+            if any(period in missing for period in incomplete_periods)
+        ]
+        issues.append(
+            ModelProjectionReadinessIssue(
+                code="formula_rollup_missing_inputs",
+                severity="blocking",
+                detail=(
+                    f"derived rollup {item_id!r} has projected output while required "
+                    f"formula inputs are missing: {', '.join(missing_ref_ids)}"
+                ),
+                item_id=item_id,
+                missing_periods=incomplete_periods,
                 related_item_ids=sorted(set(missing_ref_ids).union(anchor_ids)),
             )
         )
