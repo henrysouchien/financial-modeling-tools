@@ -27,6 +27,10 @@ _SYNTHETIC_FAST_PATH_TYPES = frozenset({
     FormulaType.ratio,
 })
 _FORMULA_FIRST_EXCLUDED_ITEM_IDS = frozenset({
+    # Reported consolidated revenue is the independent top-line control. A
+    # segment formula can be close in percentage terms while omitting a small
+    # revenue stream that is material to downstream profit subtotals.
+    "tpl.fm.income_statement.total_revenue",
     # Direct CF ending-cash actuals are statement-basis values. The historical
     # formula is a no-source fallback bridge from BS cash, not an equivalence
     # proof when restricted cash moves separately.

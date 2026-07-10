@@ -67,6 +67,7 @@ _CAPITAL_STRUCTURE_LABELS = {
 }
 _CAPITAL_STRUCTURE_TOLERANCE = 1e-6
 _CAPITAL_STRUCTURE_HISTORICAL_DEBT_MATERIALITY = 1.0
+_CAPITAL_STRUCTURE_HISTORICAL_DEBT_SHARE_MATERIALITY = 0.01
 _CAPITAL_STRUCTURE_MATERIAL_DEBT_CHANGE_RATIO = 10.0
 _CAPITAL_STRUCTURE_IMMATERIAL_DEBT_STRESS_RATIO = 0.10
 _SCENARIO_DIRECTION_OUTPUTS = {
@@ -767,6 +768,7 @@ def _capital_structure_quality_issues(
         values,
         "tpl.fm.balance_sheet.long_term_debt",
     )
+    prior_debt = latest_historical_debt
     for period in projection_periods:
         row_values = {
             item_id: _finite_value(values, item_id, int(period))
@@ -855,6 +857,7 @@ def _capital_structure_quality_issues(
                 )
             )
         if blocked_period:
+            prior_debt = ltd
             continue
 
         lower = min(kd, ke) - _CAPITAL_STRUCTURE_TOLERANCE
@@ -878,11 +881,23 @@ def _capital_structure_quality_issues(
                 )
             )
 
-        if latest_historical_debt is None:
+        if prior_debt is None:
             continue
-        projected_debt_change = ltd - latest_historical_debt
-        if abs(latest_historical_debt) >= _CAPITAL_STRUCTURE_HISTORICAL_DEBT_MATERIALITY:
-            change_ratio = abs(projected_debt_change) / abs(latest_historical_debt)
+        projected_debt_change = ltd - prior_debt
+        market_cap = _finite_value(values, "tpl.v.current_valuation.market_cap", int(period))
+        comparison_base = max(
+            abs(total_capital),
+            abs(market_cap) if market_cap is not None else 0.0,
+            1.0,
+        )
+        prior_debt_share = abs(prior_debt) / comparison_base
+        prior_debt_is_material = (
+            abs(prior_debt) >= _CAPITAL_STRUCTURE_HISTORICAL_DEBT_MATERIALITY
+            and prior_debt_share
+            >= _CAPITAL_STRUCTURE_HISTORICAL_DEBT_SHARE_MATERIALITY
+        )
+        if prior_debt_is_material:
+            change_ratio = abs(projected_debt_change) / abs(prior_debt)
             if change_ratio > _CAPITAL_STRUCTURE_MATERIAL_DEBT_CHANGE_RATIO:
                 issues.append(
                     issue_model(
@@ -890,39 +905,36 @@ def _capital_structure_quality_issues(
                         severity="blocking",
                         domain="valuation",
                         detail=(
-                            f"projected long-term debt change is too large versus latest "
-                            f"historical debt in {period}: change={projected_debt_change:g}, "
-                            f"latest_historical_debt={latest_historical_debt:g}"
+                            f"projected long-term debt change is too large versus prior-period "
+                            f"debt in {period}: change={projected_debt_change:g}, "
+                            f"prior_debt={prior_debt:g}"
                         ),
                         item_id="tpl.fm.balance_sheet.long_term_debt",
                         missing_periods=[int(period)],
                     )
                 )
-            continue
-
-        market_cap = _finite_value(values, "tpl.v.current_valuation.market_cap", int(period))
-        comparison_base = max(
-            abs(total_capital),
-            abs(market_cap) if market_cap is not None else 0.0,
-            1.0,
-        )
-        stress_ratio = max(abs(ltd), abs(projected_debt_change)) / comparison_base
-        if stress_ratio > _CAPITAL_STRUCTURE_IMMATERIAL_DEBT_STRESS_RATIO:
-            issues.append(
-                issue_model(
-                    code="capital_structure_debt_magnitude_warning",
-                    severity="warning",
-                    domain="valuation",
-                    detail=(
-                        f"projected debt/change is large versus capital base in {period} "
-                        f"with immaterial latest historical debt: debt={ltd:g}, "
-                        f"change={projected_debt_change:g}, total_capital={total_capital:g}"
-                    ),
-                    item_id="tpl.fm.balance_sheet.long_term_debt",
-                    missing_periods=[int(period)],
-                    related_item_ids=["tpl.v.wacc.total_capital", "tpl.v.current_valuation.market_cap"],
+        else:
+            stress_ratio = max(abs(ltd), abs(projected_debt_change)) / comparison_base
+            if stress_ratio > _CAPITAL_STRUCTURE_IMMATERIAL_DEBT_STRESS_RATIO:
+                issues.append(
+                    issue_model(
+                        code="capital_structure_debt_magnitude_warning",
+                        severity="warning",
+                        domain="valuation",
+                        detail=(
+                            f"projected debt/change is large versus capital base in {period} "
+                            f"with immaterial prior-period debt: debt={ltd:g}, "
+                            f"change={projected_debt_change:g}, total_capital={total_capital:g}"
+                        ),
+                        item_id="tpl.fm.balance_sheet.long_term_debt",
+                        missing_periods=[int(period)],
+                        related_item_ids=[
+                            "tpl.v.wacc.total_capital",
+                            "tpl.v.current_valuation.market_cap",
+                        ],
+                    )
                 )
-            )
+        prior_debt = ltd
 
     return issues
 

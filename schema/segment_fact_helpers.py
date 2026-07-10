@@ -129,6 +129,38 @@ def _consolidated_values(facts: Sequence[Dict]) -> Dict[int, float]:
     return dict(sorted(values.items()))
 
 
+def _largest_consolidated_values(facts: Sequence[Dict]) -> Dict[int, float]:
+    """Return the broadest consolidated revenue fact available per year.
+
+    Segment axes can legitimately reconcile to contract revenue while a separate
+    non-contract stream (for example client-funds interest) makes GAAP total
+    revenue larger.  Axis validation therefore keeps using tag-priority values;
+    build diagnostics use this broader, magnitude-selected ground truth.
+    """
+
+    priority_index = {tag: index for index, tag in enumerate(REVENUE_TAGS_PRIORITY)}
+    best_by_year: Dict[int, tuple[float, int]] = {}
+
+    for fact in facts:
+        raw_value = _fact_value(fact)
+        if raw_value is None:
+            continue
+        year = int(fact["_segment_year"])
+        normalized_value = _normalize_scale(raw_value, fact.get("scale"))
+        tag = _normalize_qname(str(fact.get("tag") or ""))
+        priority = priority_index.get(tag, len(REVENUE_TAGS_PRIORITY))
+        existing = best_by_year.get(year)
+        if existing is None or abs(normalized_value) > abs(existing[0]) or (
+            abs(normalized_value) == abs(existing[0]) and priority < existing[1]
+        ):
+            best_by_year[year] = (normalized_value, priority)
+
+    return {
+        int(year): float(value)
+        for year, (value, _priority) in sorted(best_by_year.items())
+    }
+
+
 def _single_segment_dimension(fact: Dict) -> Optional[Dict[str, str]]:
     dimensions = _fact_dimensions(fact)
     relevant = [

@@ -20,6 +20,7 @@ from .segment_fact_helpers import (
     _annotate_revenue_comparability as _annotate_revenue_comparability,
     _clean_optional_string as _clean_optional_string,
     _consolidated_values as _consolidated_values,
+    _largest_consolidated_values as _largest_consolidated_values,
     _dedupe_member_facts as _dedupe_member_facts,
     _extract_fact_rows as _extract_fact_rows,
     _fact_dimensions as _fact_dimensions,
@@ -150,8 +151,9 @@ def discover_all_axes(
             all_consolidated.extend(consolidated)
             all_dimensional.extend(dimensional)
 
-    consolidated_values = _consolidated_values(all_consolidated)
-    if not all_dimensional or not consolidated_values:
+    decomposition_values = _consolidated_values(all_consolidated)
+    consolidated_values = _largest_consolidated_values(all_consolidated)
+    if not all_dimensional or not decomposition_values:
         return MultiAxisResult(
             ticker=ticker,
             profiles=[],
@@ -163,7 +165,7 @@ def discover_all_axes(
     for axis in SEGMENT_AXES_PRIORITY:
         segments = _try_axis_decomposition(
             all_dimensional,
-            consolidated_values,
+            decomposition_values,
             axis,
             tolerance=0.05,
         )

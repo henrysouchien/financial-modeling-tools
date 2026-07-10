@@ -20,6 +20,12 @@ class DiagnosticTolerances:
     cf_reconciliation_pct: float = 0.02
     eps_abs: float = 0.01
     cross_source_material_pct: float = 0.10
+    # Top-line revenue consolidation reconciliation. 8% sits just above the 5%
+    # residual the segment decomposition already tolerates (eliminations /
+    # Corporate&Other), so it cannot fire on a legit multi-segment model, while a
+    # double-count is +100% — ~12x headroom.
+    revenue_consolidation_abs_m: float = 5.0
+    revenue_consolidation_pct: float = 0.08
 
 
 @dataclass
@@ -44,6 +50,31 @@ class CFReconciliationCheck:
         default_factory=lambda: {"by_year": {}}
     )
     duplicate_concept_rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class RevenueConsolidationCheck:
+    """Reconciles the model's built consolidated top-line revenue against the
+    independently-reported EDGAR consolidated entity revenue
+    (``segment_profile.total_revenue_check``), per historical year.
+
+    Catches the class of segment mis-seed — e.g. an absorb-blend double-count
+    where two revenue nodes each resolve the consolidated total — that otherwise
+    builds silently (0 gaps / HIGH confidence) because no existing check
+    reconciles the top line: ``is_subtotal_integrity`` starts at gross profit and
+    ``cross_source_validation`` compares source-vs-source, never the built
+    consolidation output.
+    """
+
+    by_year: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def severity(self) -> str:
+        highest = "ok"
+        for entry in self.by_year.values():
+            sev = entry.get("severity")
+            if sev in SEVERITY_ORDER and SEVERITY_ORDER[sev] > SEVERITY_ORDER[highest]:
+                highest = sev
+        return highest
 
 
 @dataclass
@@ -137,6 +168,9 @@ class DiagnosticReport:
     source_arbitration: SourceArbitrationCheck = field(
         default_factory=SourceArbitrationCheck
     )
+    revenue_consolidation: RevenueConsolidationCheck = field(
+        default_factory=RevenueConsolidationCheck
+    )
 
     def headline_severity(
         self,
@@ -155,6 +189,7 @@ __all__ = [
     "BSSublineCheck",
     "ISSubtotalCheck",
     "CFReconciliationCheck",
+    "RevenueConsolidationCheck",
     "CoverageSummary",
     "FallbackSummary",
     "SyntheticZeroCheck",

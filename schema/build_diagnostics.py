@@ -55,6 +55,7 @@ from .build_diagnostic_types import (
     BSSublineCheck as BSSublineCheck,
     ISSubtotalCheck as ISSubtotalCheck,
     CFReconciliationCheck as CFReconciliationCheck,
+    RevenueConsolidationCheck as RevenueConsolidationCheck,
     CoverageSummary as CoverageSummary,
     FallbackSummary as FallbackSummary,
     SyntheticZeroCheck as SyntheticZeroCheck,
@@ -108,6 +109,7 @@ from .validation_input import ValidationInput
 
 if TYPE_CHECKING:
     from .build import PopulateStats
+    from .segment_profile_helpers import SegmentProfile
 
 
 logger = logging.getLogger(__name__)
@@ -127,6 +129,7 @@ VALID_KINDS = {
     "covered_by_concept",
     "optional_unreported",
     "projection_only",
+    "consolidation_mismatch",
 }
 
 
@@ -143,6 +146,7 @@ def run_build_diagnostic(
     validation_input: ValidationInput | None = None,
     source_arbitration_input: SourceArbitrationDiagnosticInput | None = None,
     source_arbitration_check: SourceArbitrationCheck | None = None,
+    segment_profile: "SegmentProfile | None" = None,
 ) -> DiagnosticReport:
     model.build_index()
     historical_years = _historical_years(model)
@@ -215,7 +219,86 @@ def run_build_diagnostic(
                 tolerances=tolerances,
             )
         ),
+        revenue_consolidation=_check_revenue_consolidation_reconciliation(
+            model,
+            historical_years=historical_years,
+            segment_profile=segment_profile,
+            tolerances=tolerances,
+        ),
     )
+
+
+_TOTAL_REVENUE_ITEM_ID = "tpl.fm.income_statement.total_revenue"
+
+
+def _check_revenue_consolidation_reconciliation(
+    model: FinancialModel,
+    *,
+    historical_years: list[int],
+    segment_profile: "SegmentProfile | None",
+    tolerances: DiagnosticTolerances,
+) -> RevenueConsolidationCheck:
+    """Reconcile the built consolidated top-line revenue against the EDGAR
+    consolidated entity revenue (``segment_profile.total_revenue_check``).
+
+    Only runs for segment/BM builds that carry an independent consolidated
+    ground truth — the only shape that can double-count. Non-segment / template
+    builds (no ``total_revenue_check``), years without a ground-truth entry, and
+    an unresolvable total-revenue line all degrade to no-entry / per-year ``gap``,
+    never a false ``inconsistency``.
+    """
+
+    check = RevenueConsolidationCheck()
+    truth_by_year = (
+        getattr(segment_profile, "total_revenue_check", None)
+        if segment_profile is not None
+        else None
+    )
+    if not truth_by_year:
+        return check
+    try:
+        total_item = model.get_item(_TOTAL_REVENUE_ITEM_ID)
+    except KeyError:
+        return check
+
+    value_memo: dict[tuple[str, int], Optional[float]] = {}
+    for year in historical_years:
+        if int(year) not in truth_by_year:
+            # No independent consolidated figure for this year → out of scope.
+            continue
+        reported = truth_by_year.get(int(year))
+        built = _observed_value(model, total_item, year, value_memo)
+        entry: dict[str, Any] = {
+            "year": year,
+            "built_total_revenue": (float(built) if built is not None else None),
+            "reported_consolidated_revenue": (
+                float(reported) if reported is not None else None
+            ),
+            "delta": None,
+            "delta_pct": None,
+            "severity": "ok",
+            "kind": None,
+        }
+        if built is None or reported is None:
+            entry["severity"] = "gap"
+            entry["kind"] = "insufficient_inputs"
+        else:
+            built_value = float(built)
+            reported_value = float(reported)
+            delta = built_value - reported_value
+            base = max(abs(built_value), abs(reported_value))
+            tol = _max_tolerance(
+                base,
+                tolerances.revenue_consolidation_abs_m,
+                tolerances.revenue_consolidation_pct,
+            )
+            entry["delta"] = delta
+            entry["delta_pct"] = _percent(delta, base)
+            if abs(delta) > tol:
+                entry["severity"] = "inconsistency"
+                entry["kind"] = "consolidation_mismatch"
+        check.by_year[str(year)] = entry
+    return check
 
 
 def _check_is_subtotal_integrity(
@@ -801,6 +884,7 @@ __all__ = [
     "BSBalanceCheck",
     "BSSublineCheck",
     "CFReconciliationCheck",
+    "RevenueConsolidationCheck",
     "CrossSourceValidationCheck",
     "DiagnosticReport",
     "DiagnosticTolerances",

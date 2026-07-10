@@ -1019,6 +1019,7 @@ def build_model(
                 validation_input=validation_input,
                 source_arbitration_input=source_arbitration_input,
                 source_arbitration_check=source_arbitration_check,
+                segment_profile=profile,
             )
             _write_diagnostic_log(diagnostic)
         except Exception:
