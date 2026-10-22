@@ -352,13 +352,15 @@ def _working_capital_driver_call(
     research_file_id: int | None,
 ) -> dict[str, Any]:
     """The ``fms_set_driver`` call that revises a working-capital-policy ratio driver."""
+    judgment: dict[str, Any] = {
+        **({"research_file_id": research_file_id} if research_file_id is not None else {}),
+        "driver_key": driver_key,
+        "values_by_year": {"<forecast_year>": "<value>"},
+        "rationale": f"<rationale: the forecast driver {driver_key}>",
+    }
     return {
         "tool": "fms_set_driver",
-        "arguments": _arguments(research_file_id, {"judgment": {
-            "driver_key": driver_key,
-            "values_by_year": {"<forecast_year>": "<value>"},
-            "rationale": f"<rationale: the forecast driver {driver_key}>",
-        }}),
+        "arguments": {"judgment": judgment},
     }
 
 

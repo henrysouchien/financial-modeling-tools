@@ -2035,13 +2035,24 @@ def evaluate_statement_total_operand_placement(
         *((period, _rendered_projected_spec) for period in projection_periods),
     ]
     findings: list[ProjectedFinancialIntegrityFinding] = []
-    for total_id, _template_operands in _template_statement_closure(
+    for total_id, template_operands in _template_statement_closure(
         model, template, lane="historical"
     ):
         item = model._index.get(total_id)
         if item is None:
             continue
         total_sheet = sheet_of.get(total_id)
+        template_item = template._index.get(total_id)
+        declared_operands = set(template_operands)
+        if (
+            template_item is not None
+            and template_item.projected is not None
+            and template_item.projected.type is not FormulaType.constant
+        ):
+            declared_operands |= _t0_ref_item_ids(template_item.projected.params) - {total_id}
+        declared_cross_sheet = {
+            op_id for op_id in declared_operands if sheet_of.get(op_id) != total_sheet
+        }
         offsheet: dict[str, list[int]] = {}
         for period, rendered_spec in columns:
             spec = rendered_spec(item, period)
@@ -2051,7 +2062,11 @@ def evaluate_statement_total_operand_placement(
             if operands is None:
                 continue
             for operand_id, offset in operands:
-                if offset == 0 and sheet_of.get(operand_id) != total_sheet:
+                if (
+                    offset == 0
+                    and sheet_of.get(operand_id) != total_sheet
+                    and operand_id not in declared_cross_sheet
+                ):
                     offsheet.setdefault(operand_id, []).append(period)
         if not offsheet:
             continue
