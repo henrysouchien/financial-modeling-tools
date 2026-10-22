@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -11,9 +12,11 @@ from typing import Any, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from schema import serialization
-from schema.handle import ModelHandle, _canonical_model_hash, evict_handle, load_handle
+from schema.handle import ModelHandle, _canonical_model_hash, load_handle
 from schema.load_core import _file_signature
 from schema.modify_persistence import file_sha256
+
+logger = logging.getLogger(__name__)
 
 
 HANDLE_CONTRACT_VERSION = 1
@@ -121,10 +124,9 @@ def issue_model_handle_token(
             workbook_path=workbook_path,
             sidecar_path=model_handle_sidecar_path(workbook_path),
         )
-    if (
-        durable_handle.revision != handle.revision
-        or _computed_sha256(durable_handle.computed) != _computed_sha256(handle.computed)
-    ):
+    if durable_handle.revision != handle.revision or _computed_sha256(
+        durable_handle.computed
+    ) != _computed_sha256(handle.computed):
         raise _error(
             "non_durable_model_handle_token",
             "Cannot issue model_handle_token because the supplied handle does not match the persisted sidecar state.",
@@ -285,18 +287,39 @@ def _durable_sidecar_handle(
     model, base_results = sidecar_hit
     if base_results is None:
         return None
-    durable_revision = f"{_canonical_model_hash(model)}:{serialization.COMPUTE_ENGINE_VERSION}"
-    evict_handle(workbook_path, historical_cutoff_year)
+    durable_revision = (
+        f"{_canonical_model_hash(model)}:{serialization.COMPUTE_ENGINE_VERSION}"
+    )
     try:
         handle = load_handle(
             workbook_path,
             model=model,
             historical_cutoff_year=historical_cutoff_year,
             persist=False,
+            refresh_stale_sidecar=False,
+            use_cache=False,
         )
-    except Exception:
+    except (
+        serialization.ModelBundleRebuildRequired,
+        serialization.ModelBundleSidecarRequired,
+    ) as exc:
+        logger.debug("model_handle sidecar reload requires rebuild: %s", exc)
+        return None
+    except Exception as exc:
+        logger.warning(
+            "model_handle sidecar reload for %r failed unexpectedly (%s: %s); "
+            "treating token as unloadable",
+            workbook_path,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if handle.revision != durable_revision:
+        logger.debug(
+            "model_handle sidecar revision mismatch: durable=%s handle=%s",
+            durable_revision,
+            handle.revision,
+        )
         return None
     return handle
 
@@ -310,7 +333,9 @@ def _computed_sha256(computed: Mapping[str, Mapping[int, float | None]]) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _parse_token(token: ModelHandleToken | Mapping[str, Any] | None) -> ModelHandleToken:
+def _parse_token(
+    token: ModelHandleToken | Mapping[str, Any] | None,
+) -> ModelHandleToken:
     if token is None:
         raise _error(
             "missing_model_handle_token",
@@ -393,8 +418,8 @@ def _default_next_actions(error_code: str) -> list[str]:
         "model_handle_unloadable",
     }:
         return [
-            "Rerun model_summarize or model_build for the current workbook path to get a fresh model_handle_token.",
-            "Retry the mutating tool with the fresh token and the same workbook path.",
+            "Rerun model_summarize for the current workbook path to get a fresh model_handle_token.",
+            "Retry the authenticated gateway transaction with the fresh token and the same workbook path.",
         ]
     if error_code == "non_durable_model_handle_token":
         return [

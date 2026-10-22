@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -14,7 +13,6 @@ from .models import FinancialModel, FormulaType, ItemType, LineItem
 from .refs import line_item_ref_from_obj
 
 
-_PARENT_MODULE = "schema.model_readiness"
 _SCENARIO_CASE_PATTERNS: dict[str, set[str]] = {
     "bull": {"bull", "bullcase", "upside", "bullscenario"},
     "base": {"base", "basecase", "central", "basescenario"},
@@ -35,13 +33,6 @@ ScenarioBridgeReadinessIssueCode = Literal[
 _DEFAULT_SCENARIO_BRIDGE_TARGET_ID = "tpl.fm.adjusted_earnings.adjusted_eps"
 
 
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
 
 
 class ModelScenarioBridgeOwnerReadiness(BaseModel):
@@ -74,7 +65,7 @@ class ModelScenarioBridgeReadinessIssue(BaseModel):
     @model_validator(mode="after")
     def _populate_category(self) -> "ModelScenarioBridgeReadinessIssue":
         if self.category is None:
-            self.category = _compat("_scenario_bridge_issue_category", _scenario_bridge_issue_category)(self.code)
+            self.category = _scenario_bridge_issue_category(self.code)
         return self
 
 
@@ -99,15 +90,15 @@ def compute_model_scenario_bridge_readiness(
     """Return readiness for workbook scenario owners to propagate into EPS."""
 
     model.build_index()
-    projection_periods = _compat("_projection_periods", _projection_periods)(model)
+    projection_periods = _projection_periods(model)
     owner_filter = {str(owner_id) for owner_id in owner_ids or []}
     filtered = bool(owner_filter)
-    owners = _compat("_scenario_bridge_owners", _scenario_bridge_owners)(
+    owners = _scenario_bridge_owners(
         model,
         owner_filter=owner_filter if filtered else None,
     )
-    issue_model = _compat("ModelScenarioBridgeReadinessIssue", ModelScenarioBridgeReadinessIssue)
-    owner_model = _compat("ModelScenarioBridgeOwnerReadiness", ModelScenarioBridgeOwnerReadiness)
+    issue_model = ModelScenarioBridgeReadinessIssue
+    owner_model = ModelScenarioBridgeOwnerReadiness
     issues: list[ModelScenarioBridgeReadinessIssue] = []
     owner_readiness: list[ModelScenarioBridgeOwnerReadiness] = []
 
@@ -143,22 +134,31 @@ def compute_model_scenario_bridge_readiness(
             )
         )
 
-    graph_cls = _compat("DependencyGraph", DependencyGraph)
+    graph_cls = DependencyGraph
     graph = graph_cls()
     graph.build(model)
-    scenario_cases = _compat("_SCENARIO_CASES", _SCENARIO_CASES)
+    scenario_cases = _SCENARIO_CASES
 
     for owner in owners:
-        anchor_id = _compat("_scenario_bridge_anchor_id", _scenario_bridge_anchor_id)(owner)
-        case_row_ids = (
-            _compat("_scenario_bridge_case_row_ids", _scenario_bridge_case_row_ids)(model, anchor_id)
-            if anchor_id is not None
-            else {case: None for case in scenario_cases}
-        )
+        anchor_id = _scenario_bridge_anchor_id(owner)
+        if (
+            owner.projected is not None
+            and owner.projected.type == FormulaType.valuation
+            and owner.projected.subtype == "scenario_select"
+        ):
+            case_row_ids = _scenario_select_case_row_ids(model, owner)
+        else:
+            case_row_ids = (
+                _scenario_bridge_case_row_ids(
+                    model, anchor_id
+                )
+                if anchor_id is not None
+                else {case: None for case in scenario_cases}
+            )
         missing_cases = [case for case in scenario_cases if not case_row_ids.get(case)]
         upstream_of_target: bool | None = None
         if target_item_id in model._index:
-            downstream = _compat("_graph_downstream_ids", _graph_downstream_ids)(graph, {owner.id})
+            downstream = _graph_downstream_ids(graph, {owner.id})
             upstream_of_target = target_item_id in downstream or owner.id == target_item_id
 
         owner_readiness.append(
@@ -224,14 +224,14 @@ def compute_model_scenario_bridge_readiness(
     if not projection_periods and status == "ready":
         status = "unknown"
 
-    readiness_model = _compat("ModelScenarioBridgeReadiness", ModelScenarioBridgeReadiness)
+    readiness_model = ModelScenarioBridgeReadiness
     return readiness_model(
         status=status,
         projection_periods=list(projection_periods),
         target_item_id=target_item_id,
         owners=owner_readiness,
         issues=issues,
-        summary=_compat("_scenario_bridge_summary", _scenario_bridge_summary)(status, issues),
+        summary=_scenario_bridge_summary(status, issues),
     )
 
 
@@ -241,7 +241,7 @@ def _scenario_bridge_owners(
     owner_filter: set[str] | None = None,
 ) -> list[LineItem]:
     owners: list[LineItem] = []
-    is_offset_scenario_owner = _compat("_is_offset_scenario_owner", _is_offset_scenario_owner)
+    is_offset_scenario_owner = _is_offset_scenario_owner
     for sheet in model.sheets.values():
         if sheet.name != "Assumptions":
             continue
@@ -260,7 +260,7 @@ def _is_offset_scenario_owner(item: LineItem) -> bool:
     return (
         spec is not None
         and spec.type == FormulaType.valuation
-        and spec.subtype == "offset_scenario"
+        and spec.subtype in {"offset_scenario", "scenario_select"}
     )
 
 
@@ -268,17 +268,44 @@ def _scenario_bridge_anchor_id(owner: LineItem) -> str | None:
     spec = owner.projected
     if spec is None:
         return None
-    ref_from_obj = _compat("line_item_ref_from_obj", line_item_ref_from_obj)
-    anchor_ref = ref_from_obj((spec.params or {}).get("anchor"))
+    ref_from_obj = line_item_ref_from_obj
+    anchor_ref = ref_from_obj(
+        (spec.params or {}).get(
+            "selector" if spec.subtype == "scenario_select" else "anchor"
+        )
+    )
     return anchor_ref.id if anchor_ref is not None else None
+
+
+def _scenario_select_case_row_ids(
+    model: FinancialModel,
+    owner: LineItem,
+) -> dict[str, str | None]:
+    """Resolve authenticated scenario rows from the owner's exact typed refs."""
+
+    spec = owner.projected
+    if (
+        spec is None
+        or spec.type != FormulaType.valuation
+        or spec.subtype != "scenario_select"
+    ):
+        return {case: None for case in _SCENARIO_CASES}
+    params = spec.params or {}
+    rows: dict[str, str | None] = {}
+    for case in _SCENARIO_CASES:
+        ref = line_item_ref_from_obj(params.get(case))
+        rows[case] = (
+            ref.id if ref is not None and ref.id in model._index else None
+        )
+    return rows
 
 
 def _scenario_bridge_case_row_ids(
     model: FinancialModel,
     anchor_id: str | None,
 ) -> dict[str, str | None]:
-    find_scenario_value_row = _compat("_find_scenario_value_row", _find_scenario_value_row)
-    scenario_cases = _compat("_SCENARIO_CASES", _SCENARIO_CASES)
+    find_scenario_value_row = _find_scenario_value_row
+    scenario_cases = _SCENARIO_CASES
     return {
         case: find_scenario_value_row(model, anchor_id, case) if anchor_id else None
         for case in scenario_cases
@@ -286,14 +313,14 @@ def _scenario_bridge_case_row_ids(
 
 
 def _find_scenario_value_row(model: FinancialModel, anchor_id: str, case: str) -> str | None:
-    find_item_location = _compat("_find_item_location", _find_item_location)
+    find_item_location = _find_item_location
     anchor_location = find_item_location(model, anchor_id)
     if anchor_location is None:
         return None
     _sheet_name, section, anchor_index = anchor_location
     anchor_row = int(section.line_items[anchor_index].row)
 
-    offset_anchor_ids = _compat("_offset_anchor_ids", _offset_anchor_ids)
+    offset_anchor_ids = _offset_anchor_ids
     all_anchor_ids = offset_anchor_ids(model)
     candidates: list[LineItem] = []
     for candidate in section.line_items[anchor_index + 1:]:
@@ -305,8 +332,8 @@ def _find_scenario_value_row(model: FinancialModel, anchor_id: str, case: str) -
             break
         candidates.append(candidate)
 
-    scenario_case_patterns = _compat("_SCENARIO_CASE_PATTERNS", _SCENARIO_CASE_PATTERNS)
-    normalize_scenario_label = _compat("_normalize_scenario_label", _normalize_scenario_label)
+    scenario_case_patterns = _SCENARIO_CASE_PATTERNS
+    normalize_scenario_label = _normalize_scenario_label
     patterns = scenario_case_patterns[case]
     for candidate in candidates:
         if normalize_scenario_label(candidate.label) in patterns:
@@ -336,7 +363,7 @@ def _find_item_location(model: FinancialModel, item_id: str) -> tuple[str, Any, 
 
 def _offset_anchor_ids(model: FinancialModel) -> set[str]:
     anchors: set[str] = set()
-    ref_from_obj = _compat("line_item_ref_from_obj", line_item_ref_from_obj)
+    ref_from_obj = line_item_ref_from_obj
     for item in model._index.values():
         for spec in (item.historical, item.projected):
             if spec is None or spec.type != FormulaType.valuation or spec.subtype != "offset_scenario":
@@ -385,30 +412,6 @@ def _scenario_bridge_summary(
     return f"{status}: {blocking} blocking issue(s), {warnings} warning issue(s)"
 
 
-_ORIGINALS = {
-    "DependencyGraph": DependencyGraph,
-    "ModelScenarioBridgeOwnerReadiness": ModelScenarioBridgeOwnerReadiness,
-    "ModelScenarioBridgeReadiness": ModelScenarioBridgeReadiness,
-    "ModelScenarioBridgeReadinessIssue": ModelScenarioBridgeReadinessIssue,
-    "ScenarioBridgeReadinessIssueCategory": ScenarioBridgeReadinessIssueCategory,
-    "_DEFAULT_SCENARIO_BRIDGE_TARGET_ID": _DEFAULT_SCENARIO_BRIDGE_TARGET_ID,
-    "_SCENARIO_CASE_PATTERNS": _SCENARIO_CASE_PATTERNS,
-    "_SCENARIO_CASES": _SCENARIO_CASES,
-    "_find_item_location": _find_item_location,
-    "_find_scenario_value_row": _find_scenario_value_row,
-    "_graph_downstream_ids": _graph_downstream_ids,
-    "_is_offset_scenario_owner": _is_offset_scenario_owner,
-    "_normalize_scenario_label": _normalize_scenario_label,
-    "_offset_anchor_ids": _offset_anchor_ids,
-    "_projection_periods": _projection_periods,
-    "_scenario_bridge_anchor_id": _scenario_bridge_anchor_id,
-    "_scenario_bridge_case_row_ids": _scenario_bridge_case_row_ids,
-    "_scenario_bridge_issue_category": _scenario_bridge_issue_category,
-    "_scenario_bridge_owners": _scenario_bridge_owners,
-    "_scenario_bridge_summary": _scenario_bridge_summary,
-    "compute_model_scenario_bridge_readiness": compute_model_scenario_bridge_readiness,
-    "line_item_ref_from_obj": line_item_ref_from_obj,
-}
 
 
 __all__ = [

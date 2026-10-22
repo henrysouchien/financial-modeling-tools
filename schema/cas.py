@@ -82,45 +82,31 @@ def overrides_store_hash(path: str | Path) -> str:
     return _canonical_json_sha(json.loads(target.read_bytes()))
 
 
-def overrides_payload_hash(overrides) -> str:
-    return _canonical_json_sha(overrides_payload(overrides))
+def overrides_payload_hash(overrides, *, provider_registry=None) -> str:
+    return _canonical_json_sha(
+        overrides_payload(
+            overrides,
+            provider_registry=provider_registry,
+        )
+    )
 
 
-def cas_vector_members(
-    subcommand: str,
-    *,
-    forecast_mode: str | None = None,
-    projection_store_changed: bool | None = None,
-) -> tuple[str, ...]:
+def cas_vector_members(subcommand: str) -> tuple[str, ...]:
+    if subcommand == "diligence_s4_proposal_apply":
+        return ("diligence-s4-application", "diligence-s4-handoff")
+    if subcommand == "build_model_render_commit":
+        return ("build_sidecar", "build_workbook")
     if subcommand in {
         "persist_dcf_relative_valuation",
         "persist_scenario_multiple_pricing",
     }:
-        return ("workbook",)
-    if subcommand == "persist_valuation_inputs":
-        return ("workbook", "valuation_override")
-    if subcommand == "persist_forecast_assumptions":
-        if forecast_mode == "main_write":
-            return ("workbook", "projection_override")
-        if forecast_mode == "prune":
-            if projection_store_changed is True:
-                return ("projection_override",)
-            if projection_store_changed is False:
-                return ()
-            raise ValueError(
-                "projection_store_changed is required for persist_forecast_assumptions prune"
-            )
-        if forecast_mode in {"no_write", "noop_verify"}:
-            return ()
-        raise ValueError(
-            "forecast_mode is required for persist_forecast_assumptions CAS membership"
+        return (
+            "build_sidecar",
+            "workbook",
+            "valuation_override",
         )
-    if subcommand == "persist_earnings_scenarios":
-        return ("workbook", "projection_override")
     if subcommand == "persist_model_update":
-        if projection_store_changed is True:
-            return ("workbook", "projection_override")
-        return ("workbook",)
+        return ("build_sidecar", "workbook")
     raise ValueError(f"unknown subcommand for CAS membership: {subcommand!r}")
 
 
@@ -129,16 +115,40 @@ def journal_content_id(
     *,
     target_store_hashes,
     target_keys=(),
-    forecast_mode: str | None = None,
-    projection_store_changed: bool | None = None,
     content_discriminator: str | None = None,
+    operation_kind: str | None = None,
 ) -> str:
-    members = cas_vector_members(
-        subcommand,
-        forecast_mode=forecast_mode,
-        projection_store_changed=projection_store_changed,
-    )
-    if set(target_store_hashes) != set(members):
+    supplied_members = set(target_store_hashes)
+    if operation_kind is None:
+        members = cas_vector_members(subcommand)
+        expected_members = set(members)
+        valid_membership = supplied_members == expected_members
+    elif operation_kind == "gateway_model_state_mutation":
+        if subcommand == "bma112_offline_model_state_import":
+            raise ValueError(
+                "offline model-state import is not a gateway mutation subcommand"
+            )
+        members = set(cas_vector_members(subcommand))
+        expected_members = members | {"canonical-model-state"}
+        valid_membership = supplied_members == expected_members
+    elif operation_kind == "bma112_offline_model_state_import":
+        if subcommand != "bma112_offline_model_state_import":
+            raise ValueError(
+                "offline model-state operation requires its exact import subcommand"
+            )
+        expected_members = {"canonical-model-state"}
+        valid_membership = supplied_members == expected_members
+    elif operation_kind == "workspace_preview_model_state_mutation":
+        if subcommand == "bma112_offline_model_state_import":
+            raise ValueError(
+                "offline model-state import is not a workspace-preview subcommand"
+            )
+        members = set(cas_vector_members(subcommand))
+        expected_members = members | {"workspace-preview-model-state"}
+        valid_membership = supplied_members == expected_members
+    else:
+        raise ValueError(f"unknown canonical operation kind: {operation_kind!r}")
+    if not valid_membership:
         raise ValueError(
             "target_store_hashes keys must match CAS vector members for the branch"
         )

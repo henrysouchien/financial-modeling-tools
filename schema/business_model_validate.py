@@ -8,13 +8,40 @@ import re
 
 from pydantic import ValidationError
 
-from schema.business_model import BusinessModel, DriverAssumptionPlan, derive_driver_assumption_plan
+from industry_slice_core.industry_types import Unit
+from schema.business_model import BusinessModel, node_measure
 from schema.business_model_compiler import compile_business_model
 from schema.driver_resolver import load_driver_mapping, resolve_driver_key
-from schema.kpi_overrides_writer import validate_kpi_source_reference
 from schema.segments import SEGMENT_AXES_PRIORITY, discover_all_axes
 from schema.templates import load_sia_generic_template
 from schema.tools import model_tool_error_payload
+
+
+# BMR authoring syntax for a node's `kpi_source` declaration. Re-homed from
+# the retired `schema.kpi_overrides_writer` (Stage A step A-5, plan §3.6:
+# the validator is authoring syntax, not the mint) — the declaration is the
+# identity channel's series claim (schema.build_bm_node_history).
+_KPI_SOURCE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?$")
+_KPI_SOURCE_DIMENSION_SUFFIXES = ("Member", "Domain", "Axis")
+
+
+def validate_kpi_source_reference(value: object) -> tuple[bool, str | None]:
+    """Validate the syntax of a BusinessModel KPI source reference."""
+
+    if value is None:
+        return False, "missing"
+
+    raw = str(value).strip()
+    if not raw:
+        return False, "missing"
+    if _KPI_SOURCE_RE.fullmatch(raw) is None:
+        return False, "invalid"
+
+    local_name = raw.rsplit(":", 1)[-1]
+    if local_name.endswith(_KPI_SOURCE_DIMENSION_SUFFIXES):
+        return False, "dimension"
+
+    return True, None
 
 
 def _safe_pydantic_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -77,27 +104,6 @@ _NON_DIRECT_REVENUE_SOURCE_WORDS = frozenset({
     "unit",
     "units",
     "volume",
-    "yield",
-})
-_REVENUE_SOURCE_FORBIDDEN_NODE_TOKENS = frozenset({
-    "account_count",
-    "arpu",
-    "asp",
-    "average_revenue_per",
-    "balance",
-    "client_count",
-    "count",
-    "customer_count",
-    "employee_count",
-    "per_account",
-    "per_client",
-    "per_customer",
-    "per_employee",
-    "per_user",
-    "price",
-    "subscriber_count",
-    "take_rate",
-    "user_count",
     "yield",
 })
 _CAMEL_WORD_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -170,35 +176,22 @@ def _is_revenue_kpi_source(value: object | None) -> bool:
     return bool(words & {"revenue", "revenues", "sales"})
 
 
-def _node_identity_tokens(node: Any, path: tuple[str, ...]) -> set[str]:
-    values = [getattr(node, "id", ""), getattr(node, "label", ""), *path]
-    tokens: set[str] = set()
-    for value in values:
-        text = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
-        if not text:
-            continue
-        tokens.add(text)
-        parts = [part for part in text.split("_") if part]
-        tokens.update(parts)
-        for size in (2, 3):
-            tokens.update("_".join(parts[index : index + size]) for index in range(len(parts) - size + 1))
-    return tokens
+def _is_direct_revenue_measure(node: Any) -> bool:
+    """A direct revenue node is a dollar flow: its declared measure, never its name.
 
+    A per-unit price (`per_count`/`per_day`), a count, a rate and a balance or
+    average observation are each a different metric of the same issuer.
+    """
 
-def _node_has_non_direct_revenue_metric_identity(identity: set[str]) -> bool:
-    if identity & _REVENUE_SOURCE_FORBIDDEN_NODE_TOKENS:
-        return True
-    if "per" in identity:
-        return True
-    return "average" in identity and "revenue" in identity
+    measure = node_measure(node)
+    return measure.unit == Unit.dollars and measure.basis not in ("balance", "average")
 
 
 def _revenue_kpi_source_metric_mismatch(segment: Any, node: Any, path: tuple[str, ...]) -> dict[str, Any] | None:
     if not _is_revenue_kpi_source(getattr(node, "kpi_source", None)):
         return None
     unit = _node_unit_value(node)
-    identity = _node_identity_tokens(node, path)
-    if unit == "dollars" and not _node_has_non_direct_revenue_metric_identity(identity):
+    if _is_direct_revenue_measure(node):
         return None
     return {
         "code": "kpi_source_metric_mismatch",
@@ -635,21 +628,13 @@ def driver_key_checks(
     if not assumption_driver_keys:
         return [], None
 
-    registry = compile_business_model(load_sia_generic_template(), parsed)
-    driver_plan_error: dict[str, Any] | None = None
-    try:
-        driver_plan = derive_driver_assumption_plan(parsed)
-    except Exception as exc:
-        driver_plan = None
-        driver_plan_error = {
-            "code": "driver_assumption_plan_unavailable",
-            "error": type(exc).__name__,
-            "message": str(exc),
-        }
+    registry = compile_business_model(
+        load_sia_generic_template(),
+        parsed,
+    )
     accepted_driver_keys = sorted(
         set(load_driver_mapping())
         | set(registry.driver_keys)
-        | (set(driver_plan.accepted_driver_keys()) if driver_plan is not None else set())
     )
     invalid: list[dict[str, Any]] = []
     valid: list[dict[str, Any]] = []
@@ -672,23 +657,14 @@ def driver_key_checks(
                     "driver_key": driver_key,
                     "reason": "not in accepted BusinessModel or canonical driver keys",
                     "accepted_driver_key_examples": accepted_driver_keys[:20],
-                    "driver_assumption_plan_key_examples": driver_plan.driver_keys[:20] if driver_plan is not None else [],
                     "business_model_driver_key_examples": sorted(registry.driver_keys)[:20],
                     "canonical_driver_key_examples": sorted(load_driver_mapping())[:20],
                 }
             )
             continue
-        resolved = (
-            _resolve_assumption_driver_key(
-                driver_key,
-                compiled_registry=registry,
-                driver_plan=driver_plan,
-            )
-            if driver_plan is not None
-            else _resolve_assumption_driver_key_without_plan(
-                driver_key,
-                compiled_registry=registry,
-            )
+        resolved = _resolve_assumption_driver_key_without_plan(
+            driver_key,
+            compiled_registry=registry,
         )
         if isinstance(resolved, Exception):
             invalid.append(
@@ -697,7 +673,6 @@ def driver_key_checks(
                     "driver_key": driver_key,
                     "reason": getattr(resolved, "reason", str(resolved)),
                     "accepted_driver_key_examples": accepted_driver_keys[:20],
-                    "driver_assumption_plan_key_examples": driver_plan.driver_keys[:20] if driver_plan is not None else [],
                     "business_model_driver_key_examples": sorted(registry.driver_keys)[:20],
                     "canonical_driver_key_examples": sorted(load_driver_mapping())[:20],
                 }
@@ -713,39 +688,10 @@ def driver_key_checks(
         "checked": len(assumption_driver_keys),
         "valid": valid,
         "accepted_driver_key_count": len(accepted_driver_keys),
-        "driver_assumption_plan_keys": driver_plan.driver_keys if driver_plan is not None else [],
-        "driver_assumption_plan_aliases": dict(driver_plan.alias_map) if driver_plan is not None else {},
-        "driver_assumption_plan_error": driver_plan_error,
         "business_model_driver_keys": sorted(registry.driver_keys),
         "canonical_driver_keys": sorted(load_driver_mapping()),
     }
     return invalid, context
-
-
-def _resolve_assumption_driver_key(
-    driver_key: str,
-    *,
-    compiled_registry: Any,
-    driver_plan: DriverAssumptionPlan,
-) -> tuple[str, str] | Exception:
-    canonical_driver_key = driver_plan.resolve_driver_key(driver_key)
-    first_error: Exception | None = None
-    try:
-        return resolve_driver_key(driver_key, compiled_registry=compiled_registry), canonical_driver_key or driver_key
-    except Exception as exc:
-        first_error = exc
-        if canonical_driver_key is None:
-            return exc
-
-    if canonical_driver_key is not None:
-        entry = driver_plan.entry_for_driver_key(canonical_driver_key)
-        if entry is not None:
-            for candidate in entry.aliases:
-                try:
-                    return resolve_driver_key(candidate, compiled_registry=compiled_registry), canonical_driver_key
-                except Exception:
-                    continue
-    return first_error or KeyError(driver_key)
 
 
 def _resolve_assumption_driver_key_without_plan(
@@ -905,5 +851,6 @@ __all__ = [
     "segment_context_checks",
     "summary",
     "validate",
+    "validate_kpi_source_reference",
     "validation_error",
 ]

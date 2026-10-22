@@ -2,23 +2,16 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from typing import Any, Iterable
 
+from .research_labels import slugify_research_label
 
-_PARENT_MODULE = "schema.thesis_markdown"
+
 _SOURCE_TOKEN_RE = re.compile(r"\[(src_[1-9]\d*)\]")
 
 
-def _compat(name: str, fallback: Any) -> Any:
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is not None and hasattr(parent, name):
-        return getattr(parent, name)
-    return fallback
-
-
 def _slugify_label(label: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]+", "_", str(label or "").strip().lower()).strip("_") or "label"
+    return slugify_research_label(label)
 
 
 def _append_block(lines: list[str], block_lines: Iterable[str]) -> None:
@@ -41,13 +34,13 @@ def _has_meaningful_value(value: Any) -> bool:
 
 
 def _render_bullet(label: str, value: Any) -> str | None:
-    if not _compat("_has_meaningful_value", _has_meaningful_value)(value):
+    if not _has_meaningful_value(value):
         return None
     return f"- **{label}**: {value}"
 
 
 def _render_labeled_line(label: str, value: Any) -> str | None:
-    if not _compat("_has_meaningful_value", _has_meaningful_value)(value):
+    if not _has_meaningful_value(value):
         return None
     return f"**{label}**: {value}"
 
@@ -63,13 +56,12 @@ def _format_source_tokens(source_ids: list[str]) -> str:
 
 
 def _format_table(headers: list[str], rows: list[list[Any]]) -> list[str]:
-    escape_table_cell = _compat("_escape_table_cell", _escape_table_cell)
     rendered = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join("---" for _ in headers) + " |",
     ]
     for row in rows:
-        rendered.append("| " + " | ".join(escape_table_cell(value) for value in row) + " |")
+        rendered.append("| " + " | ".join(_escape_table_cell(value) for value in row) + " |")
     return rendered
 
 
@@ -115,33 +107,30 @@ def _split_table_row(row: str) -> list[str]:
             continue
         buffer.append(char)
     cells.append("".join(buffer).strip())
-    unescape_table_cell = _compat("_unescape_table_cell", _unescape_table_cell)
-    return [unescape_table_cell(cell) for cell in cells]
+    return [_unescape_table_cell(cell) for cell in cells]
 
 
 def _parse_table(lines: list[str]) -> list[dict[str, str]]:
     stripped = [line for line in lines if line.strip()]
     if len(stripped) < 2 or not stripped[0].startswith("|") or not stripped[1].startswith("|"):
         return []
-    split_table_row = _compat("_split_table_row", _split_table_row)
-    headers = split_table_row(stripped[0])
+    headers = _split_table_row(stripped[0])
     rows: list[dict[str, str]] = []
     for row in stripped[2:]:
         if not row.startswith("|"):
             continue
-        cells = split_table_row(row)
+        cells = _split_table_row(row)
         rows.append({headers[index]: cells[index] if index < len(cells) else "" for index in range(len(headers))})
     return rows
 
 
 def _parse_key_value_segments(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    normalize_label_key = _compat("_normalize_label_key", _normalize_label_key)
     for part in [segment.strip() for segment in text.split("|") if segment.strip()]:
         if "=" not in part:
             continue
         key, value = part.split("=", 1)
-        result[normalize_label_key(key)] = value.strip()
+        result[_normalize_label_key(key)] = value.strip()
     return result
 
 
@@ -172,16 +161,15 @@ def _parse_jsonish_value(value: str) -> Any:
 
 
 def _extract_source_tokens(text: str) -> tuple[str, list[str]]:
-    source_token_re = _compat("_SOURCE_TOKEN_RE", _SOURCE_TOKEN_RE)
-    source_ids = source_token_re.findall(text or "")
-    cleaned = source_token_re.sub("", text or "")
+    source_ids = _SOURCE_TOKEN_RE.findall(text or "")
+    cleaned = _SOURCE_TOKEN_RE.sub("", text or "")
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
     cleaned = re.sub(r"\s+([,.;:])", r"\1", cleaned)
     return cleaned.strip(), source_ids
 
 
 def _parse_source_token_list(text: str, state: Any) -> list[str]:
-    _, source_ids = _compat("_extract_source_tokens", _extract_source_tokens)(text)
+    _, source_ids = _extract_source_tokens(text)
     for source_id in source_ids:
         state.referenced_source_ids.add(source_id)
     return source_ids
@@ -212,30 +200,3 @@ def _parse_boolish(value: str | None) -> bool | str:
     if text in {"", "0", "false", "no", "n"}:
         return False
     return value or ""
-
-
-__all__ = [
-    "_SOURCE_TOKEN_RE",
-    "_append_block",
-    "_escape_table_cell",
-    "_extract_source_tokens",
-    "_format_source_refs_cell",
-    "_format_source_tokens",
-    "_format_table",
-    "_has_meaningful_value",
-    "_normalize_label_key",
-    "_nullable_cell",
-    "_parse_boolish",
-    "_parse_jsonish_value",
-    "_parse_key_value_segments",
-    "_parse_source_refs_cell",
-    "_parse_source_token_list",
-    "_parse_table",
-    "_render_bullet",
-    "_render_labeled_line",
-    "_serialize_json_value",
-    "_slugify_label",
-    "_split_lines",
-    "_split_table_row",
-    "_unescape_table_cell",
-]

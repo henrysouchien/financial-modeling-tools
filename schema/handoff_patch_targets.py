@@ -32,6 +32,12 @@ class ThesisFieldTargetInt(BaseModel):
     model_config = _FROZEN_CONTRACT
 
 
+class ThesisFieldTargetRefs(BaseModel):
+    field: Literal["source_refs"]
+
+    model_config = _FROZEN_CONTRACT
+
+
 class ThesisQuantitativeTarget(BaseModel):
     section: Literal[
         "revenue",
@@ -55,6 +61,8 @@ class ValuationTarget(BaseModel):
         "current_multiple",
         "wacc",
         "risk_free_rate",
+        "sofr_rate",
+        "credit_spread",
         "equity_risk_premium",
         "cost_of_equity",
         "raw_beta",
@@ -99,6 +107,7 @@ __all__ = [
     "HistoricalCoincidenceTarget",
     "StableIdTarget",
     "ThesisFieldTargetInt",
+    "ThesisFieldTargetRefs",
     "ThesisFieldTargetStr",
     "ThesisQuantitativeTarget",
     "ValuationTarget",

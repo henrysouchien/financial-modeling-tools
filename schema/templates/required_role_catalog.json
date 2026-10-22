@@ -1,0 +1,2591 @@
+{
+  "schema_version": "required-role-catalog.v2",
+  "template_kind": "sia_generic",
+  "provenance": "docs/design/completed/build-model-stage-d-filing-native-rekey-plan-2026-08-18.md \u00a74.3 / step D-3, over docs/reference/filing-native-data-vs-build-model-structure-2026-08-17.md \u00a74 and the governing design \u00a76.2. Seeded from the two living structure sources and nothing else: the generic template stamp map (schema/templates/template_builder_config_generic.py DATA_CONCEPT_MAP_GENERIC, one stamped item per row) and the structure fields of schema/templates/data_taxonomy.json (the row and its statement plane, plus the two optionality fields). A role exists for every taxonomy row that states a statement plane or carries a template stamp; the six rows that do neither are the market/valuation observation class (plan \u00a74.5), out of this plane by declaration. Nothing routing-, tag- or source-shaped is taken: those fields stay where they are until the pin-construction policy and the producer-side synonym data claim them (plan \u00a74.4). Authored per template kind, never per ticker. Step D-4.1 merged the second authored role-to-item store into these rows \u2014 the deleted schema/model_kind_role_catalog.py, itself Stage A's absorption of the two retired hand maps that bound statement and schedule roles before it \u2014 as two further binding namespaces: population_items, the compiled items statement and schedule population plus the identity fill bind for a role the template stamp does not carry, and hff_fact_items, the exact compiled items the accepted-HFF fact channel lands a role's disclosed filing-note balance on. The four namespaces are distinct planes of one role and are never pooled: the same role legitimately binds different items on different planes, which is how a disclosed note balance seeds its schedule without double counting the face-statement row that presents it.",
+  "nsp_balance_runoff_rows": {
+    "tpl.a.intangibles_goodwill.intangible_assets_net": [
+      "tpl.a.intangibles_goodwill.less_amortization_for_acquired_intangible_assets",
+      "tpl.a.depreciation_amortization.amortization_expense_for_acquired_intangible_assets"
+    ]
+  },
+  "disclosure_companions": {
+    "tpl.fm.adjusted_earnings.other_items": [
+      [
+        "tpl.a.adj_ebitda.other_items",
+        "tpl.fm.adjusted_earnings.other_items"
+      ],
+      [
+        "tpl.a.tax_net_income.other_items",
+        "tpl.a.adj_ebitda.other_items"
+      ]
+    ],
+    "tpl.fm.adjusted_earnings.amortization_of_acquired_intangibles": [
+      [
+        "tpl.a.depreciation_amortization.amortization_expense_for_acquired_intangible_assets",
+        "tpl.fm.adjusted_earnings.amortization_of_acquired_intangibles"
+      ],
+      [
+        "tpl.a.intangibles_goodwill.less_amortization_for_acquired_intangible_assets",
+        "tpl.fm.adjusted_earnings.amortization_of_acquired_intangibles"
+      ],
+      [
+        "tpl.a.tax_net_income.amortization_of_acquired_intangibles",
+        "tpl.a.intangibles_goodwill.less_amortization_for_acquired_intangible_assets"
+      ]
+    ],
+    "tpl.fm.adjusted_earnings.depreciation_and_amortization": [
+      [
+        "tpl.a.adj_ebitda.depreciation_and_amortization",
+        "tpl.fm.adjusted_earnings.depreciation_and_amortization"
+      ]
+    ],
+    "tpl.fm.adjusted_earnings.income_tax_expense": [
+      [
+        "tpl.a.adj_ebitda.income_tax_expense",
+        "tpl.fm.adjusted_earnings.income_tax_expense"
+      ]
+    ],
+    "tpl.fm.adjusted_earnings.stock_based_compensation_add_back": [
+      [
+        "tpl.a.adj_ebitda.stock_based_compensation_add_back",
+        "tpl.fm.adjusted_earnings.stock_based_compensation_add_back"
+      ],
+      [
+        "tpl.a.tax_net_income.stock_based_compensation_add_back",
+        "tpl.a.adj_ebitda.stock_based_compensation_add_back"
+      ]
+    ],
+    "tpl.fm.adjusted_earnings.adjusted_ebitda__net_income_base": [
+      [
+        "tpl.a.adj_ebitda.net_income",
+        "tpl.fm.adjusted_earnings.adjusted_ebitda__net_income_base"
+      ],
+      [
+        "tpl.a.tax_net_income.net_income",
+        "tpl.a.adj_ebitda.net_income"
+      ]
+    ],
+    "tpl.fm.income_statement.net_income": [
+      [
+        "tpl.a.adj_ebitda.net_income",
+        "tpl.fm.adjusted_earnings.adjusted_ebitda__net_income_base"
+      ],
+      [
+        "tpl.a.tax_net_income.net_income",
+        "tpl.a.adj_ebitda.net_income"
+      ]
+    ],
+    "tpl.a.other_assets.operating_lease_rou_asset_additions": [
+      [
+        "tpl.a.capital_sources.operating_lease_liability_additions",
+        "tpl.a.other_assets.operating_lease_rou_asset_additions"
+      ]
+    ]
+  },
+  "lease_reconciliation_shapes": {
+    "liability_additions_historical": {
+      "target_item": "tpl.a.capital_sources.operating_lease_liability_additions",
+      "formula": {
+        "type": "ref",
+        "subtype": "cell_ref",
+        "params": {
+          "source": {
+            "id": "tpl.a.other_assets.operating_lease_rou_asset_additions"
+          }
+        },
+        "note": "operating lease liabilities incurred in exchange for right-of-use assets",
+        "derivation": {
+          "owner": "build_company_grounded_schedules",
+          "strategy": "lease_liability_balance_reconciliation",
+          "dependencies": [
+            "tpl.a.other_assets.operating_lease_rou_asset_additions"
+          ]
+        }
+      }
+    },
+    "rou_amortization_historical": {
+      "target_item": "tpl.a.other_assets.operating_lease_rou_asset_amortization",
+      "formula": {
+        "type": "arithmetic",
+        "subtype": "lease_balance_reconciliation",
+        "params": {
+          "expr": {
+            "op": "+",
+            "args": [
+              {
+                "id": "tpl.a.other_assets.operating_lease_right_of_use_assets",
+                "t": -1
+              },
+              {
+                "id": "tpl.a.other_assets.operating_lease_rou_asset_additions"
+              },
+              {
+                "op": "NEG",
+                "arg": {
+                  "id": "tpl.a.other_assets.operating_lease_right_of_use_assets"
+                }
+              }
+            ]
+          }
+        },
+        "note": "historical ROU amortization from ROU asset roll-forward",
+        "derivation": {
+          "owner": "build_company_grounded_schedules",
+          "strategy": "lease_rou_balance_reconciliation",
+          "dependencies": [
+            "tpl.a.other_assets.operating_lease_right_of_use_assets",
+            "tpl.a.other_assets.operating_lease_rou_asset_additions"
+          ]
+        }
+      }
+    },
+    "rou_additions_projected": {
+      "target_item": "tpl.a.other_assets.operating_lease_rou_asset_additions",
+      "formula": {
+        "type": "arithmetic",
+        "subtype": "lease_balance_reconciliation",
+        "params": {
+          "expr": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "id": "tpl.fm.income_statement.total_revenue"
+                  },
+                  {
+                    "parameter": "balance_ratio"
+                  }
+                ]
+              },
+              {
+                "id": "tpl.a.other_assets.operating_lease_rou_asset_amortization"
+              },
+              {
+                "op": "NEG",
+                "arg": {
+                  "id": "tpl.a.other_assets.operating_lease_right_of_use_assets",
+                  "t": -1
+                }
+              }
+            ]
+          }
+        },
+        "note": "reconcile company-grounded ROU balance ratio after amortization proxy",
+        "derivation": {
+          "owner": "build_company_grounded_schedules",
+          "strategy": "lease_rou_balance_reconciliation",
+          "dependencies": [
+            "tpl.fm.income_statement.total_revenue",
+            "tpl.a.other_assets.operating_lease_rou_asset_amortization",
+            "tpl.a.other_assets.operating_lease_right_of_use_assets"
+          ]
+        }
+      }
+    },
+    "liability_additions_projected": {
+      "target_item": "tpl.a.capital_sources.operating_lease_liability_additions",
+      "formula": {
+        "type": "arithmetic",
+        "subtype": "lease_balance_reconciliation",
+        "params": {
+          "expr": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "id": "tpl.fm.income_statement.total_revenue"
+                  },
+                  {
+                    "parameter": "balance_ratio"
+                  }
+                ]
+              },
+              {
+                "id": "tpl.a.capital_sources.operating_lease_liability_payments"
+              },
+              {
+                "op": "NEG",
+                "arg": {
+                  "id": "tpl.a.capital_sources.operating_lease_liability_beginning"
+                }
+              }
+            ]
+          }
+        },
+        "note": "reconcile company-grounded total lease-liability ratio after payments proxy",
+        "derivation": {
+          "owner": "build_company_grounded_schedules",
+          "strategy": "lease_liability_balance_reconciliation",
+          "dependencies": [
+            "tpl.fm.income_statement.total_revenue",
+            "tpl.a.capital_sources.operating_lease_liability_payments",
+            "tpl.a.capital_sources.operating_lease_liability_beginning"
+          ]
+        }
+      }
+    },
+    "rou_amortization_proxy": {
+      "target_item": "tpl.a.other_assets.operating_lease_rou_asset_amortization",
+      "formula": {
+        "type": "ref",
+        "subtype": "lease_current_portion_proxy",
+        "params": {
+          "source": {
+            "id": "tpl.a.capital_sources.current_operating_lease_liabilities"
+          }
+        },
+        "note": "current lease portion used as bounded annual ROU amortization proxy",
+        "derivation": {
+          "owner": "build_company_grounded_schedules",
+          "strategy": "lease_current_portion_proxy",
+          "dependencies": [
+            "tpl.a.capital_sources.current_operating_lease_liabilities"
+          ]
+        }
+      }
+    },
+    "liability_payments_proxy": {
+      "target_item": "tpl.a.capital_sources.operating_lease_liability_payments",
+      "formula": {
+        "type": "ref",
+        "subtype": "lease_current_portion_proxy",
+        "params": {
+          "source": {
+            "id": "tpl.a.capital_sources.current_operating_lease_liabilities"
+          }
+        },
+        "note": "current lease portion used as bounded annual liability-payment proxy",
+        "derivation": {
+          "owner": "build_company_grounded_schedules",
+          "strategy": "lease_current_portion_proxy",
+          "dependencies": [
+            "tpl.a.capital_sources.current_operating_lease_liabilities"
+          ]
+        }
+      }
+    }
+  },
+  "model_scale_relations": [
+    {
+      "source_item": "tpl.a.other_assets.operating_lease_right_of_use_assets",
+      "target_items": [
+        "tpl.a.capital_sources.operating_lease_liability_payments",
+        "tpl.a.other_assets.operating_lease_rou_asset_additions",
+        "tpl.a.capital_sources.operating_lease_liability_additions",
+        "tpl.a.other_assets.operating_lease_rou_asset_amortization"
+      ]
+    }
+  ],
+  "statement_total_items": {
+    "cash_flow": [
+      "tpl.fm.cash_flow.operating_cash_flow",
+      "tpl.fm.cash_flow.investing_cash_flow",
+      "tpl.fm.cash_flow.financing_cash_flow",
+      "tpl.fm.cash_flow.net_change_in_cash_and_cash_equivalents"
+    ],
+    "income_statement": [
+      "tpl.fm.income_statement.total_operating_expenses",
+      "tpl.fm.income_statement.operating_income",
+      "tpl.fm.income_statement.income_before_income_taxes",
+      "tpl.fm.income_statement.net_income"
+    ]
+  },
+  "operating_balances": [
+    {
+      "required_role": "operating.funds_held_for_clients",
+      "display_name": "Funds held for clients",
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "target_item": "tpl.fm.balance_sheet.current_asset_4",
+      "insert_after_item": "tpl.fm.balance_sheet.current_asset_3",
+      "counterpart": "operating.client_fund_obligations",
+      "pass_through": true,
+      "semantic_role": "client_funds_asset",
+      "legacy_roles": [
+        "statement.bs.client_funds_assets",
+        "statement.bs.funds_held_for_clients"
+      ]
+    },
+    {
+      "required_role": "operating.client_fund_obligations",
+      "display_name": "Client fund obligations",
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "insert_after_item": "tpl.fm.balance_sheet.current_liability_3",
+      "pass_through": true,
+      "semantic_role": "client_fund_obligation",
+      "legacy_roles": [
+        "statement.bs.client_funds_obligations",
+        "statement.bs.client_fund_obligations"
+      ]
+    }
+  ],
+  "required_roles": [
+    {
+      "required_role": "statement.is.revenue",
+      "display_name": "Revenue",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.total_revenue"
+      ],
+      "template_build_items": [
+        "financial_model.total_revenues"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.cost_of_revenue",
+      "display_name": "Cost of revenue",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.cost_of_goods_sold"
+      ],
+      "template_build_items": [
+        "financial_model.cost_of_goods_sold"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.gross_profit",
+      "display_name": "Gross profit",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.gross_profit"
+      ],
+      "template_build_items": [
+        "financial_model.gross_profit"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.selling_general_and_administrative",
+      "display_name": "Selling general and administrative expenses",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.selling_general_and_administrative"
+      ],
+      "template_build_items": [
+        "financial_model.selling_general_and_administrative"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.is.sales_and_marketing",
+      "display_name": "Selling and marketing expenses",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.sales_and_marketing"
+      ],
+      "template_build_items": [
+        "financial_model.sales_and_marketing"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "presentation_optional": true
+    },
+    {
+      "required_role": "statement.is.general_and_administrative",
+      "display_name": "General and administrative expenses",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.general_and_administrative"
+      ],
+      "template_build_items": [
+        "financial_model.general_and_administrative"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "presentation_optional": true
+    },
+    {
+      "required_role": "statement.is.research_and_development",
+      "display_name": "Research and development expenses",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.research_and_development"
+      ],
+      "template_build_items": [
+        "financial_model.research_and_development"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "presentation_optional": true
+    },
+    {
+      "required_role": "statement.is.depreciation_amortization_operating",
+      "display_name": "Depreciation and amortization (operating expenses)",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.depreciation_and_amortization"
+      ],
+      "template_build_items": [
+        "financial_model.depreciation_and_amortization_operating"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.is.operating_expenses",
+      "display_name": "Operating expenses",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.total_operating_expenses"
+      ],
+      "template_build_items": [
+        "financial_model.total_operating_expenses"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.operating_income",
+      "display_name": "Operating income",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.operating_income"
+      ],
+      "template_build_items": [
+        "financial_model.operating_income"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.interest_expense",
+      "display_name": "Interest expense",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.adjusted_earnings.interest_expense"
+      ],
+      "template_build_items": [
+        "financial_model.interest_expense"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "presentation_optional": true
+    },
+    {
+      "required_role": "statement.is.interest_income",
+      "display_name": "Interest income",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.is.other_income_expense"
+      ]
+    },
+    {
+      "required_role": "statement.is.other_income_expense",
+      "display_name": "Total other income expenses net",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.other_income_expense"
+      ],
+      "template_build_items": [
+        "financial_model.other_income_expense"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.pretax_income",
+      "display_name": "Income before tax",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.income_before_income_taxes"
+      ],
+      "template_build_items": [
+        "financial_model.income_before_income_taxes"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.income_tax",
+      "display_name": "Income tax expense",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "template_items": [
+        "tpl.fm.income_statement.income_tax_expense_benefit"
+      ],
+      "template_build_items": [
+        "financial_model.income_tax_expense_benefit"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.net_income",
+      "display_name": "Net income",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.net_income"
+      ],
+      "template_build_items": [
+        "financial_model.net_income"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.eps_basic",
+      "display_name": "EPS",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.eps_basic"
+      ],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.eps_diluted",
+      "display_name": "EPS diluted",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.eps"
+      ],
+      "template_build_items": [
+        "financial_model.eps"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.diluted_shares",
+      "display_name": "Weighted average shares outstanding diluted",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.diluted_shares_outstanding_m"
+      ],
+      "template_build_items": [
+        "financial_model.diluted_shares_outstanding_m"
+      ],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.tax_net_income.diluted_shares_outstanding"
+      ]
+    },
+    {
+      "required_role": "statement.is.ebitda",
+      "display_name": "EBITDA",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.adjusted_earnings.ebitda"
+      ],
+      "template_build_items": [
+        "financial_model.ebitda"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.cf.depreciation_amortization",
+      "display_name": "Depreciation and amortization",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.depreciation_and_amortization"
+      ],
+      "template_build_items": [
+        "financial_model.depreciation_and_amortization_r134"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.stock_based_compensation",
+      "display_name": "Stock based compensation",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.share_based_compensation"
+      ],
+      "template_build_items": [
+        "financial_model.share_based_compensation"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.bs.cash_and_equivalents",
+      "display_name": "Cash and cash equivalents",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.cash_flow.cash_and_cash_equivalents"
+      ],
+      "template_build_items": [
+        "financial_model.cash_and_cash_equivalents"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.bs.cash_and_short_term_investments"
+      ]
+    },
+    {
+      "required_role": "statement.bs.short_term_investments",
+      "display_name": "Short term investments and current marketable securities",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.cash_flow.short_term_investments"
+      ],
+      "template_build_items": [
+        "financial_model.short_term_investments"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "covered_by_roles": [
+        "statement.bs.cash_and_short_term_investments"
+      ]
+    },
+    {
+      "required_role": "statement.cf.cash_flow_cash_end_of_period",
+      "display_name": "Cash at end of period",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.cash_and_cash_equivalents_end_of_period"
+      ],
+      "template_build_items": [
+        "financial_model.cash_and_cash_equivalents_end_of_period"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.bs.cash_and_short_term_investments",
+      "display_name": "Cash and short term investments",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.cash_and_marketable_securities"
+      ],
+      "template_build_items": [
+        "financial_model.cash_and_marketable_securities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "balance": true,
+      "projection_owner": "cash_flow_link"
+    },
+    {
+      "required_role": "statement.bs.accounts_receivable",
+      "display_name": "Net receivables",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.accounts_receivable_net"
+      ],
+      "template_build_items": [
+        "financial_model.accounts_receivable_net"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.inventory",
+      "display_name": "Inventory",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.current_asset_2"
+      ],
+      "template_build_items": [
+        "financial_model.current_asset_2"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.prepaid_expenses",
+      "display_name": "Prepaids",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.current_asset_3"
+      ],
+      "template_build_items": [
+        "financial_model.current_asset_3"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.bs.other_current_assets"
+      ],
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.other_current_assets",
+      "display_name": "Other current assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.other_current_assets"
+      ],
+      "template_build_items": [
+        "financial_model.other_current_assets"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.total_current_assets",
+      "display_name": "Total current assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.total_current_assets"
+      ],
+      "template_build_items": [
+        "financial_model.total_current_assets"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.property_plant_equipment_net",
+      "display_name": "Property plant equipment net",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.property_and_equipment_net"
+      ],
+      "template_build_items": [
+        "financial_model.property_and_equipment_net"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.operating_lease_right_of_use_assets",
+      "display_name": "Operating lease right of use assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.operating_lease_right_of_use_assets"
+      ],
+      "template_build_items": [
+        "financial_model.operating_lease_right_of_use_assets"
+      ],
+      "population_items": [
+        "tpl.a.other_assets.operating_lease_right_of_use_assets"
+      ],
+      "hff_fact_items": [
+        "tpl.a.other_assets.operating_lease_right_of_use_assets"
+      ],
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.goodwill",
+      "display_name": "Goodwill",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.goodwill"
+      ],
+      "template_build_items": [
+        "financial_model.goodwill"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.intangible_assets",
+      "display_name": "Intangible assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.intangible_assets_net"
+      ],
+      "template_build_items": [
+        "financial_model.intangible_assets_net"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.marketable_securities_noncurrent",
+      "display_name": "Marketable securities noncurrent",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.long_term_asset_3"
+      ],
+      "template_build_items": [
+        "financial_model.long_term_asset_3"
+      ],
+      "population_items": [
+        "tpl.a.other_assets.long_term_asset_3"
+      ],
+      "hff_fact_items": [
+        "tpl.a.other_assets.long_term_asset_3"
+      ],
+      "optional_if_unreported": true,
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.deferred_tax_assets",
+      "display_name": "Tax assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.deferred_income_tax_assets"
+      ],
+      "template_build_items": [
+        "financial_model.deferred_income_tax_assets"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "other_noncash": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.other_non_current_assets",
+      "display_name": "Other non current assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.long_term_asset_2"
+      ],
+      "template_build_items": [
+        "financial_model.long_term_asset_2"
+      ],
+      "population_items": [
+        "tpl.a.other_assets.long_term_asset_2"
+      ],
+      "hff_fact_items": [
+        "tpl.a.other_assets.long_term_asset_2"
+      ],
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.total_assets",
+      "display_name": "Total assets",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.total_assets"
+      ],
+      "template_build_items": [
+        "financial_model.total_assets"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.bs.accounts_payable",
+      "display_name": "Account payables",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.accounts_payable"
+      ],
+      "template_build_items": [
+        "financial_model.accounts_payable"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "working_capital": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.accrued_expenses",
+      "display_name": "Accrued expenses",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.accrued_expenses"
+      ],
+      "template_build_items": [
+        "financial_model.accrued_expenses"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.bs.other_current_liabilities"
+      ],
+      "working_capital": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.accrued_compensation",
+      "display_name": "Accrued compensation and benefits",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.accrued_compensation"
+      ],
+      "template_build_items": [
+        "financial_model.accrued_compensation"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "working_capital": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.other_current_liabilities",
+      "display_name": "Other current liabilities",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.current_liability_2"
+      ],
+      "template_build_items": [
+        "financial_model.current_liability_2"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "working_capital": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "face_items": [
+        "tpl.fm.balance_sheet.current_liability_1"
+      ],
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.commercial_paper",
+      "display_name": "Commercial paper",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.current_liability_3"
+      ],
+      "template_build_items": [
+        "financial_model.current_liability_3"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.tax_liabilities_current",
+      "display_name": "Income taxes payable, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.tax_liabilities_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.deferred_revenue",
+      "display_name": "Deferred revenue",
+      "statement": "balance_sheet",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "tpl.a.balance_sheet_wc.deferred_revenues"
+      ],
+      "hff_fact_items": [],
+      "working_capital": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "face_items": [
+        "tpl.fm.balance_sheet.deferred_revenue_current"
+      ],
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.deferred_revenue_noncurrent",
+      "display_name": "Deferred revenue non current",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.deferred_revenue_noncurrent"
+      ],
+      "template_build_items": [
+        "financial_model.deferred_revenue_noncurrent"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "working_capital": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.total_current_liabilities",
+      "display_name": "Total current liabilities",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.total_current_liabilities"
+      ],
+      "template_build_items": [
+        "financial_model.total_current_liabilities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities"
+    },
+    {
+      "required_role": "statement.bs.short_term_debt",
+      "display_name": "Short term debt",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.current_portion_of_long_term_debt"
+      ],
+      "template_build_items": [
+        "financial_model.current_portion_of_long_term_debt"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.long_term_debt",
+      "display_name": "Long term debt",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.long_term_debt"
+      ],
+      "template_build_items": [
+        "financial_model.long_term_debt"
+      ],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.capital_sources.long_term_debt"
+      ],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.lease_liability_noncurrent",
+      "display_name": "Capital lease obligations non current",
+      "statement": "balance_sheet",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [],
+      "alias_of": "statement.bs.long_term_lease_liability"
+    },
+    {
+      "required_role": "statement.bs.current_lease_liability",
+      "display_name": "Capital lease obligations current",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.a.capital_sources.current_operating_lease_liabilities"
+      ],
+      "template_build_items": [
+        "assumptions.current_operating_lease_liabilities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.capital_sources.current_operating_lease_liabilities"
+      ],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities",
+      "face_items": [
+        "tpl.fm.balance_sheet.current_operating_lease_liabilities"
+      ],
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.other_non_current_liabilities",
+      "display_name": "Other non current liabilities",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.other_long_term_liabilities"
+      ],
+      "template_build_items": [
+        "financial_model.other_long_term_liabilities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "other_noncash": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.deferred_tax_liabilities",
+      "display_name": "Deferred tax liabilities non current",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.deferred_income_tax_liabilities"
+      ],
+      "template_build_items": [
+        "financial_model.deferred_income_tax_liabilities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "other_noncash": "liability",
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.total_liabilities",
+      "display_name": "Total liabilities",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.total_liabilities"
+      ],
+      "template_build_items": [
+        "financial_model.total_liabilities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities_and_equity"
+    },
+    {
+      "required_role": "statement.bs.total_equity",
+      "display_name": "Total stockholders equity",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.total_equity"
+      ],
+      "template_build_items": [
+        "financial_model.shareholders_equity"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities_and_equity"
+    },
+    {
+      "required_role": "statement.bs.treasury_stock",
+      "display_name": "Treasury stock",
+      "statement": "balance_sheet",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "tpl.a.dividends_shares.treasury_stock"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity",
+      "face_items": [
+        "tpl.fm.balance_sheet.treasury_stock"
+      ],
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.common_stock",
+      "display_name": "Common stock",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.common_stock"
+      ],
+      "template_build_items": [
+        "financial_model.common_stock"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.retained_earnings",
+      "display_name": "Retained earnings",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.retained_earnings"
+      ],
+      "template_build_items": [
+        "financial_model.retained_earnings"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity",
+      "balance": true,
+      "projection_owner": "roll_forward"
+    },
+    {
+      "required_role": "statement.bs.additional_paid_in_capital",
+      "display_name": "Additional paid in capital",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.additional_paid_in_capital"
+      ],
+      "template_build_items": [
+        "financial_model.additional_paid_in_capital"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.accumulated_other_comprehensive_income",
+      "display_name": "Accumulated other comprehensive income loss",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.accumulated_other_comprehensive_income_loss"
+      ],
+      "template_build_items": [
+        "financial_model.accumulated_other_comprehensive_income_loss"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.bs.noncontrolling_interest",
+      "display_name": "Noncontrolling interest",
+      "statement": "balance_sheet",
+      "template_items": [
+        "tpl.fm.balance_sheet.noncontrolling_interest"
+      ],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity",
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.cf.operating_cash_flow",
+      "display_name": "Operating cash flow",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.operating_cash_flow"
+      ],
+      "template_build_items": [
+        "financial_model.net_cash_provided_by_operating_activities"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.investing_cash_flow",
+      "display_name": "Net cash provided by investing activities",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.investing_cash_flow"
+      ],
+      "template_build_items": [
+        "financial_model.net_cash_provided_by_investing_activities"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.financing_cash_flow",
+      "display_name": "Net cash provided by financing activities",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.financing_cash_flow"
+      ],
+      "template_build_items": [
+        "financial_model.net_cash_provided_by_financing_activities"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.effect_of_exchange_rate_on_cash",
+      "display_name": "Effect of foreign exchange changes on cash",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.effect_of_exchange_rate_on_cash"
+      ],
+      "template_build_items": [
+        "financial_model.effect_of_exchange_rate_on_cash"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.cf.change_in_accounts_receivable",
+      "display_name": "Accounts receivables",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.accounts_receivable_net"
+      ],
+      "template_build_items": [
+        "financial_model.accounts_receivable_net_r144"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "change_of": "statement.bs.accounts_receivable"
+    },
+    {
+      "required_role": "statement.cf.change_in_accounts_payable",
+      "display_name": "Accounts payables",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.accounts_payable"
+      ],
+      "template_build_items": [
+        "financial_model.accounts_payable_r147"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "change_of": "statement.bs.accounts_payable"
+    },
+    {
+      "required_role": "statement.cf.change_in_inventory",
+      "display_name": "Inventory",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.current_asset_2"
+      ],
+      "template_build_items": [
+        "financial_model.current_asset_2_r146"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "change_of": "statement.bs.inventory"
+    },
+    {
+      "required_role": "statement.cf.change_in_accrued_expenses",
+      "display_name": "Change in accrued expenses",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.accrued_expenses"
+      ],
+      "template_build_items": [
+        "financial_model.accrued_expenses_r148"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.cf.change_in_other_working_capital"
+      ],
+      "change_of": "statement.bs.accrued_expenses"
+    },
+    {
+      "required_role": "statement.cf.change_in_other_working_capital",
+      "display_name": "Other working capital",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.changes_in_operating_assets_and_liabilities"
+      ],
+      "template_build_items": [
+        "financial_model.changes_in_operating_assets_and_liabilities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "derived_from": "working_capital"
+    },
+    {
+      "required_role": "statement.cf.change_in_deferred_income_taxes",
+      "display_name": "Deferred income tax",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.deferred_income_tax_assets"
+      ],
+      "template_build_items": [
+        "financial_model.deferred_income_tax_assets_r140"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.acquisitions_of_businesses",
+      "display_name": "Acquisitions net",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.acquisitions_of_businesses"
+      ],
+      "template_build_items": [
+        "financial_model.acquisitions_of_businesses"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.purchases_of_investments",
+      "display_name": "Purchases of investments",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.purchases_of_investments"
+      ],
+      "template_build_items": [
+        "financial_model.purchases_of_investments"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "counterpart": "statement.bs.marketable_securities_noncurrent"
+    },
+    {
+      "required_role": "statement.cf.sales_maturities_of_investments",
+      "display_name": "Sales maturities of investments",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.sales_maturities_of_investments"
+      ],
+      "template_build_items": [
+        "financial_model.sales_maturities_of_investments"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "counterpart": "statement.bs.marketable_securities_noncurrent"
+    },
+    {
+      "required_role": "statement.cf.net_long_term_debt_issuance",
+      "display_name": "Long term net debt issuance",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.proceeds_or_payment_for_debt"
+      ],
+      "template_build_items": [
+        "financial_model.proceeds_or_payment_for_debt"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.cf.proceeds_from_lines_of_credit",
+      "display_name": "Proceeds from lines of credit",
+      "statement": "cash_flow",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.cf.net_long_term_debt_issuance"
+      ]
+    },
+    {
+      "required_role": "statement.cf.repayments_of_lines_of_credit",
+      "display_name": "Repayments of lines of credit",
+      "statement": "cash_flow",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [],
+      "covered_by_roles": [
+        "statement.cf.net_long_term_debt_issuance"
+      ]
+    },
+    {
+      "required_role": "statement.cf.proceeds_from_stock_plans",
+      "display_name": "Common stock issuance",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.cash_flow.proceeds_from_employee_stock_purchase_plan"
+      ],
+      "template_build_items": [
+        "financial_model.proceeds_from_employee_stock_purchase_plan"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.cf_other_non_cash_items",
+      "display_name": "Other non cash items",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.other_non_cash_adjustments"
+      ],
+      "template_build_items": [
+        "financial_model.other_non_cash_adjustments"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "residual_of": "statement.cf.operating_cash_flow"
+    },
+    {
+      "required_role": "statement.cf.cf_other_investing_activities",
+      "display_name": "Other investing activities",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.other_changes_in_investing_activities"
+      ],
+      "template_build_items": [
+        "financial_model.other_changes_in_investing_activities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "residual_of": "statement.cf.investing_cash_flow",
+      "counterpart": "statement.bs.other_non_current_assets"
+    },
+    {
+      "required_role": "statement.cf.cf_other_financing_activities",
+      "display_name": "Other financing activities",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.other_financing_activities"
+      ],
+      "template_build_items": [
+        "financial_model.other_financing_activities"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true,
+      "residual_of": "statement.cf.financing_cash_flow"
+    },
+    {
+      "required_role": "statement.cf.capital_expenditures",
+      "display_name": "Capital expenditure",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.purchases_of_property_and_equipment"
+      ],
+      "template_build_items": [
+        "financial_model.purchases_of_property_and_equipment"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.dividends_paid",
+      "display_name": "Common dividends paid",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.cash_flow.dividends"
+      ],
+      "template_build_items": [
+        "financial_model.dividends"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.share_repurchases",
+      "display_name": "Common stock repurchased",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.share_repurchases"
+      ],
+      "template_build_items": [
+        "financial_model.share_repurchases"
+      ],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.dividends_shares.total_amount"
+      ],
+      "counterpart": "statement.bs.treasury_stock"
+    },
+    {
+      "required_role": "statement.is.shares_outstanding",
+      "display_name": "Weighted average shares outstanding diluted",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.a.dividends_shares.end_of_period_shares_outstanding"
+      ],
+      "template_build_items": [
+        "assumptions.end_of_period_shares_outstanding"
+      ],
+      "population_items": [],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.free_cash_flow",
+      "display_name": "Free cash flow",
+      "statement": "cash_flow",
+      "template_items": [
+        "tpl.fm.cash_flow.free_cash_flow"
+      ],
+      "template_build_items": [
+        "financial_model.free_cash_flow"
+      ],
+      "population_items": [],
+      "hff_fact_items": [],
+      "optional_if_unreported": true
+    },
+    {
+      "required_role": "statement.bs.capitalized_software",
+      "display_name": "Capitalized software",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "tpl.a.capital_investments.software_investment_if_applicable"
+      ],
+      "hff_fact_items": [
+        "tpl.a.capital_investments.software_investment_if_applicable",
+        "tpl.fm.balance_sheet.software_investment_if_applicable"
+      ],
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "face_items": [
+        "tpl.fm.balance_sheet.software_investment_if_applicable"
+      ],
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.cf.capitalized_software_additions",
+      "display_name": "Capitalized software additions",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.cash_flow.capitalized_software_costs_if_applicable"
+      ],
+      "template_build_items": [
+        "financial_model.capitalized_software_costs_if_applicable"
+      ],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.capital_investments.add_capitalized_software_costs_if_applicable"
+      ]
+    },
+    {
+      "required_role": "statement.cf.capitalized_software_amortization",
+      "display_name": "Capitalized software amortization",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "tpl.a.depreciation_amortization.amortization_of_capitalized_internal_use_software"
+      ],
+      "hff_fact_items": [
+        "tpl.a.depreciation_amortization.amortization_of_capitalized_internal_use_software"
+      ]
+    },
+    {
+      "required_role": "statement.bs.current_deferred_contract_costs",
+      "display_name": "Current deferred contract costs",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "tpl.a.balance_sheet_wc.current_asset_1"
+      ],
+      "hff_fact_items": [
+        "tpl.a.balance_sheet_wc.current_asset_1"
+      ],
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets",
+      "face_items": [
+        "tpl.fm.balance_sheet.current_asset_1"
+      ],
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.long_term_deferred_contract_costs",
+      "display_name": "Long term deferred contract costs",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.balance_sheet.long_term_asset_1"
+      ],
+      "template_build_items": [
+        "financial_model.long_term_asset_1"
+      ],
+      "population_items": [
+        "tpl.a.other_assets.long_term_asset_1"
+      ],
+      "hff_fact_items": [
+        "tpl.a.other_assets.long_term_asset_1"
+      ],
+      "working_capital": "asset",
+      "parent_total": "tpl.fm.balance_sheet.total_assets",
+      "balance": true
+    },
+    {
+      "required_role": "statement.bs.right_of_use_asset",
+      "display_name": "Right of use asset",
+      "statement": "balance_sheet",
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [],
+      "alias_of": "statement.bs.operating_lease_right_of_use_assets"
+    },
+    {
+      "required_role": "statement.bs.long_term_lease_liability",
+      "display_name": "Long term lease liability",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.balance_sheet.long_term_operating_lease_liabilities"
+      ],
+      "template_build_items": [
+        "financial_model.long_term_operating_lease_liabilities"
+      ],
+      "population_items": [
+        "tpl.fm.balance_sheet.long_term_operating_lease_liabilities"
+      ],
+      "hff_fact_items": [
+        "tpl.fm.balance_sheet.long_term_operating_lease_liabilities"
+      ],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities",
+      "balance": true,
+      "projection_owner": "schedule"
+    },
+    {
+      "required_role": "statement.is.basic_shares",
+      "display_name": "Weighted average shares outstanding",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "template_items": [
+        "tpl.fm.income_statement.basic_shares_outstanding_m"
+      ],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.dividends_shares.basic_shares_outstanding"
+      ]
+    },
+    {
+      "required_role": "statement.cf.employee_stock_purchase_plan",
+      "display_name": "Employee stock purchase plan",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [],
+      "hff_fact_items": [
+        "tpl.a.dividends_shares.proceeds_from_employee_stock_purchase_plan"
+      ]
+    },
+    {
+      "required_role": "statement.bs.preferred_stock",
+      "display_name": "Preferred stock",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.preferred_stock"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity"
+    },
+    {
+      "required_role": "statement.bs.finance_lease_right_of_use_assets",
+      "display_name": "Finance lease right-of-use assets",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.finance_lease_right_of_use_assets"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.contract_asset_current",
+      "display_name": "Contract assets, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.contract_asset_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets"
+    },
+    {
+      "required_role": "statement.bs.contract_asset_noncurrent",
+      "display_name": "Contract assets, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.contract_asset_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.restricted_cash_current",
+      "display_name": "Restricted cash and cash equivalents, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.restricted_cash_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets"
+    },
+    {
+      "required_role": "statement.bs.restricted_cash_noncurrent",
+      "display_name": "Restricted cash and cash equivalents, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.restricted_cash_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.assets_of_disposal_group_current",
+      "display_name": "Disposal-group assets, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.assets_of_disposal_group_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets"
+    },
+    {
+      "required_role": "statement.bs.assets_of_disposal_group_noncurrent",
+      "display_name": "Disposal-group assets, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.assets_of_disposal_group_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.liabilities_of_disposal_group_current",
+      "display_name": "Disposal-group liabilities, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.liabilities_of_disposal_group_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.liabilities_of_disposal_group_noncurrent",
+      "display_name": "Disposal-group liabilities, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.liabilities_of_disposal_group_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities"
+    },
+    {
+      "required_role": "statement.bs.assets_held_for_sale_current",
+      "display_name": "Assets held for sale, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.assets_held_for_sale_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets"
+    },
+    {
+      "required_role": "statement.bs.pension_postretirement_liabilities",
+      "display_name": "Defined-benefit pension and postretirement liabilities, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.pension_postretirement_liabilities"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities"
+    },
+    {
+      "required_role": "statement.bs.redeemable_noncontrolling_interest",
+      "display_name": "Redeemable noncontrolling interest",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.redeemable_noncontrolling_interest"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities_and_equity"
+    },
+    {
+      "required_role": "statement.bs.temporary_equity_attributable_to_parent",
+      "display_name": "Temporary equity attributable to parent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.temporary_equity_attributable_to_parent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities_and_equity"
+    },
+    {
+      "required_role": "statement.bs.deposits_current",
+      "display_name": "Deposits, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.deposits_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets"
+    },
+    {
+      "required_role": "statement.bs.deposits_noncurrent",
+      "display_name": "Deposits, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.deposits_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.asset_retirement_obligation_current",
+      "display_name": "Asset-retirement obligations, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.asset_retirement_obligation_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.asset_retirement_obligations_noncurrent",
+      "display_name": "Asset-retirement obligations, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.asset_retirement_obligations_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities"
+    },
+    {
+      "required_role": "statement.bs.warrants_and_rights_outstanding",
+      "display_name": "Equity-classified warrants and rights",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.warrants_and_rights_outstanding"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity"
+    },
+    {
+      "required_role": "statement.bs.contingent_consideration_current",
+      "display_name": "Business-combination contingent consideration, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.contingent_consideration_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.deferred_costs_current",
+      "display_name": "Deferred costs, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.deferred_costs_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_assets"
+    },
+    {
+      "required_role": "statement.bs.deferred_costs_noncurrent",
+      "display_name": "Deferred costs, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.deferred_costs_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.assets_held_in_trust_noncurrent",
+      "display_name": "Assets held in trust, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.assets_held_in_trust_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.notes_and_loans_receivable_noncurrent",
+      "display_name": "Notes and loans receivable, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.notes_and_loans_receivable_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.prepaid_expenses_noncurrent",
+      "display_name": "Prepaid expenses, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.prepaid_expenses_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.uncertain_tax_positions_current",
+      "display_name": "Uncertain-tax-position liabilities, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.uncertain_tax_positions_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.finance_lease_liability_current",
+      "display_name": "Finance lease liabilities, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.finance_lease_liability_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.finance_lease_liability_noncurrent",
+      "display_name": "Finance lease liabilities, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.finance_lease_liability_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities"
+    },
+    {
+      "required_role": "statement.bs.equity_method_investments",
+      "display_name": "Equity-method investments",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.equity_method_investments"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.inventory_noncurrent",
+      "display_name": "Inventory, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.inventory_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_assets"
+    },
+    {
+      "required_role": "statement.bs.deferred_compensation_equity",
+      "display_name": "Deferred compensation in equity",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.deferred_compensation_equity"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_equity"
+    },
+    {
+      "required_role": "statement.bs.derivative_liabilities_current",
+      "display_name": "Derivative liabilities, current",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.derivative_liabilities_current"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_current_liabilities"
+    },
+    {
+      "required_role": "statement.bs.derivative_liabilities_noncurrent",
+      "display_name": "Derivative liabilities, noncurrent",
+      "statement": "balance_sheet",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.derivative_liabilities_noncurrent"
+      ],
+      "hff_fact_items": [],
+      "parent_total": "tpl.fm.balance_sheet.total_liabilities"
+    },
+    {
+      "required_role": "statement.is.provision_for_doubtful_accounts",
+      "display_name": "Provision for doubtful accounts",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.provision_for_doubtful_accounts"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.net_income_attributable_to_noncontrolling_interest",
+      "display_name": "Net income attributable to noncontrolling interest",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.income_statement.net_income_attributable_to_noncontrolling_interest"
+      ],
+      "template_build_items": [
+        "financial_model.net_income_attributable_to_noncontrolling_interest"
+      ],
+      "population_items": [
+        "fm.semantic.{ticker}.net_income_attributable_to_noncontrolling_interest"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.debt_extinguishment_gain_loss",
+      "display_name": "Gain (loss) on extinguishment of debt",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.debt_extinguishment_gain_loss"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.gain_loss_on_disposition_of_assets",
+      "display_name": "Gain (loss) on disposition of assets",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.gain_loss_on_disposition_of_assets"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.asset_impairment_charges",
+      "display_name": "Asset impairment charges",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.asset_impairment_charges"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.equity_in_earnings",
+      "display_name": "Income (loss) from equity-method investments",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.equity_in_earnings"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.restructuring_charges",
+      "display_name": "Restructuring charges",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [
+        "tpl.fm.income_statement.restructuring_charges"
+      ],
+      "template_build_items": [
+        "financial_model.restructuring_charges"
+      ],
+      "population_items": [
+        "fm.semantic.{ticker}.restructuring_charges"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.discontinued_operations",
+      "display_name": "Income (loss) from discontinued operations, net of tax",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.discontinued_operations"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.preferred_dividends_and_other_adjustments",
+      "display_name": "Preferred stock dividends and other adjustments",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.preferred_dividends_and_other_adjustments"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.other_operating_expense",
+      "display_name": "Other operating cost and expense",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.other_operating_expense"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.other_general_expense",
+      "display_name": "Other general expense",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.other_general_expense"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.other_nonrecurring_income_expense",
+      "display_name": "Other nonrecurring operating expense (income)",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.other_nonrecurring_income_expense"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.accretion_expense",
+      "display_name": "Accretion expense",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.accretion_expense"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.lease_selling_profit_loss",
+      "display_name": "Sales-type and direct-financing lease selling profit (loss)",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.lease_selling_profit_loss"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.government_assistance_operating_income",
+      "display_name": "Government assistance operating income",
+      "statement": "income_statement",
+      "polarity": "income_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.government_assistance_operating_income"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.is.government_assistance_operating_expense",
+      "display_name": "Government assistance credited to operating expense",
+      "statement": "income_statement",
+      "polarity": "expense_positive",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.government_assistance_operating_expense"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.tax_withholding_share_based_compensation",
+      "display_name": "Payments for tax withholding on share-based compensation",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.tax_withholding_share_based_compensation"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.proceeds_from_sale_of_productive_assets",
+      "display_name": "Proceeds from sale of productive assets",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.proceeds_from_sale_of_productive_assets"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.debt_issuance_costs_paid",
+      "display_name": "Payments of debt issuance and financing costs",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.debt_issuance_costs_paid"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.contingent_consideration_paid_financing",
+      "display_name": "Payment for contingent consideration, financing activities",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.contingent_consideration_paid_financing"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.equity_method_return_of_capital",
+      "display_name": "Proceeds from equity-method investment return of capital",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.equity_method_return_of_capital"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.proceeds_from_divestitures",
+      "display_name": "Proceeds from divestiture of businesses, net of cash divested",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.proceeds_from_divestitures"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.debt_extinguishment_costs_paid",
+      "display_name": "Payments of debt extinguishment costs",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.debt_extinguishment_costs_paid"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.insurance_settlement_proceeds_investing",
+      "display_name": "Proceeds from insurance settlement, investing activities",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.insurance_settlement_proceeds_investing"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.proceeds_from_equity_issuance",
+      "display_name": "Proceeds from issuance or sale of equity",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.proceeds_from_equity_issuance"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.intangible_asset_purchases",
+      "display_name": "Payments to acquire intangible assets",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.intangible_asset_purchases"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.net_loans_receivable_investing",
+      "display_name": "Net payments for (proceeds from) loans receivable",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.net_loans_receivable_investing"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.noncontrolling_interest_transactions",
+      "display_name": "Net proceeds from (payments to) noncontrolling interests",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.noncontrolling_interest_transactions"
+      ],
+      "hff_fact_items": []
+    },
+    {
+      "required_role": "statement.cf.net_life_insurance_policies",
+      "display_name": "Net payments for (proceeds from) life insurance policies",
+      "statement": "cash_flow",
+      "optional_if_unreported": true,
+      "template_items": [],
+      "template_build_items": [],
+      "population_items": [
+        "fm.semantic.{ticker}.net_life_insurance_policies"
+      ],
+      "hff_fact_items": []
+    }
+  ]
+}

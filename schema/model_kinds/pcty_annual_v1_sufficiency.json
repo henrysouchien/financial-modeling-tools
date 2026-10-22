@@ -1,0 +1,100 @@
+{
+  "schema_version": "business-model-sufficiency.v1",
+  "provenance": "docs/design/issuer-generic-build-implementation-plan-2026-08-19.md \u00a77 IG-5 family 1 / \u00a73 row S1 / \u00a713 item 6 (ratified 2026-08-20). This artifact restates, byte-for-byte, the closed capability denominator and the per-capability repair targets that were module constants in schema/business_model_sufficiency.py. The vocabulary is this model kind's; the checker that reads it names none.",
+  "profile_id": "pcty_annual_v1",
+  "semantic_namespace": "pcty",
+  "cycle_gap_capability_id": "pcty.capability.statement_reconciliation",
+  "required_capabilities": [
+    {
+      "capability_id": "pcty.capability.capital_allocation",
+      "missing_observation": "pcty.observation.cash",
+      "missing_driver": "pcty.driver.repurchases",
+      "missing_mapping": "pcty.mapping.capital_allocation",
+      "missing_schedule": "pcty.schedule.capital_allocation"
+    },
+    {
+      "capability_id": "pcty.capability.capitalized_software",
+      "missing_observation": "pcty.observation.capitalized_software",
+      "missing_driver": "pcty.driver.software_additions",
+      "missing_mapping": "pcty.mapping.capitalized_software",
+      "missing_schedule": "pcty.schedule.capitalized_software"
+    },
+    {
+      "capability_id": "pcty.capability.client_funds",
+      "missing_observation": "pcty.observation.funds_held",
+      "missing_driver": "pcty.driver.client_funds_yield",
+      "missing_mapping": "pcty.mapping.cash_net_debt",
+      "missing_schedule": "pcty.schedule.client_funds"
+    },
+    {
+      "capability_id": "pcty.capability.deferred_contract_cost",
+      "missing_observation": "pcty.observation.deferred_contract_current",
+      "missing_driver": "pcty.driver.deferred_contract_additions",
+      "missing_mapping": "pcty.mapping.deferred_contract_cost",
+      "missing_schedule": "pcty.schedule.deferred_contract_cost"
+    },
+    {
+      "capability_id": "pcty.capability.gaap_non_gaap_bridge",
+      "missing_observation": "pcty.observation.gaap_operating_income",
+      "missing_driver": "pcty.driver.other_adjustments",
+      "missing_mapping": "pcty.mapping.gaap_non_gaap",
+      "missing_schedule": "pcty.schedule.gaap_non_gaap_bridge"
+    },
+    {
+      "capability_id": "pcty.capability.implementation_other_revenue",
+      "missing_observation": "pcty.observation.implementation_other_revenue",
+      "missing_driver": "pcty.driver.implementation_other_revenue",
+      "missing_mapping": "pcty.mapping.revenue",
+      "missing_schedule": "pcty.schedule.implementation_other_revenue"
+    },
+    {
+      "capability_id": "pcty.capability.lease",
+      "missing_observation": "pcty.observation.lease_rou_asset",
+      "missing_driver": "pcty.driver.lease_additions",
+      "missing_mapping": "pcty.mapping.lease",
+      "missing_schedule": "pcty.schedule.lease"
+    },
+    {
+      "capability_id": "pcty.capability.payroll_hcm_annual",
+      "missing_observation": "pcty.observation.client_count",
+      "missing_driver": "pcty.driver.revenue_per_client",
+      "missing_mapping": "pcty.mapping.revenue",
+      "missing_schedule": "pcty.schedule.recurring_revenue"
+    },
+    {
+      "capability_id": "pcty.capability.recurring_revenue",
+      "missing_observation": "pcty.observation.client_count",
+      "missing_driver": "pcty.driver.retention",
+      "missing_mapping": "pcty.mapping.revenue",
+      "missing_schedule": "pcty.schedule.recurring_revenue"
+    },
+    {
+      "capability_id": "pcty.capability.share_count",
+      "missing_observation": "pcty.observation.basic_shares",
+      "missing_driver": "pcty.driver.shares_issued",
+      "missing_mapping": "pcty.mapping.share_count",
+      "missing_schedule": "pcty.schedule.share_count"
+    },
+    {
+      "capability_id": "pcty.capability.statement_reconciliation",
+      "missing_observation": "pcty.observation.revenue",
+      "missing_driver": "pcty.driver.client_count",
+      "missing_mapping": "pcty.mapping.income_statement",
+      "missing_schedule": "pcty.schedule.statement_reconciliation"
+    },
+    {
+      "capability_id": "pcty.capability.tax",
+      "missing_observation": "pcty.observation.pretax_income",
+      "missing_driver": "pcty.driver.effective_tax_rate",
+      "missing_mapping": "pcty.mapping.tax",
+      "missing_schedule": "pcty.schedule.tax"
+    },
+    {
+      "capability_id": "pcty.capability.working_capital",
+      "missing_observation": "pcty.observation.accounts_receivable",
+      "missing_driver": "pcty.driver.receivable_days",
+      "missing_mapping": "pcty.mapping.working_capital",
+      "missing_schedule": "pcty.schedule.working_capital"
+    }
+  ]
+}

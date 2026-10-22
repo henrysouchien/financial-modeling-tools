@@ -5,13 +5,9 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Mapping, TypeAlias
 
-from schema.cas import (
-    _strip_revision_exclusions,
-    canonical_model_hash,
-    workbook_bundle_hash,
-)
+from schema.cas import canonical_model_hash, workbook_bundle_hash
 from schema.dependency_graph import DependencyGraph
 from schema.load_core import (
     _ModelBundle,
@@ -23,6 +19,8 @@ from schema.models import FinancialModel, ItemType
 
 if TYPE_CHECKING:
     from schema.modify_core import Operation
+
+ComputedValues: TypeAlias = Mapping[str, Mapping[int, float | None]]
 
 
 _handle_memo: dict[tuple[str, int], "ModelHandle"] = {}
@@ -36,15 +34,15 @@ def _revision_for(model: FinancialModel) -> str:
 
 
 def _copy_computed(
-    computed: Mapping[str, Mapping[int, float]],
-) -> dict[str, dict[int, float]]:
+    computed: ComputedValues,
+) -> dict[str, dict[int, float | None]]:
     return {item_id: dict(values) for item_id, values in computed.items()}
 
 
 @dataclass(frozen=True)
 class ModelHandle:
     model: FinancialModel
-    computed: Mapping[str, Mapping[int, float]]
+    computed: ComputedValues
     revision: str
     source: str = field(default="handle", compare=False)
     file_signature: tuple[int, int] | None = field(default=None, compare=False)
@@ -69,7 +67,7 @@ class ModelHandle:
         return list(self.model._index.values())
 
     @property
-    def base_results(self) -> Mapping[str, Mapping[int, float]]:
+    def base_results(self) -> ComputedValues:
         return self.computed
 
     @property
@@ -104,13 +102,10 @@ def evaluate(handle: ModelHandle, ops: list[Operation]) -> ModelHandle:
     """Apply in-memory operations to a handle and return a freshly computed handle."""
 
     from schema import modify_core
-    from schema.modify_core import ModifyError, Operation
+    from schema.modify_core import ModifyError, validate_operation
     from schema.modify_layout import _assert_layout_integrity
 
-    parsed_ops = [
-        op if isinstance(op, Operation) else Operation.model_validate(op)
-        for op in ops
-    ]
+    parsed_ops = [validate_operation(op) for op in ops]
     snapshot = copy.deepcopy(handle.model)
 
     if not parsed_ops:
@@ -155,12 +150,16 @@ def load_handle(
     model: FinancialModel | None = None,
     historical_cutoff_year: int | None = None,
     persist: bool = False,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> ModelHandle:
+    """Load a model handle; ``use_cache=False`` is a read-only planning load."""
+
     cutoff = historical_cutoff_year if historical_cutoff_year is not None else datetime.now().year
     key = (file_path, cutoff)
     signature = _file_signature(file_path)
 
-    if model is None and key in _handle_memo:
+    if model is None and use_cache and key in _handle_memo:
         cached = _handle_memo[key]
         if cached.file_signature == signature:
             _assert_loaded_valuation_template_schema(
@@ -171,9 +170,19 @@ def load_handle(
             return cached
         del _handle_memo[key]
 
-    bundle = _build_bundle(file_path, model=model, cutoff=cutoff, persist=persist)
+    bundle = _build_bundle(
+        file_path,
+        model=model,
+        cutoff=cutoff,
+        persist=persist,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+    )
     handle = ModelHandle.from_bundle(bundle)
-    _handle_memo[key] = handle
+    # A planning load may deliberately defer cache/sidecar refresh.  Do not let
+    # that handle satisfy a later default lookup, which must get a chance to
+    # perform the deferred refresh through _build_bundle.
+    if refresh_stale_sidecar and use_cache:
+        _handle_memo[key] = handle
     return handle
 
 
@@ -194,6 +203,7 @@ def evict_handle(
 
 
 __all__ = [
+    "ComputedValues",
     "ModelHandle",
     "_handle_memo",
     "_canonical_model_hash",

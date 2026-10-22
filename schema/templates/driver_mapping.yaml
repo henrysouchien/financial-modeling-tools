@@ -8,17 +8,53 @@ mappings:
   sales_marketing_pct: tpl.a.operating_leverage.sales_and_marketing_pct_revenue
   rd_pct: tpl.a.operating_leverage.research_and_development_pct_revenue
   ga_pct: tpl.a.operating_leverage.general_and_administrative_pct_revenue
+  gross_margin: tpl.a.scenario_tables.margin_base
+
+  sbc_cost_of_revenue_pct: tpl.a.stock_based_compensation.cost_of_revenues_pct_line_item
+  sbc_sales_marketing_pct: tpl.a.stock_based_compensation.sales_and_marketing_pct_line_item
+  sbc_rd_pct: tpl.a.stock_based_compensation.research_and_development_pct_line_item
+  sbc_ga_pct: tpl.a.stock_based_compensation.general_and_administrative_pct_line_item
+  # ``sbc_pct`` lowers onto the same four rows through its own keys, so the
+  # compile reads the SBC forecast method from the key that wrote the row
+  # (per_line above, aggregate_scale below).
+  sbc_mix_cost_of_revenue_pct: tpl.a.stock_based_compensation.cost_of_revenues_pct_line_item
+  sbc_mix_sales_marketing_pct: tpl.a.stock_based_compensation.sales_and_marketing_pct_line_item
+  sbc_mix_rd_pct: tpl.a.stock_based_compensation.research_and_development_pct_line_item
+  sbc_mix_ga_pct: tpl.a.stock_based_compensation.general_and_administrative_pct_line_item
 
   depreciation_rate: tpl.a.depreciation_amortization.depreciation_as_of_beginning_property_and_equipment
   capex_pct: tpl.a.capital_investments.property_and_equipment_pct_revenue
+  capitalized_software_pct: tpl.a.capital_investments.of_revenue
+  capitalized_software_amortization_rate: tpl.a.depreciation_amortization.amortization_of_beginning_capitalized_internal_use_software
 
   tax_rate: tpl.a.tax_net_income.tax_rate
-  share_dilution: tpl.a.tax_net_income.y_y_chg
+  nci_share_of_consolidated_net_income: tpl.a.tax_net_income.nci_share_of_consolidated_net_income
 
   dso: tpl.a.balance_sheet_wc.days_sales_outstanding_dso
   dpo: tpl.a.balance_sheet_wc.days_payable_outstanding_dpo
+  deferred_revenue_ratio: tpl.a.balance_sheet_wc.of_rev
 
   debt_change: tpl.a.capital_sources.change
+  debt_interest_rate: tpl.a.other_income_interest.interest_rate
+  interest_rate: tpl.a.other_income_interest.interest_rate
+  other_income_expense: tpl.a.other_income_interest.other_income_expense
+
+  acquisitions_of_businesses: tpl.fm.cash_flow.acquisitions_of_businesses
+  acquisition_goodwill_allocation: tpl.a.intangibles_goodwill.acquisition_goodwill_allocation
+  deferred_revenue_noncurrent: tpl.fm.balance_sheet.deferred_revenue_noncurrent
+  purchases_of_investments: tpl.fm.cash_flow.purchases_of_investments
+  sales_maturities_of_investments: tpl.fm.cash_flow.sales_maturities_of_investments
+  other_changes_in_investing_activities: tpl.fm.cash_flow.other_changes_in_investing_activities
+  effect_of_exchange_rate_on_cash: tpl.fm.cash_flow.effect_of_exchange_rate_on_cash
+  restructuring_charges: tpl.fm.income_statement.restructuring_charges
+
+  share_repurchases: tpl.a.dividends_shares.total_amount
+  employee_stock_plan_proceeds: tpl.a.dividends_shares.proceeds_from_employee_stock_purchase_plan
+  dividends_paid: tpl.a.dividends_shares.dividend_paid
+  non_gaap_other_items: tpl.a.adj_ebitda.other_items
+  prepaid_pct_revenue: tpl.a.balance_sheet_wc.prepaid_pct_revenue
+  current_operating_lease_liabilities_pct_revenue: tpl.a.capital_sources.current_operating_lease_liabilities_pct_revenue
+  depreciation_pct_revenue: tpl.a.depreciation_amortization.depreciation_pct_revenue
 
 scale_correction_rules:
   - key: debt_change

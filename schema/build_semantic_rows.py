@@ -2,49 +2,41 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+import logging
 import re
-import sys
 from typing import Any
 
-from .build_formula_refs import _extract_ref_ids as _formula_extract_ref_ids
+from .build_findings import make_finding
+from .build_formula_refs import (
+    _extract_ref_ids as _formula_extract_ref_ids,
+    saved_formula_slots,
+)
 from .build_model_items import _iter_items as _model_iter_items
 from .build_real_data import _item_has_real_data as _real_data_item_has_real_data
-from .build_semantic_rows_cash_flow import (
-    _apply_semantic_cash_flow_linkages as _apply_semantic_cash_flow_linkages,
-    _bind_or_insert_cf_linkage_row as _bind_or_insert_cf_linkage_row,
-    _periods_for_delta_formula as _periods_for_delta_formula,
-)
-from .build_semantic_rows_client_funds import (
-    _CLIENT_FUNDS_BRIDGE_SECTIONS as _CLIENT_FUNDS_BRIDGE_SECTIONS,
-    _CLIENT_FUNDS_BUSINESS_MODEL_TERMS as _CLIENT_FUNDS_BUSINESS_MODEL_TERMS,
-    _business_model_has_client_funds_topology as _business_model_has_client_funds_topology,
-    _business_model_text_values as _business_model_text_values,
-    _client_funds_bridge_entry as _client_funds_bridge_entry,
-    _client_funds_bridge_residuals as _client_funds_bridge_residuals,
-    _client_funds_bridge_target_is_available as _client_funds_bridge_target_is_available,
-    _materialize_client_funds_subtotal_bridges as _materialize_client_funds_subtotal_bridges,
-    _semantic_constant_value as _semantic_constant_value,
-    _semantic_evaluate_expr as _semantic_evaluate_expr,
-    _semantic_evaluate_formula as _semantic_evaluate_formula,
-    _semantic_observed_value as _semantic_observed_value,
-    _semantic_shift_period as _semantic_shift_period,
-    _set_semantic_derived_values as _set_semantic_derived_values,
-)
-from .build_semantic_rows_valuation import (
-    _apply_semantic_valuation_linkages as _apply_semantic_valuation_linkages,
-    _semantic_role as _semantic_role,
-)
+from .finding_vocabulary import Finding
 from .models import (
+    FinancialStatement,
     FinancialModel,
     FormulaSpec,
     FormulaType,
     ItemType,
     LineItem,
     LineItemRef,
-    Unit,
+    StatementSectionRole,
 )
+from industry_slice_core.industry_types import Unit
+from .multi_basis_window import InsertTarget, MultiBasisWindow
 from .overrides import TickerOverrides
+from .required_role_catalog import (
+    _ROLE_RE,
+    RequiredRoleUnknown,
+    load_required_role_catalog,
+)
+from .statement_windows import CompiledStatementWindows
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -53,7 +45,6 @@ class SemanticRowsResult:
     linkages: list[dict[str, Any]] = field(default_factory=list)
     collisions: list[dict[str, Any]] = field(default_factory=list)
     gaps: list[dict[str, Any]] = field(default_factory=list)
-    source_custom_concepts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,19 +55,97 @@ class SemanticRowsResult:
         }
 
 
-_CUSTOM_CONCEPT_CARRY_FORWARD_STRATEGIES = frozenset(
+_SEMANTIC_CARRY_FORWARD_STRATEGIES = frozenset(
     {"carry_forward", "prior_period", "flat"}
 )
+_SEMANTIC_FORECAST_ZERO_TYPE = "zero"
+
+# Single owner of the semantic_rows row_policy.mode vocabulary (documented in
+# schema/overrides/README.md). Bind-only modes must resolve against an existing row;
+# insert-capable modes may fall through to inserting a new row.
+_MODE_BIND_IF_EMPTY = "bind_if_empty"
+_MODE_BIND_IF_SAME_SEMANTIC = "bind_if_same_semantic"
+_MODE_BIND_IF_EMPTY_OR_INSERT = "bind_if_empty_or_insert"
+_MODE_INSERT = "insert"
+_MODE_INSERT_OR_BIND_SAME_SEMANTIC = "insert_or_bind_same_semantic"
+_ROW_POLICY_BIND_ONLY_MODES = frozenset(
+    {_MODE_BIND_IF_EMPTY, _MODE_BIND_IF_SAME_SEMANTIC}
+)
+_ROW_POLICY_INSERT_CAPABLE_MODES = frozenset(
+    {_MODE_BIND_IF_EMPTY_OR_INSERT, _MODE_INSERT, _MODE_INSERT_OR_BIND_SAME_SEMANTIC}
+)
+# Modes permitted to bind an empty preferred target (spans both partitions).
+_ROW_POLICY_BIND_EMPTY_MODES = frozenset(
+    {_MODE_BIND_IF_EMPTY, _MODE_BIND_IF_EMPTY_OR_INSERT}
+)
+
+# The materialized-entry key that carries semantic_rows override values outside
+# the vocabulary this module owns. Each element is ``{"site", "value",
+# "outcome"}``; ``semantic_row_policy_findings`` turns a row's list into one
+# ``semantic_row_policy_unrecognized`` warning, because Finding identity is
+# ``(code, item_id, periods)`` (``collapse_findings``) and a second warning on
+# the same row would be dropped there.
+_UNRECOGNIZED_POLICY_KEY = "unrecognized_policy"
+
+
+def _unrecognized_policy(site: str, value: str, outcome: str) -> dict[str, str]:
+    return {"site": site, "value": value, "outcome": outcome}
+
+
+def _materialized_entry(
+    *,
+    required_role: str,
+    action: str,
+    item_id: str,
+    unrecognized: Iterable[dict[str, str] | None],
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "required_role": required_role,
+        "action": action,
+        "item_id": item_id,
+    }
+    carried = [value for value in unrecognized if value is not None]
+    if carried:
+        entry[_UNRECOGNIZED_POLICY_KEY] = carried
+    return entry
+
+
+def semantic_row_policy_findings(
+    materialized: Iterable[Mapping[str, Any]],
+) -> tuple[Finding, ...]:
+    """One ``semantic_row_policy_unrecognized`` warning per row, naming every
+    unrecognized site/value and what the compiler did with each."""
+
+    findings: list[Finding] = []
+    for row in materialized:
+        carried = list(row.get(_UNRECOGNIZED_POLICY_KEY, ()))
+        if not carried:
+            continue
+        clauses = "; ".join(
+            f"{unrecognized['site']} {unrecognized['value']!r} is not a recognized "
+            f"value, {unrecognized['outcome']}"
+            for unrecognized in carried
+        )
+        observed: dict[str, str] = {"required_role": row["required_role"]}
+        for unrecognized in carried:
+            site = unrecognized["site"]
+            observed[f"{site}.value"] = unrecognized["value"]
+            observed[f"{site}.outcome"] = unrecognized["outcome"]
+        findings.append(
+            make_finding(
+                "semantic_row_policy_unrecognized",
+                message=f"semantic_row {row['required_role']!r}: {clauses}",
+                item_id=row["item_id"],
+                observed=observed,
+            )
+        )
+    return tuple(findings)
+
+
 _BS_TOTAL_FORMULA_BY_SECTION = {
     "current_assets": "tpl.fm.balance_sheet.total_current_assets",
     "current_liabilities": "tpl.fm.balance_sheet.total_current_liabilities",
 }
-
-
-def _parent_attr(name: str, fallback: Any) -> Any:
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    return getattr(parent, name, fallback) if parent is not None else fallback
 
 
 def _semantic_slug(value: str) -> str:
@@ -86,14 +155,13 @@ def _semantic_slug(value: str) -> str:
 
 def _semantic_row_stable_id(
     ticker: str,
-    concept_id: str,
+    required_role: str,
     row_policy: dict[str, Any],
 ) -> str:
     configured = row_policy.get("stable_item_id")
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
-    semantic_slug = _parent_attr("_semantic_slug", _semantic_slug)
-    return f"fm.semantic.{ticker.lower()}.{semantic_slug(concept_id)}"
+    return f"fm.semantic.{ticker.lower()}.{_semantic_slug(required_role)}"
 
 
 def _locate_model_item(
@@ -109,22 +177,17 @@ def _locate_model_item(
 
 
 def _item_has_any_real_historical_data(model: FinancialModel, item: LineItem) -> bool:
-    item_has_real_data = _parent_attr("_item_has_real_data", _real_data_item_has_real_data)
     for period in (
         model.time_structure.historical_periods
         or model.time_structure.historical_years
     ):
-        if item_has_real_data(item, int(period), model=model):
+        if _real_data_item_has_real_data(item, int(period), model=model):
             return True
     return False
 
 
 def _semantic_target_is_empty(model: FinancialModel, item: LineItem) -> bool:
-    item_has_any_real_historical_data = _parent_attr(
-        "_item_has_any_real_historical_data",
-        _item_has_any_real_historical_data,
-    )
-    return not item.data_concept_id and not item_has_any_real_historical_data(model, item)
+    return not item.required_role and not _item_has_any_real_historical_data(model, item)
 
 
 def _semantic_append_note(item: LineItem, note: str) -> None:
@@ -152,17 +215,18 @@ def _semantic_forecast_type(entry: dict[str, Any]) -> str | None:
 def _apply_semantic_row_metadata(
     item: LineItem,
     *,
-    concept_id: str,
+    required_role: str,
     entry: dict[str, Any],
-) -> None:
-    item.data_concept_id = concept_id
+) -> dict[str, str] | None:
+    """Apply the entry's metadata; return its unrecognized forecast type, if any."""
+
+    item.required_role = required_role
     label = entry.get("target_label") or entry.get("label")
     if isinstance(label, str) and label.strip():
         item.label = label.strip()
     unit = entry.get("unit")
     if unit is not None:
-        unit_cls = _parent_attr("Unit", Unit)
-        item.unit = unit_cls(str(unit))
+        item.unit = Unit(str(unit))
     semantic_role = entry.get("semantic_role")
     forecast_policy = entry.get("forecast_policy")
     notes = entry.get("analyst_notes") or entry.get("notes")
@@ -179,36 +243,46 @@ def _apply_semantic_row_metadata(
             if rationale:
                 note += f" ({rationale})"
             note_parts.append(f"{note}.")
-    semantic_append_note = _parent_attr("_semantic_append_note", _semantic_append_note)
     for note in note_parts:
-        semantic_append_note(item, note)
+        _semantic_append_note(item, note)
 
-    semantic_forecast_type = _parent_attr(
-        "_semantic_forecast_type",
-        _semantic_forecast_type,
-    )
-    forecast_type = semantic_forecast_type(entry)
-    carry_forward_strategies = _parent_attr(
-        "_CUSTOM_CONCEPT_CARRY_FORWARD_STRATEGIES",
-        _CUSTOM_CONCEPT_CARRY_FORWARD_STRATEGIES,
-    )
-    formula_spec_cls = _parent_attr("FormulaSpec", FormulaSpec)
-    formula_type = _parent_attr("FormulaType", FormulaType)
-    line_item_ref_cls = _parent_attr("LineItemRef", LineItemRef)
-    if forecast_type in carry_forward_strategies:
-        item.projected = formula_spec_cls(
-            type=formula_type.ref,
-            params={"source": line_item_ref_cls(id=item.id, t=-1)},
+    row_policy = entry.get("row_policy")
+    if (
+        isinstance(row_policy, dict)
+        and row_policy.get("formula_wiring_mode") == "external"
+    ):
+        statement = FinancialStatement(str(entry.get("statement") or ""))
+        section = str(entry.get("section") or "").strip()
+        if not section:
+            raise ValueError(
+                f"semantic_row {required_role!r} external formula wiring "
+                "requires section"
+            )
+        item.statement_section_roles = [
+            StatementSectionRole(
+                statement=statement,
+                section=section,
+                role="member",
+            )
+        ]
+
+    forecast_type = _semantic_forecast_type(entry)
+    if forecast_type in _SEMANTIC_CARRY_FORWARD_STRATEGIES:
+        item.projected = FormulaSpec(
+            type=FormulaType.ref,
+            params={"source": LineItemRef(id=item.id, t=-1)},
         )
     elif forecast_type in {None, ""}:
-        return
-    elif forecast_type == "zero":
-        item.projected = formula_spec_cls(type=formula_type.constant, params={"value": 0})
+        return None
+    elif forecast_type == _SEMANTIC_FORECAST_ZERO_TYPE:
+        item.projected = FormulaSpec(type=FormulaType.constant, params={"value": 0})
     else:
-        raise ValueError(
-            f"semantic_row {concept_id!r} forecast_policy type {forecast_type!r} "
-            "is not supported"
+        return _unrecognized_policy(
+            "forecast_policy.type",
+            str(forecast_type),
+            "the row's projection is left unset",
         )
+    return None
 
 
 def _insert_line_item_after(
@@ -217,12 +291,10 @@ def _insert_line_item_after(
     anchor_item_id: str,
     new_item: LineItem,
 ) -> LineItem:
-    iter_items = _parent_attr("_iter_items", _model_iter_items)
-    if any(item.id == new_item.id for item in iter_items(model)):
+    if any(item.id == new_item.id for item in _model_iter_items(model)):
         raise ValueError(f"semantic row item_id {new_item.id!r} already exists")
 
-    locate_model_item = _parent_attr("_locate_model_item", _locate_model_item)
-    sheet_name, section, anchor_index, anchor = locate_model_item(model, anchor_item_id)
+    sheet_name, section, anchor_index, anchor = _locate_model_item(model, anchor_item_id)
     insert_row = int(anchor.row) + 1
     for sheet_item in (
         item
@@ -238,25 +310,19 @@ def _insert_line_item_after(
 
 
 def _formula_contains_ref(obj: Any, item_id: str) -> bool:
-    extract_ref_ids = _parent_attr("_extract_ref_ids", _formula_extract_ref_ids)
-    return item_id in extract_ref_ids(obj)
+    return item_id in _formula_extract_ref_ids(obj)
 
 
 def _insert_ref_after_in_obj(obj: Any, *, after_id: str, new_id: str) -> bool:
-    line_item_ref_cls = _parent_attr("LineItemRef", LineItemRef)
-    insert_ref_after_in_obj = _parent_attr(
-        "_insert_ref_after_in_obj",
-        _insert_ref_after_in_obj,
-    )
     if isinstance(obj, list):
         inserted = False
         index = 0
         while index < len(obj):
             value = obj[index]
-            if insert_ref_after_in_obj(value, after_id=after_id, new_id=new_id):
+            if _insert_ref_after_in_obj(value, after_id=after_id, new_id=new_id):
                 inserted = True
-            if isinstance(value, line_item_ref_cls) and value.id == after_id:
-                obj.insert(index + 1, line_item_ref_cls(id=new_id))
+            if isinstance(value, LineItemRef) and value.id == after_id:
+                obj.insert(index + 1, LineItemRef(id=new_id))
                 inserted = True
                 index += 1
             index += 1
@@ -264,10 +330,34 @@ def _insert_ref_after_in_obj(obj: Any, *, after_id: str, new_id: str) -> bool:
     if isinstance(obj, dict):
         inserted = False
         for value in obj.values():
-            if insert_ref_after_in_obj(value, after_id=after_id, new_id=new_id):
+            if _insert_ref_after_in_obj(value, after_id=after_id, new_id=new_id):
                 inserted = True
         return inserted
     return False
+
+
+def _insert_ref_after_in_saved_formulas(
+    params: dict[str, Any], *, after_id: str, new_id: str
+) -> None:
+    """Insert the ref into every formula ``params`` saved for restore, as in its live refs.
+
+    A pass that lowered the spec kept the formula it replaced as JSON and a
+    later pass restores it; a ref inserted only in the live spec is lost to
+    that restore. ``_without_slot`` does the same for removal.
+    """
+
+    for container, keys in saved_formula_slots(params):
+        for key in keys:
+            saved = container.get(key)
+            if not isinstance(saved, str) or not saved:
+                continue
+            held = FormulaSpec.model_validate_json(saved)
+            _insert_ref_after_in_saved_formulas(
+                held.params, after_id=after_id, new_id=new_id
+            )
+            if not _formula_contains_ref(held.params, new_id):
+                _insert_ref_after_in_obj(held.params, after_id=after_id, new_id=new_id)
+            container[key] = held.model_dump_json()
 
 
 def _add_formula_ref_after(
@@ -278,20 +368,18 @@ def _add_formula_ref_after(
     new_id: str,
 ) -> bool:
     item = model.get_item(formula_item_id)
-    formula_contains_ref = _parent_attr("_formula_contains_ref", _formula_contains_ref)
-    insert_ref_after_in_obj = _parent_attr(
-        "_insert_ref_after_in_obj",
-        _insert_ref_after_in_obj,
-    )
     inserted_any = False
     for spec in (item.historical, item.projected):
         if spec is None:
             continue
-        if formula_contains_ref(spec.params, new_id):
+        _insert_ref_after_in_saved_formulas(
+            spec.params, after_id=after_id, new_id=new_id
+        )
+        if _formula_contains_ref(spec.params, new_id):
             inserted_any = True
             continue
         inserted_any = (
-            insert_ref_after_in_obj(spec.params, after_id=after_id, new_id=new_id)
+            _insert_ref_after_in_obj(spec.params, after_id=after_id, new_id=new_id)
             or inserted_any
         )
     return inserted_any
@@ -303,24 +391,34 @@ def _wire_semantic_bs_row(
     section: str,
     row_policy: dict[str, Any],
     item_id: str,
-) -> None:
-    bs_total_formula_by_section = _parent_attr(
-        "_BS_TOTAL_FORMULA_BY_SECTION",
-        _BS_TOTAL_FORMULA_BY_SECTION,
+) -> dict[str, str] | None:
+    """Wire an inserted row into its section total.
+
+    Returns the unrecognized ``formula_wiring_mode``, if any; that row is wired
+    as ``auto``.
+    """
+
+    wiring_mode = str(row_policy.get("formula_wiring_mode") or "auto").strip()
+    if wiring_mode == "external":
+        return None
+    unrecognized = (
+        None
+        if wiring_mode == "auto"
+        else _unrecognized_policy(
+            "row_policy.formula_wiring_mode",
+            wiring_mode,
+            "the row is wired as 'auto'",
+        )
     )
-    formula_item_id = bs_total_formula_by_section.get(section)
+    formula_item_id = _BS_TOTAL_FORMULA_BY_SECTION.get(section)
     if formula_item_id is None:
-        return
+        return unrecognized
     after_id = row_policy.get("formula_insert_after_item_id") or row_policy.get(
         "insert_after_item_id"
     )
     if not isinstance(after_id, str) or not after_id.strip():
-        return
-    add_formula_ref_after = _parent_attr(
-        "_add_formula_ref_after",
-        _add_formula_ref_after,
-    )
-    if not add_formula_ref_after(
+        return unrecognized
+    if not _add_formula_ref_after(
         model,
         formula_item_id=formula_item_id,
         after_id=after_id.strip(),
@@ -330,120 +428,123 @@ def _wire_semantic_bs_row(
             f"semantic row {item_id!r} could not be wired into {formula_item_id!r} "
             f"after {after_id!r}"
         )
+    return unrecognized
 
 
 def _create_semantic_line_item(
     ticker: str,
-    concept_id: str,
+    required_role: str,
     entry: dict[str, Any],
     row_policy: dict[str, Any],
 ) -> LineItem:
-    semantic_row_stable_id = _parent_attr(
-        "_semantic_row_stable_id",
-        _semantic_row_stable_id,
-    )
-    line_item_cls = _parent_attr("LineItem", LineItem)
-    item_type = _parent_attr("ItemType", ItemType)
-    unit_cls = _parent_attr("Unit", Unit)
-    return line_item_cls(
-        id=semantic_row_stable_id(ticker, concept_id, row_policy),
-        label=str(entry.get("target_label") or entry.get("label") or concept_id),
+    return LineItem(
+        id=_semantic_row_stable_id(ticker, required_role, row_policy),
+        label=str(entry.get("target_label") or entry.get("label") or required_role),
         row=0,
-        item_type=item_type.derived,
-        unit=unit_cls(str(entry.get("unit") or "dollars")),
-        data_concept_id=concept_id,
+        item_type=ItemType.derived,
+        unit=Unit(str(entry.get("unit") or "dollars")),
+        required_role=required_role,
     )
 
 
-def _semantic_source_custom_entry(
-    concept_id: str,
+
+
+def _reviewed_window_insert_owner(
+    compiled_statement_windows: CompiledStatementWindows | None,
+    *,
+    required_role: str,
     entry: dict[str, Any],
-    item_id: str,
-) -> dict[str, Any]:
-    source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
-    payload: dict[str, Any] = {
-        "concept_id": concept_id,
-        "target_item_id": item_id,
-        "target_label": entry.get("target_label") or entry.get("label"),
-        "statement": entry.get("statement"),
-        "unit": entry.get("unit", "dollars"),
-        "notes": entry.get("notes"),
-        "analyst_notes": entry.get("analyst_notes"),
-        "_meta": {"source": "semantic_rows"},
-    }
-    if isinstance(source, dict):
-        tags = source.get("xbrl_tags") or source.get("edgar_tags")
-        if tags is not None:
-            payload["edgar_tags"] = tags
-        for key in (
-            "preferred_source",
-            "fmp_endpoint",
-            "fmp_field",
-            "registry_group_id",
-            "canonical_tag",
-            "axis_key",
-            "inline_values",
-        ):
-            if key in source:
-                payload[key] = source[key]
-    semantic_forecast_type = _parent_attr(
-        "_semantic_forecast_type",
-        _semantic_forecast_type,
-    )
-    forecast_type = semantic_forecast_type(entry)
-    carry_forward_strategies = _parent_attr(
-        "_CUSTOM_CONCEPT_CARRY_FORWARD_STRATEGIES",
-        _CUSTOM_CONCEPT_CARRY_FORWARD_STRATEGIES,
-    )
-    if forecast_type in carry_forward_strategies:
-        payload["projection_strategy"] = forecast_type
-    return {key: value for key, value in payload.items() if value is not None}
+) -> tuple[MultiBasisWindow, InsertTarget] | None:
+    if (
+        compiled_statement_windows is None
+        or compiled_statement_windows.semantic_rows.get(required_role) != entry
+    ):
+        return None
+    owners: list[tuple[MultiBasisWindow, InsertTarget]] = []
+    for section_plan in compiled_statement_windows.section_plans.values():
+        if required_role not in section_plan.inserted_required_roles:
+            continue
+        binding = section_plan.window.binding_for(required_role)
+        if binding is not None and isinstance(binding.target, InsertTarget):
+            owners.append((section_plan.window, binding.target))
+    if len(owners) != 1:
+        return None
+    return owners[0]
 
 
 def _bind_or_insert_semantic_row(
     model: FinancialModel,
     *,
     ticker: str,
-    concept_id: str,
+    required_role: str,
     entry: dict[str, Any],
     result: SemanticRowsResult,
+    compiled_statement_windows: CompiledStatementWindows | None = None,
 ) -> LineItem | None:
+    # Issuer operating leaves are validated by their declaring profile/binding.
+    if _ROLE_RE.fullmatch(required_role):
+        try:
+            load_required_role_catalog().role(required_role)
+        except RequiredRoleUnknown:
+            owner = _reviewed_window_insert_owner(
+                compiled_statement_windows,
+                required_role=required_role,
+                entry=entry,
+            )
+            if owner is None:
+                raise
+            _window, insert_target = owner
+            if entry.get("row_policy", {}).get("stable_item_id") != (
+                insert_target.stable_item_id
+            ):
+                raise ValueError(
+                    f"semantic_row {required_role!r} stable item disagrees with its "
+                    "reviewed window insert target"
+                )
     row_policy = entry.get("row_policy")
     if not isinstance(row_policy, dict):
-        raise ValueError(f"semantic_row {concept_id!r} missing row_policy object")
+        raise ValueError(f"semantic_row {required_role!r} missing row_policy object")
     mode = str(row_policy.get("mode") or "").strip()
     if not mode:
-        raise ValueError(f"semantic_row {concept_id!r} missing row_policy.mode")
+        raise ValueError(f"semantic_row {required_role!r} missing row_policy.mode")
 
-    semantic_row_stable_id = _parent_attr(
-        "_semantic_row_stable_id",
-        _semantic_row_stable_id,
-    )
-    apply_semantic_row_metadata = _parent_attr(
-        "_apply_semantic_row_metadata",
-        _apply_semantic_row_metadata,
-    )
-    stable_id = semantic_row_stable_id(ticker, concept_id, row_policy)
+    semantic_row_stable_id = _semantic_row_stable_id
+    apply_semantic_row_metadata = _apply_semantic_row_metadata
+    stable_id = semantic_row_stable_id(ticker, required_role, row_policy)
     try:
         item = model.get_item(stable_id)
-        apply_semantic_row_metadata(item, concept_id=concept_id, entry=entry)
+        unrecognized_forecast = apply_semantic_row_metadata(
+            item,
+            required_role=required_role,
+            entry=entry,
+        )
         result.materialized.append(
-            {"concept_id": concept_id, "action": "bound_existing", "item_id": item.id}
+            _materialized_entry(
+                required_role=required_role,
+                action="bound_existing",
+                item_id=item.id,
+                unrecognized=(unrecognized_forecast,),
+            )
         )
         return item
     except KeyError:
         pass
 
-    iter_items = _parent_attr("_iter_items", _model_iter_items)
+    iter_items = _model_iter_items
     for candidate in iter_items(model):
-        if candidate.data_concept_id == concept_id:
-            apply_semantic_row_metadata(candidate, concept_id=concept_id, entry=entry)
+        if candidate.required_role == required_role:
+            unrecognized_forecast = apply_semantic_row_metadata(
+                candidate,
+                required_role=required_role,
+                entry=entry,
+            )
             result.materialized.append(
-                {
-                    "concept_id": concept_id,
-                    "action": "bound_same_semantic",
-                    "item_id": candidate.id,
-                }
+                _materialized_entry(
+                    required_role=required_role,
+                    action="bound_same_semantic",
+                    item_id=candidate.id,
+                    unrecognized=(unrecognized_forecast,),
+                )
             )
             return candidate
 
@@ -455,113 +556,141 @@ def _bind_or_insert_semantic_row(
         except KeyError:
             result.gaps.append(
                 {
-                    "concept_id": concept_id,
+                    "required_role": required_role,
                     "kind": "preferred_target_missing",
                     "item_id": preferred_target_id,
                 }
             )
 
-    semantic_target_is_empty = _parent_attr(
-        "_semantic_target_is_empty",
-        _semantic_target_is_empty,
-    )
     if preferred_item is not None:
-        if mode in {
-            "bind_if_empty",
-            "bind_if_empty_or_insert",
-        } and semantic_target_is_empty(model, preferred_item):
-            apply_semantic_row_metadata(preferred_item, concept_id=concept_id, entry=entry)
+        if mode in _ROW_POLICY_BIND_EMPTY_MODES and _semantic_target_is_empty(
+            model, preferred_item
+        ):
+            unrecognized_forecast = apply_semantic_row_metadata(
+                preferred_item,
+                required_role=required_role,
+                entry=entry,
+            )
             result.materialized.append(
-                {
-                    "concept_id": concept_id,
-                    "action": "bound_empty",
-                    "item_id": preferred_item.id,
-                }
+                _materialized_entry(
+                    required_role=required_role,
+                    action="bound_empty",
+                    item_id=preferred_item.id,
+                    unrecognized=(unrecognized_forecast,),
+                )
             )
             return preferred_item
         if (
-            mode == "bind_if_same_semantic"
-            and preferred_item.data_concept_id == concept_id
+            mode == _MODE_BIND_IF_SAME_SEMANTIC
+            and preferred_item.required_role == required_role
         ):
-            apply_semantic_row_metadata(preferred_item, concept_id=concept_id, entry=entry)
+            unrecognized_forecast = apply_semantic_row_metadata(
+                preferred_item,
+                required_role=required_role,
+                entry=entry,
+            )
             result.materialized.append(
-                {
-                    "concept_id": concept_id,
-                    "action": "bound_same_semantic",
-                    "item_id": preferred_item.id,
-                }
+                _materialized_entry(
+                    required_role=required_role,
+                    action="bound_same_semantic",
+                    item_id=preferred_item.id,
+                    unrecognized=(unrecognized_forecast,),
+                )
             )
             return preferred_item
-        if mode in {"bind_if_empty", "bind_if_same_semantic"}:
+        if mode in _ROW_POLICY_BIND_ONLY_MODES:
             result.collisions.append(
                 {
-                    "concept_id": concept_id,
+                    "required_role": required_role,
                     "item_id": preferred_item.id,
-                    "existing_concept_id": preferred_item.data_concept_id,
+                    "existing_required_role": preferred_item.required_role,
                     "mode": mode,
                 }
             )
             raise ValueError(
-                f"semantic_row {concept_id!r} cannot bind occupied target "
-                f"{preferred_item.id!r} mapped to {preferred_item.data_concept_id!r}"
+                f"semantic_row {required_role!r} cannot bind occupied target "
+                f"{preferred_item.id!r} assigned to "
+                f"{preferred_item.required_role!r}"
             )
 
-    if mode not in {"bind_if_empty_or_insert", "insert", "insert_or_bind_same_semantic"}:
+    if mode in _ROW_POLICY_BIND_ONLY_MODES:
         result.gaps.append(
-            {"concept_id": concept_id, "kind": "unsupported_row_policy", "mode": mode}
+            {
+                "required_role": required_role,
+                "kind": "unsupported_row_policy",
+                "mode": mode,
+            }
         )
-        raise ValueError(f"semantic_row {concept_id!r} unsupported row_policy.mode {mode!r}")
+        raise ValueError(
+            f"semantic_row {required_role!r} bind-only row_policy.mode {mode!r} "
+            "found no target to bind"
+        )
+    unrecognized_mode = (
+        None
+        if mode in _ROW_POLICY_INSERT_CAPABLE_MODES
+        else _unrecognized_policy("row_policy.mode", mode, "the row is inserted")
+    )
 
     insert_after_id = row_policy.get("insert_after_item_id")
     if not isinstance(insert_after_id, str) or not insert_after_id.strip():
-        raise ValueError(f"semantic_row {concept_id!r} insert mode missing insert_after_item_id")
-    create_semantic_line_item = _parent_attr(
-        "_create_semantic_line_item",
-        _create_semantic_line_item,
+        raise ValueError(
+            f"semantic_row {required_role!r} insert mode missing "
+            "insert_after_item_id"
+        )
+    create_semantic_line_item = _create_semantic_line_item
+    insert_line_item_after = _insert_line_item_after
+    wire_semantic_bs_row = _wire_semantic_bs_row
+    item = create_semantic_line_item(ticker, required_role, entry, row_policy)
+    unrecognized_forecast = apply_semantic_row_metadata(
+        item,
+        required_role=required_role,
+        entry=entry,
     )
-    insert_line_item_after = _parent_attr("_insert_line_item_after", _insert_line_item_after)
-    wire_semantic_bs_row = _parent_attr("_wire_semantic_bs_row", _wire_semantic_bs_row)
-    item = create_semantic_line_item(ticker, concept_id, entry, row_policy)
-    apply_semantic_row_metadata(item, concept_id=concept_id, entry=entry)
     insert_line_item_after(model, anchor_item_id=insert_after_id.strip(), new_item=item)
-    wire_semantic_bs_row(
+    unrecognized_wiring = wire_semantic_bs_row(
         model,
         section=str(entry.get("section") or ""),
         row_policy=row_policy,
         item_id=item.id,
     )
     result.materialized.append(
-        {"concept_id": concept_id, "action": "inserted", "item_id": item.id}
+        _materialized_entry(
+            required_role=required_role,
+            action="inserted",
+            item_id=item.id,
+            unrecognized=(unrecognized_mode, unrecognized_forecast, unrecognized_wiring),
+        )
     )
     return item
+
 
 
 def _materialize_semantic_rows(
     model: FinancialModel,
     ticker: str,
     overrides: TickerOverrides,
+    *,
+    compiled_statement_windows: CompiledStatementWindows | None = None,
 ) -> SemanticRowsResult:
-    semantic_rows_result_cls = _parent_attr("SemanticRowsResult", SemanticRowsResult)
-    result = semantic_rows_result_cls()
-    materialized_by_concept: dict[str, str] = {}
-    bind_or_insert_semantic_row = _parent_attr(
-        "_bind_or_insert_semantic_row",
-        _bind_or_insert_semantic_row,
-    )
-    semantic_source_custom_entry = _parent_attr(
-        "_semantic_source_custom_entry",
-        _semantic_source_custom_entry,
-    )
-    for concept_id, entry in sorted((overrides.semantic_rows or {}).items()):
+    result = SemanticRowsResult()
+    materialized_by_role: dict[str, str] = {}
+    bind_or_insert_semantic_row = _bind_or_insert_semantic_row
+    for required_role, entry in sorted((overrides.semantic_rows or {}).items()):
         if not isinstance(entry, dict):
-            raise ValueError(f"semantic_row {concept_id!r} must be an object")
+            raise ValueError(f"semantic_row {required_role!r} must be an object")
         if (entry.get("_meta") or {}).get("disabled") is True:
             continue
         statement = str(entry.get("statement") or "")
         if statement != "balance_sheet":
+            logger.warning(
+                "semantic_row %r skipped as unsupported_statement: statement %r "
+                "is not 'balance_sheet'; row recorded as gap",
+                required_role,
+                statement,
+            )
             result.gaps.append(
                 {
-                    "concept_id": concept_id,
+                    "required_role": required_role,
                     "kind": "unsupported_statement",
                     "statement": statement,
                 }
@@ -570,39 +699,33 @@ def _materialize_semantic_rows(
         item = bind_or_insert_semantic_row(
             model,
             ticker=ticker,
-            concept_id=concept_id,
+            required_role=required_role,
             entry=entry,
             result=result,
+            compiled_statement_windows=compiled_statement_windows,
         )
         if item is None:
             continue
-        materialized_by_concept[concept_id] = item.id
-        result.source_custom_concepts[concept_id] = semantic_source_custom_entry(
-            concept_id,
-            entry,
-            item.id,
-        )
+        materialized_by_role[required_role] = item.id
 
-    apply_semantic_cash_flow_linkages = _parent_attr(
-        "_apply_semantic_cash_flow_linkages",
-        _apply_semantic_cash_flow_linkages,
+    from .build_semantic_rows_cash_flow import (
+        _apply_semantic_cash_flow_linkages as apply_semantic_cash_flow_linkages,
     )
-    apply_semantic_valuation_linkages = _parent_attr(
-        "_apply_semantic_valuation_linkages",
-        _apply_semantic_valuation_linkages,
+    from .build_semantic_rows_valuation import (
+        _apply_semantic_valuation_linkages as apply_semantic_valuation_linkages,
     )
     apply_semantic_cash_flow_linkages(
         model,
         ticker=ticker,
         overrides=overrides,
-        materialized_by_concept=materialized_by_concept,
+        materialized_by_role=materialized_by_role,
         result=result,
     )
     apply_semantic_valuation_linkages(
         model,
         ticker=ticker,
         overrides=overrides,
-        materialized_by_concept=materialized_by_concept,
+        materialized_by_role=materialized_by_role,
         result=result,
     )
     return result

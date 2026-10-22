@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator
@@ -7,6 +8,13 @@ from pydantic import ConfigDict, Field, field_validator
 from .handoff import HandoffArtifactV1_1
 from .thesis import PositionSize
 from .thesis_shared_slice import ThresholdValue, _ContractModel
+
+
+def _rejected_holding_period_days(value: object) -> None:
+    logging.warning(
+        "Dropping malformed holding_period_days=%r; treating as absent", value
+    )
+    return None
 
 
 class InvalidationBreach(_ContractModel):
@@ -53,15 +61,15 @@ class PositionRuntimeState(_ContractModel):
         if value is None or value == "":
             return None
         if isinstance(value, bool):
-            return None
+            return _rejected_holding_period_days(value)
         if isinstance(value, float) and not value.is_integer():
-            return None
+            return _rejected_holding_period_days(value)
         try:
-            normalized = int(value)
+            normalized = int(value)  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return None
+            return _rejected_holding_period_days(value)
         if normalized < 0:
-            return None
+            return _rejected_holding_period_days(value)
         return normalized
 
 

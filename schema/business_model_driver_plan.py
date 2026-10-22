@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 import re
-import sys
-from typing import Any
+from typing import Any, TypeVar
 
 from .business_model_driver_specs import (
     _capital_source_driver_specs,
     _working_capital_driver_specs,
 )
-from .models import Unit
+from industry_slice_core.industry_types import Unit
+from .stable_control_identity import (
+    CompileBindingDefinition,
+    ControlDefinition,
+    DriverControlOwner,
+    StableControlIdentityPlanInputs,
+)
+from .versioned_artifact import (
+    VersionedArtifactRef,
+    compute_artifact_content_sha256,
+)
 
 
 _TEMPLATE_DRIVER_KEY_ALIASES = {
@@ -31,17 +41,145 @@ _TEMPLATE_DRIVER_KEY_ALIASES = {
 }
 
 
-def _parent_module() -> Any:
-    parent = sys.modules.get("schema.business_model")
-    if parent is None:
-        parent = sys.modules.get("business_model")
-    if parent is None:
-        from . import business_model as parent
-    return parent
+@dataclass(frozen=True, slots=True)
+class _StableDriverPlanBinding:
+    driver_id: str
+    control_id: str
+    binding_id: str
+    template_item_id: str
+    control_unit: Unit
 
 
-def _parent_attr(name: str, fallback: Any) -> Any:
-    return getattr(_parent_module(), name, fallback)
+class DriverAssumptionPlanIdentityUnavailable(ValueError):
+    """The canonical stable-identity inputs cannot bind one plan entry."""
+
+
+_Definition = TypeVar("_Definition")
+
+
+def _current_definitions(
+    definitions: tuple[_Definition, ...],
+    *,
+    identity_field: str,
+) -> dict[str, _Definition]:
+    current: dict[str, _Definition] = {}
+    for definition in definitions:
+        current[getattr(definition, identity_field)] = definition
+    return current
+
+
+def _stable_driver_plan_binding(
+    *,
+    registry: StableControlIdentityPlanInputs,
+    segment_id: str,
+    driver_node_id: str,
+    expected_unit: Unit,
+    write_eligible: bool,
+) -> _StableDriverPlanBinding:
+    """Resolve one closed BusinessModel node path through canonical identity inputs."""
+
+    node_path = f"{segment_id}.{driver_node_id}"
+    aliases = tuple(
+        alias
+        for alias in registry.aliases
+        if alias.alias_kind == "business_model_node_path"
+        and alias.raw_alias == node_path
+        and alias.status == "active"
+        and alias.valid_through_business_model_ref is None
+        and alias.valid_through_business_model_hash is None
+    )
+    targets = tuple(
+        sorted({(alias.identity_kind, alias.target_id) for alias in aliases})
+    )
+    if len(targets) != 1:
+        raise DriverAssumptionPlanIdentityUnavailable(
+            f"{node_path!r} requires exactly one active canonical identity alias"
+        )
+
+    drivers = _current_definitions(registry.drivers, identity_field="driver_id")
+    controls = _current_definitions(registry.controls, identity_field="control_id")
+    bindings = _current_definitions(registry.bindings, identity_field="binding_id")
+    required_role = "primary_compile" if write_eligible else "display"
+
+    target_kind, target_id = targets[0]
+    selected_binding: CompileBindingDefinition | None = None
+    selected_control: ControlDefinition | None = None
+    if target_kind == "binding":
+        candidate_binding = bindings.get(target_id)
+        if candidate_binding is not None:
+            selected_binding = candidate_binding
+            selected_control = controls.get(candidate_binding.control_id)
+    elif target_kind == "control":
+        selected_control = controls.get(target_id)
+    else:
+        candidate_driver = drivers.get(target_id)
+        matching_controls = tuple(
+            control
+            for control in controls.values()
+            if control.lifecycle == "active"
+            and control.domain == "forecast"
+            and control.owner.kind == "driver"
+            and control.owner.driver_id == getattr(
+                candidate_driver,
+                "driver_id",
+                None,
+            )
+        )
+        if len(matching_controls) == 1:
+            selected_control = matching_controls[0]
+
+    if (
+        selected_control is None
+        or selected_control.lifecycle != "active"
+        or selected_control.domain != "forecast"
+        or not isinstance(selected_control.owner, DriverControlOwner)
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            f"{node_path!r} does not resolve to one eligible forecast control"
+        )
+    control = selected_control
+    driver = drivers.get(selected_control.owner.driver_id)
+    if (
+        driver is None
+        or driver.lifecycle != "active"
+        or driver.output_unit != expected_unit
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            f"{node_path!r} does not resolve to one eligible active driver"
+        )
+
+    if selected_binding is None:
+        matching_bindings = tuple(
+            binding
+            for binding in bindings.values()
+            if binding.lifecycle == "active"
+            and binding.control_id == control.control_id
+            and binding.role == required_role
+            and binding.workbook_target is not None
+        )
+        if len(matching_bindings) != 1:
+            raise DriverAssumptionPlanIdentityUnavailable(
+                f"{node_path!r} requires exactly one active {required_role} binding"
+            )
+        selected_binding = matching_bindings[0]
+    compile_binding = selected_binding
+    if (
+        compile_binding.lifecycle != "active"
+        or compile_binding.control_id != control.control_id
+        or compile_binding.role != required_role
+        or compile_binding.workbook_target is None
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            f"{node_path!r} does not resolve to one eligible {required_role} binding"
+        )
+    assert compile_binding.workbook_target is not None
+    return _StableDriverPlanBinding(
+        driver_id=driver.driver_id,
+        control_id=control.control_id,
+        binding_id=compile_binding.binding_id,
+        template_item_id=compile_binding.workbook_target.template_item_id,
+        control_unit=control.unit,
+    )
 
 
 def driver_assumption_key(
@@ -57,20 +195,47 @@ def driver_assumption_key(
 def derive_driver_assumption_plan(
     business_model: Any,
     *,
+    business_model_ref: VersionedArtifactRef,
+    identity_registry: StableControlIdentityPlanInputs,
     business_model_id: str | None = None,
 ) -> Any:
-    business_model_id_fn = _parent_attr("_business_model_id", _business_model_id)
-    iter_driver_nodes = _parent_attr("_iter_driver_nodes", _iter_driver_nodes)
-    driver_assumption_entry = _parent_attr("_driver_assumption_entry", _driver_assumption_entry)
-    consolidated_driver_assumption_entries = _parent_attr(
-        "_consolidated_driver_assumption_entries",
-        _consolidated_driver_assumption_entries,
-    )
-    driver_assumption_plan_cls = _parent_attr("DriverAssumptionPlan", None)
-    if driver_assumption_plan_cls is None:
-        raise RuntimeError("DriverAssumptionPlan is unavailable")
+    from .business_model import DriverAssumptionPlan
 
-    normalized_business_model_id = business_model_id_fn(business_model, business_model_id)
+    if (
+        business_model_ref != identity_registry.business_model_ref
+        or identity_registry.business_model_hash != business_model_ref.content_sha256
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            "identity inputs do not bind the exact BusinessModel artifact ref"
+        )
+    if (
+        business_model_ref.artifact_kind != "business_model"
+        or business_model_ref.payload_schema_version != "1.0"
+        or business_model_ref.media_type != "application/json"
+        or business_model_ref.digest_codec != "canonical_json_v1"
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            "BusinessModel artifact ref has the wrong canonical contract"
+        )
+    if (
+        compute_artifact_content_sha256(
+            business_model.model_dump(mode="json"),
+            business_model_ref.digest_codec,
+        )
+        != business_model_ref.content_sha256
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            "BusinessModel bytes differ from the identity-bound artifact"
+        )
+    if (
+        getattr(business_model_ref.scope, "ticker", None)
+        != business_model.company.ticker
+    ):
+        raise DriverAssumptionPlanIdentityUnavailable(
+            "BusinessModel artifact scope differs from the company ticker"
+        )
+
+    normalized_business_model_id = _business_model_id(business_model, business_model_id)
     revision = str(business_model.metadata.revision or "").strip()
     if not revision:
         raise ValueError("BusinessModel metadata.revision is required to derive DriverAssumptionPlan")
@@ -78,9 +243,10 @@ def derive_driver_assumption_plan(
     entries: list[Any] = []
     for segment in business_model.segments:
         segment_id = segment.id or "consolidated"
-        for node in iter_driver_nodes(segment.revenue_model.decomposition):
+        for node in _iter_driver_nodes(segment.revenue_model.decomposition):
             entries.append(
-                driver_assumption_entry(
+                _driver_assumption_entry(
+                    identity_registry=identity_registry,
                     business_model_id=normalized_business_model_id,
                     revision=revision,
                     segment_id=segment_id,
@@ -89,14 +255,15 @@ def derive_driver_assumption_plan(
             )
 
     entries.extend(
-        consolidated_driver_assumption_entries(
+        _consolidated_driver_assumption_entries(
             business_model,
+            identity_registry=identity_registry,
             business_model_id=normalized_business_model_id,
             revision=revision,
         )
     )
 
-    return driver_assumption_plan_cls(
+    return DriverAssumptionPlan(
         business_model_id=normalized_business_model_id,
         revision=revision,
         entries=entries,
@@ -119,24 +286,37 @@ def _iter_driver_nodes(nodes: list[Any]):
 
 def _driver_assumption_entry(
     *,
+    identity_registry: StableControlIdentityPlanInputs,
     business_model_id: str,
     revision: str,
     segment_id: str,
     node: Any,
 ) -> Any:
-    driver_assumption_key_fn = _parent_attr("driver_assumption_key", driver_assumption_key)
-    driver_assumption_plan_entry_cls = _parent_attr("DriverAssumptionPlanEntry", None)
-    driver_assumption_aliases = _parent_attr("_driver_assumption_aliases", _driver_assumption_aliases)
-    if driver_assumption_plan_entry_cls is None:
-        raise RuntimeError("DriverAssumptionPlanEntry is unavailable")
+    from .business_model import DriverAssumptionPlanEntry
 
-    key = driver_assumption_key_fn(
+    key = driver_assumption_key(
         business_model_id=business_model_id,
         revision=revision,
         segment_id=segment_id,
         driver_node_id=node.id,
     )
-    return driver_assumption_plan_entry_cls(
+    base_case_required = node.compile_to.target_type in {
+        "assumption_row",
+        "existing_row",
+    }
+    stable = _stable_driver_plan_binding(
+        registry=identity_registry,
+        segment_id=segment_id,
+        driver_node_id=node.id,
+        expected_unit=node.unit,
+        write_eligible=base_case_required,
+    )
+    return DriverAssumptionPlanEntry(
+        driver_id=stable.driver_id,
+        control_id=stable.control_id,
+        binding_id=stable.binding_id,
+        template_item_id=stable.template_item_id,
+        control_unit=stable.control_unit,
         driver_key=key,
         business_model_id=business_model_id,
         revision=revision,
@@ -149,40 +329,18 @@ def _driver_assumption_entry(
         management_target=node.management_target,
         compile_target_type=node.compile_to.target_type,
         existing_driver_key=node.compile_to.existing_driver_key,
-        base_case_required=node.compile_to.target_type in {"assumption_row", "existing_row"},
-        aliases=driver_assumption_aliases(segment_id, node),
+        base_case_required=base_case_required,
+        aliases=_driver_assumption_aliases(segment_id, node),
     )
 
 
 def _consolidated_driver_assumption_entries(
     business_model: Any,
     *,
+    identity_registry: StableControlIdentityPlanInputs,
     business_model_id: str,
     revision: str,
 ) -> list[Any]:
-    plan_node_id = _parent_attr("_plan_node_id", _plan_node_id)
-    existing_driver_key_resolves_to_input = _parent_attr(
-        "_existing_driver_key_resolves_to_input",
-        _existing_driver_key_resolves_to_input,
-    )
-    normal_existing_driver_key = _parent_attr("_normal_existing_driver_key", _normal_existing_driver_key)
-    resolved_existing_driver_alias = _parent_attr(
-        "_resolved_existing_driver_alias",
-        _resolved_existing_driver_alias,
-    )
-    template_driver_assumption_entry = _parent_attr(
-        "_template_driver_assumption_entry",
-        _template_driver_assumption_entry,
-    )
-    working_capital_driver_specs = _parent_attr(
-        "_working_capital_driver_specs",
-        _working_capital_driver_specs,
-    )
-    capital_source_driver_specs = _parent_attr(
-        "_capital_source_driver_specs",
-        _capital_source_driver_specs,
-    )
-
     entries: list[Any] = []
     seen_driver_node_ids: set[str] = set()
 
@@ -197,14 +355,15 @@ def _consolidated_driver_assumption_entries(
         behavior: Any | None = None,
         management_target: str | None = None,
     ) -> None:
-        normalized_node_id = plan_node_id(driver_node_id)
+        normalized_node_id = _plan_node_id(driver_node_id)
         if not normalized_node_id or normalized_node_id in seen_driver_node_ids:
             return
-        if not existing_driver_key_resolves_to_input(existing_driver_key):
+        if not _existing_driver_key_resolves_to_input(existing_driver_key):
             return
         seen_driver_node_ids.add(normalized_node_id)
         entries.append(
-            template_driver_assumption_entry(
+            _template_driver_assumption_entry(
+                identity_registry=identity_registry,
                 business_model_id=business_model_id,
                 revision=revision,
                 driver_node_id=normalized_node_id,
@@ -224,7 +383,7 @@ def _consolidated_driver_assumption_entries(
 
     for item in consolidated.cost_structure.items:
         submitted_driver_key = str(item.driver_key or "").strip()
-        driver_key = normal_existing_driver_key(submitted_driver_key)
+        driver_key = _normal_existing_driver_key(submitted_driver_key)
         if not driver_key:
             continue
         add_entry(
@@ -237,7 +396,7 @@ def _consolidated_driver_assumption_entries(
                 item.id,
                 submitted_driver_key,
                 driver_key,
-                resolved_existing_driver_alias(driver_key),
+                _resolved_existing_driver_alias(driver_key),
             ],
         )
 
@@ -259,11 +418,11 @@ def _consolidated_driver_assumption_entries(
             )
 
         if reinvestment.working_capital is not None:
-            for spec in working_capital_driver_specs(reinvestment.working_capital):
+            for spec in _working_capital_driver_specs(reinvestment.working_capital):
                 add_entry(**spec)
 
     if consolidated.capital_sources is not None:
-        for spec in capital_source_driver_specs(consolidated.capital_sources):
+        for spec in _capital_source_driver_specs(consolidated.capital_sources):
             add_entry(**spec)
 
     return entries
@@ -271,6 +430,7 @@ def _consolidated_driver_assumption_entries(
 
 def _template_driver_assumption_entry(
     *,
+    identity_registry: StableControlIdentityPlanInputs,
     business_model_id: str,
     revision: str,
     driver_node_id: str,
@@ -282,14 +442,22 @@ def _template_driver_assumption_entry(
     behavior: Any | None = None,
     management_target: str | None = None,
 ) -> Any:
-    driver_assumption_key_fn = _parent_attr("driver_assumption_key", driver_assumption_key)
-    driver_assumption_plan_entry_cls = _parent_attr("DriverAssumptionPlanEntry", None)
-    template_driver_aliases = _parent_attr("_template_driver_aliases", _template_driver_aliases)
-    if driver_assumption_plan_entry_cls is None:
-        raise RuntimeError("DriverAssumptionPlanEntry is unavailable")
+    from .business_model import DriverAssumptionPlanEntry
 
-    return driver_assumption_plan_entry_cls(
-        driver_key=driver_assumption_key_fn(
+    stable = _stable_driver_plan_binding(
+        registry=identity_registry,
+        segment_id="consolidated",
+        driver_node_id=driver_node_id,
+        expected_unit=unit,
+        write_eligible=True,
+    )
+    return DriverAssumptionPlanEntry(
+        driver_id=stable.driver_id,
+        control_id=stable.control_id,
+        binding_id=stable.binding_id,
+        template_item_id=stable.template_item_id,
+        control_unit=stable.control_unit,
+        driver_key=driver_assumption_key(
             business_model_id=business_model_id,
             revision=revision,
             segment_id="consolidated",
@@ -307,7 +475,7 @@ def _template_driver_assumption_entry(
         compile_target_type="existing_row",
         existing_driver_key=existing_driver_key,
         base_case_required=True,
-        aliases=template_driver_aliases(driver_node_id, existing_driver_key, aliases),
+        aliases=_template_driver_aliases(driver_node_id, existing_driver_key, aliases),
     )
 
 
@@ -316,13 +484,8 @@ def _template_driver_aliases(
     existing_driver_key: str,
     aliases: list[str | None],
 ) -> list[str]:
-    resolved_existing_driver_alias = _parent_attr(
-        "_resolved_existing_driver_alias",
-        _resolved_existing_driver_alias,
-    )
-    unique_nonempty = _parent_attr("_unique_nonempty", _unique_nonempty)
-    resolved = resolved_existing_driver_alias(existing_driver_key)
-    return unique_nonempty(
+    resolved = _resolved_existing_driver_alias(existing_driver_key)
+    return _unique_nonempty(
         [
             f"consolidated.{driver_node_id}",
             f"bm.consolidated.{driver_node_id}",
@@ -343,34 +506,30 @@ def _plan_node_id(value: str) -> str:
 
 
 def _normal_existing_driver_key(value: str) -> str | None:
-    aliases = _parent_attr("_TEMPLATE_DRIVER_KEY_ALIASES", _TEMPLATE_DRIVER_KEY_ALIASES)
-    unique_nonempty = _parent_attr("_unique_nonempty", _unique_nonempty)
-    existing_driver_key_resolves_to_input = _parent_attr(
-        "_existing_driver_key_resolves_to_input",
-        _existing_driver_key_resolves_to_input,
-    )
-
     submitted = str(value or "").strip()
     if not submitted:
         return None
-    candidates = unique_nonempty([submitted, aliases.get(submitted)])
+    candidates = _unique_nonempty([submitted, _TEMPLATE_DRIVER_KEY_ALIASES.get(submitted)])
     for candidate in candidates:
-        if existing_driver_key_resolves_to_input(candidate):
+        if _existing_driver_key_resolves_to_input(candidate):
             return candidate
     return None
 
 
 def _existing_driver_key_resolves_to_input(existing_driver_key: str | None) -> bool:
-    template_input_item_ids = _parent_attr("_template_input_item_ids", _template_input_item_ids)
     if not existing_driver_key:
         return False
-    try:
-        from .driver_resolver import resolve_driver_key
+    from .model_input_errors import ModelBuildContextError
+    from .driver_resolver import resolve_driver_key
 
+    try:
         item_id = resolve_driver_key(existing_driver_key)
-        return item_id in template_input_item_ids()
-    except Exception:
+    except (ModelBuildContextError, KeyError):
+        # The resolver's typed answer for "this key does not resolve to a
+        # template input"; anything else (broken driver_mapping.yaml, template
+        # load faults) propagates as the owner's error.
         return False
+    return item_id in _template_input_item_ids()
 
 
 @lru_cache(maxsize=1)
@@ -388,19 +547,13 @@ def _template_input_item_ids() -> frozenset[str]:
 
 
 def _driver_assumption_aliases(segment_id: str, node: Any) -> list[str]:
-    resolved_existing_driver_alias = _parent_attr(
-        "_resolved_existing_driver_alias",
-        _resolved_existing_driver_alias,
-    )
-    unique_nonempty = _parent_attr("_unique_nonempty", _unique_nonempty)
-
     legacy_driver_key = f"{segment_id}.{node.id}"
     existing_driver_key = node.compile_to.existing_driver_key
     aliases = [
         legacy_driver_key,
         f"bm.{segment_id}.{node.id}",
         existing_driver_key,
-        resolved_existing_driver_alias(existing_driver_key),
+        _resolved_existing_driver_alias(existing_driver_key),
     ]
     if node.driver is not None and node.driver.type == "growth":
         rate_key = node.driver.params.rate_key
@@ -410,17 +563,20 @@ def _driver_assumption_aliases(segment_id: str, node: Any) -> list[str]:
                 f"bm.{segment_id}.{node.id}__{rate_key}",
             ]
         )
-    return unique_nonempty(aliases)
+    return _unique_nonempty(aliases)
 
 
 def _resolved_existing_driver_alias(existing_driver_key: str | None) -> str | None:
     if not existing_driver_key:
         return None
-    try:
-        from .driver_resolver import resolve_driver_key
+    from .model_input_errors import ModelBuildContextError
+    from .driver_resolver import resolve_driver_key
 
+    try:
         resolved = resolve_driver_key(existing_driver_key)
-    except Exception:
+    except (ModelBuildContextError, KeyError):
+        # Unresolvable key means "no canonical alias"; owner-typed faults from
+        # a broken mapping or template load propagate instead of defaulting.
         return None
     return resolved if resolved != existing_driver_key else None
 
@@ -443,6 +599,7 @@ __all__ = [
     "_consolidated_driver_assumption_entries",
     "_driver_assumption_aliases",
     "_driver_assumption_entry",
+    "DriverAssumptionPlanIdentityUnavailable",
     "_existing_driver_key_resolves_to_input",
     "_iter_driver_nodes",
     "_normal_existing_driver_key",

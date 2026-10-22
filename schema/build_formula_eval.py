@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import sys
-from typing import Dict, Optional
+
+from typing import Dict, Optional, TypeGuard
 
 from .build_formula_refs import _available_periods, _extract_single_ref
 from .models import (
@@ -19,12 +19,13 @@ from .models import (
 _MAX_REF_CHAIN_DEPTH = 16
 
 
+def _list_values_are_present(
+    values: list[float | None],
+) -> TypeGuard[list[float]]:
+    return all(value is not None for value in values)
+
+
 def _shift_period(period: int, t: int, mode: str):
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    parent_shift_period = getattr(parent, "shift_period", None) if parent is not None else None
-    if parent_shift_period is not None:
-        return parent_shift_period(period, t, mode)
     return _model_shift_period(period, t, mode)
 
 
@@ -144,21 +145,23 @@ def _evaluate_expr_simple(
         args = list(expr.get("args", []) or [])
         if op in {"SUM", "AVERAGE"}:
             values = [_evaluate_expr_simple(model, arg, period, computed_values) for arg in args]
-            if any(value is None for value in values):
+            if not _list_values_are_present(values):
                 return None
             if not values:
-                return 0.0
+                return None
             if op == "AVERAGE":
                 return sum(values) / len(values)
             return sum(values)
         if op == "+":
             values = [_evaluate_expr_simple(model, arg, period, computed_values) for arg in args]
-            if any(value is None for value in values):
+            if not _list_values_are_present(values):
                 return None
-            return sum(values)
+            return sum(values) if values else None
         if op == "*":
             values = [_evaluate_expr_simple(model, arg, period, computed_values) for arg in args]
-            if any(value is None for value in values):
+            if not _list_values_are_present(values):
+                return None
+            if not values:
                 return None
             result = 1.0
             for value in values:
@@ -222,10 +225,10 @@ def _evaluate_formula_simple(
                 _evaluate_expr_simple(model, expr, period, computed_values)
                 for expr in list(params.get("items", []) or [])
             ]
-            if any(value is None for value in values):
+            if not _list_values_are_present(values):
                 return None
             if not values:
-                return 0.0
+                return None
             if function == "AVERAGE":
                 return sum(values) / len(values)
             return sum(values)
@@ -237,10 +240,10 @@ def _evaluate_formula_simple(
             if isinstance(args[0], str) and args[0] in {"+", "-", "*", "/"}:
                 operator = args.pop(0)
             values = [_evaluate_expr_simple(model, expr, period, computed_values) for expr in args]
-            if any(value is None for value in values):
+            if not _list_values_are_present(values):
                 return None
             if not values:
-                return 0.0
+                return None
             if operator == "+":
                 return sum(values)
             if operator == "-":
@@ -266,9 +269,9 @@ def _evaluate_formula_simple(
             _evaluate_expr_simple(model, expr, period, computed_values)
             for expr in list(params.get("items", []) or [])
         ]
-        if any(value is None for value in values):
+        if not _list_values_are_present(values):
             return None
-        return sum(values) if values else 0.0
+        return sum(values) if values else None
 
     if spec.type == FormulaType.ratio:
         numerator = _evaluate_expr_simple(model, params.get("numerator"), period, computed_values)

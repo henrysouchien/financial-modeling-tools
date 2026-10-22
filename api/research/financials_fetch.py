@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import importlib
 import json
-import logging
 import os
 from typing import Any
 import urllib.error
@@ -19,60 +16,18 @@ except Exception:  # standalone context without the main api: fail-open identity
         return ticker
 
 
-_STATEMENT_ENDPOINTS = ("income_statement", "balance_sheet", "cash_flow")
-_MARKET_INPUT_ENDPOINTS = ("quote", "profile")
+async def fetch_model_build_financials(
+    ticker: str,
+) -> dict[str, list[dict[str, Any]]]:
+    from schema.provider_port.adapters.fmp.transport import fetch_build_financials
+
+    return await fetch_build_financials(ticker)
 
 
-class _LazyFmpPackage:
-    def fetch(self, *args: Any, **kwargs: Any) -> Any:
-        return importlib.import_module("fmp").fetch(*args, **kwargs)
-
-
-fmp: Any = _LazyFmpPackage()
-
-
-def _records(frame: Any) -> list[dict[str, Any]]:
-    if frame is None:
-        return []
-    if isinstance(frame, dict):
-        return [frame] if frame else []
-    if isinstance(frame, list):
-        return [record for record in frame if isinstance(record, dict)]
-    to_dict = getattr(frame, "to_dict", None)
-    if not callable(to_dict):
-        return []
-    records = to_dict("records")
-    if isinstance(records, list):
-        return [record for record in records if isinstance(record, dict)]
-    return []
-
-
-async def fetch_fmp_financials(ticker: str) -> dict[str, list[dict[str, Any]]]:
-    provider_ticker = provider_symbol(ticker)
-    statement_frames = await asyncio.gather(
-        *(
-            asyncio.to_thread(fmp.fetch, endpoint, symbol=provider_ticker)
-            for endpoint in _STATEMENT_ENDPOINTS
-        )
-    )
-    data = {
-        endpoint: _records(frame)
-        for endpoint, frame in zip(_STATEMENT_ENDPOINTS, statement_frames)
-    }
-    market_frames = await asyncio.gather(
-        *(
-            asyncio.to_thread(fmp.fetch, endpoint, symbol=provider_ticker)
-            for endpoint in _MARKET_INPUT_ENDPOINTS
-        ),
-        return_exceptions=True,
-    )
-    for endpoint, result in zip(_MARKET_INPUT_ENDPOINTS, market_frames):
-        if isinstance(result, Exception):
-            logging.warning("FMP %s fetch failed for %s: %s", endpoint, ticker, result)
-            data[endpoint] = []
-            continue
-        data[endpoint] = _records(result)
-    return data
+def _with_timeout_s(payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
+    result = dict(payload)
+    result["timeout_s"] = timeout_s
+    return result
 
 
 def make_edgar_financials_fetcher():
@@ -85,31 +40,33 @@ def make_edgar_financials_fetcher():
             "year": str(int(year)),
             "quarter": str(int(quarter)),
             "full_year_mode": str(bool(full_year_mode)).lower(),
-            "key": api_key,
         }
         url = f"{base_url}?{urllib.parse.urlencode(params)}"
-        request = urllib.request.Request(url, headers={"User-Agent": "financial-modeling-tools"})
+        request = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "financial-modeling-tools",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 if not isinstance(payload, dict):
                     raise ValueError("EDGAR API response was not a JSON object")
-                return payload
+                return _with_timeout_s(payload, 120)
         except urllib.error.HTTPError as exc:
-            raw_body = exc.read().decode("utf-8", errors="replace")
-            try:
-                decoded = json.loads(raw_body) if raw_body else {}
-            except json.JSONDecodeError:
-                decoded = {}
-            payload = decoded if isinstance(decoded, dict) else {}
-            payload.setdefault("status", "error")
-            payload.setdefault("message", raw_body.strip() or str(exc))
-            payload["http_status"] = int(exc.code)
-            payload["request_ticker"] = ticker
-            payload["request_year"] = int(year)
-            return payload
-        except Exception as exc:
-            raise RuntimeError(f"EDGAR financials fetch failed for {ticker} {year}: {exc}") from exc
+            return _with_timeout_s(
+                {
+                    "status": "error",
+                    "message": "EDGAR financials request failed",
+                    "http_status": int(exc.code),
+                    "request_ticker": ticker,
+                    "request_year": int(year),
+                },
+                120,
+            )
+        except Exception:
+            raise RuntimeError("EDGAR financials request failed") from None
 
     return _fetcher
-

@@ -15,12 +15,14 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Any, Iterator, TextIO
+from typing import Any, Iterable, Iterator, TextIO
+
+from schema.model_state_identity import ModelStateWriteContext, encode_uri_segment
 
 
 _LOCK_POLL_INTERVAL_SECONDS = 0.05
 _MODEL_EXPORT_RE = re.compile(r"^model_\d+_v\d+\.xlsx$")
-_FALLBACK_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,14}$")
+_FALLBACK_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.]{0,14}$")
 _log = logging.getLogger(__name__)
 
 
@@ -45,7 +47,27 @@ class _HeldLock:
 _REGISTRY_LOCK = threading.Lock()
 _KEY_RLOCKS: dict[str, Any] = {}
 _HELD_KEYS: dict[str, _HeldLock] = {}
-_ORDER_LOCAL = threading.local()
+
+
+def _reset_lock_state_after_fork_in_child() -> None:
+    """Discard inherited bookkeeping without unlocking the parent's flocks."""
+
+    global _HELD_KEYS
+    global _KEY_RLOCKS
+    global _REGISTRY_LOCK
+
+    for held in tuple(_HELD_KEYS.values()):
+        try:
+            held.handle.close()
+        except OSError:
+            pass
+    _REGISTRY_LOCK = threading.Lock()
+    _KEY_RLOCKS = {}
+    _HELD_KEYS = {}
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_lock_state_after_fork_in_child)
 
 
 class ModelWriterLockTimeout(TimeoutError):
@@ -66,32 +88,149 @@ class ModelWriterLockTimeout(TimeoutError):
         self.holder = holder
 
 
-def _flock_enabled() -> bool:
-    return os.getenv("FMS_MODEL_WRITER_FLOCK", "1").strip().lower() not in {"0", "false", "no", "off"}
+@dataclass(frozen=True)
+class ModelWriterLockKeys:
+    """One logical authority key plus the complete sorted physical lock set."""
+
+    context: ModelStateWriteContext
+    logical_target: Path
+    physical_targets: tuple[Path, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.context) is not ModelStateWriteContext:
+            raise TypeError("model-writer lock keys require a typed write context")
+        if not isinstance(self.logical_target, Path):
+            raise TypeError("model-writer logical lock target must be a Path")
+        if type(self.physical_targets) is not tuple or any(
+            not isinstance(path, Path) for path in self.physical_targets
+        ):
+            raise TypeError("model-writer physical lock targets must be a Path tuple")
+        expected = tuple(
+            sorted(
+                set(self.physical_targets),
+                key=lambda path: (_resolve_target(path).key, str(path)),
+            )
+        )
+        if self.physical_targets != expected:
+            raise ValueError(
+                "model-writer physical lock targets must be unique and canonical-order sorted"
+            )
+        if self.logical_target in self.physical_targets:
+            raise ValueError("logical model-writer lock cannot also be a physical target")
+
+    @property
+    def targets(self) -> tuple[Path, ...]:
+        return (self.logical_target, *self.physical_targets)
 
 
-def _lock_order_assert_enabled() -> bool:
-    return os.getenv("FMS_LOCK_ORDER_ASSERT", "0").strip().lower() in {"1", "true", "yes", "on"}
+def _model_writer_logical_lock_target(
+    context: ModelStateWriteContext,
+    *,
+    user_data_root: Path | None = None,
+) -> Path:
+    if user_data_root is not None:
+        if not isinstance(user_data_root, Path) or not user_data_root.is_absolute():
+            raise TypeError("model-writer user_data_root must be one absolute Path")
+        data_root = user_data_root
+    else:
+        configured = os.getenv("USER_DATA_DIR", "").strip()
+        if configured:
+            data_root = Path(configured).expanduser()
+        else:
+            test_root = os.getenv("MODEL_WRITER_LOCK_TEST_ROOT", "").strip()
+            if os.getenv("ENVIRONMENT", "").strip().lower() != "test" or not test_root:
+                raise RuntimeError(
+                    "model-writer logical locks require authoritative USER_DATA_DIR"
+                )
+            data_root = Path(test_root).expanduser()
+    user_segment = encode_uri_segment(context.user_id, field_name="user_id")
+    return (
+        data_root
+        / "users"
+        / user_segment
+        / ".locks"
+        / "model_writer_logical"
+        / f"{context.ticker}.lock-target"
+    ).resolve(strict=False)
 
 
-def _ticker_re() -> re.Pattern[str]:
+def resolve_model_writer_lock_keys(
+    context: ModelStateWriteContext,
+    prepared_effects: Iterable[str | os.PathLike[str]],
+    *,
+    user_data_root: Path | None = None,
+) -> ModelWriterLockKeys:
+    """Resolve the authority-scoped logical flock and complete physical lock set.
+
+    ``prepared_effects`` is the already prepared set of physical workbook,
+    store, and render targets.  Callers must pass the whole set at once; this
+    resolver performs no discovery and supplies no path fallback.
+    """
+
+    if type(context) is not ModelStateWriteContext:
+        raise TypeError("model-writer locks require a typed write context")
+    # Re-validate a strict copy before deriving any filesystem identity.
+    validated_context = ModelStateWriteContext.model_validate(
+        context.model_dump(mode="python", round_trip=True),
+        strict=True,
+    )
+    if validated_context != context:
+        raise ValueError("model-writer lock context changed during validation")
     try:
-        from research.artifact_paths import TICKER_RE
+        raw_targets = tuple(prepared_effects)
+    except TypeError as exc:
+        raise TypeError("prepared model-writer effects must be iterable") from exc
+    if any(not isinstance(path, (str, os.PathLike)) for path in raw_targets):
+        raise TypeError(
+            "prepared model-writer effects must contain only exact str or Path targets"
+        )
+    physical_targets = tuple(
+        sorted(
+            {_resolved_path(path) for path in raw_targets},
+            key=lambda path: (_resolve_target(path).key, str(path)),
+        )
+    )
+    return ModelWriterLockKeys(
+        context=context,
+        logical_target=_model_writer_logical_lock_target(
+            context,
+            user_data_root=user_data_root,
+        ),
+        physical_targets=physical_targets,
+    )
 
-        return TICKER_RE
+
+def _fallback_is_valid_ticker_component(value: str) -> bool:
+    return (
+        bool(_FALLBACK_TICKER_RE.fullmatch(value))
+        and ".." not in value
+        and not value.endswith(".")
+    )
+
+
+def _is_valid_ticker_component(value: str) -> bool:
+    try:
+        from research.artifact_paths import is_valid_ticker_component
+
+        return is_valid_ticker_component(value)
     except Exception:
         try:
-            from api.research.artifact_paths import TICKER_RE
+            from research.artifact_paths import is_valid_ticker_component
 
-            return TICKER_RE
+            return is_valid_ticker_component(value)
         except Exception:
-            return _FALLBACK_TICKER_RE
+            return _fallback_is_valid_ticker_component(value)
 
 
 def _normalize_timeout_seconds(timeout_seconds: float | None) -> float:
+    timeout_value: float | str
     if timeout_seconds is None:
-        timeout_seconds = os.getenv("FMS_MODEL_WRITER_LOCK_TIMEOUT_SECONDS", "30").strip()
-    normalized = float(timeout_seconds)
+        timeout_value = os.getenv(
+            "FMS_MODEL_WRITER_LOCK_TIMEOUT_SECONDS", "30"
+        ).strip()
+    else:
+        timeout_value = timeout_seconds
+    normalized = float(timeout_value)
     if normalized < 0:
         raise ValueError("timeout_seconds must be >= 0")
     return normalized
@@ -111,7 +250,7 @@ def _run_scoped_target(path: Path) -> tuple[Path, str, str] | None:
         _log.warning("invalid run-scoped model-writer path shape: %s", path)
         return None
     ticker = str(parts[index + 2]).strip().upper()
-    if not _ticker_re().match(ticker):
+    if not _is_valid_ticker_component(ticker):
         _log.warning("invalid run-scoped model-writer ticker segment: %s", path)
         return None
     key = Path(*parts[: index + 3])
@@ -156,7 +295,7 @@ def _ticker_from_filename(path: Path) -> str | None:
     if path.suffix.lower() != ".json":
         return None
     ticker = path.stem.strip().upper()
-    return ticker if _ticker_re().match(ticker) else None
+    return ticker if _is_valid_ticker_component(ticker) else None
 
 
 def resolve_store_key(path: str | os.PathLike[str]) -> str:
@@ -188,59 +327,26 @@ def model_writer_lock(
     timeout_seconds: float | None = None,
     ticker: str | None = None,
 ) -> Iterator[None]:
-    """Acquire model-writer store locks in deterministic order.
-
-    The feature flag is checked before any path resolution or filesystem work.
-    With the flag off, this is a pure no-op.
-    """
-
-    if not _flock_enabled():
-        yield
-        return
+    """Acquire model-writer store locks in deterministic order."""
 
     normalized_timeout = _normalize_timeout_seconds(timeout_seconds)
-    grouped = _group_targets([_resolve_target(key) for key in keys])
+    acquisition_pid = os.getpid()
     acquired: list[str] = []
     try:
+        grouped = _group_targets([_resolve_target(key) for key in keys])
         for key, targets in grouped:
             _acquire_registry_key(key, targets, normalized_timeout, ticker=ticker)
             acquired.append(key)
-        with _lock_order_scope():
-            yield
+        yield
     finally:
-        for key in reversed(acquired):
-            _release_registry_key(key)
-
-
-def assert_model_writer_lock_held(kind: str) -> None:
-    """Opt-in lock-order assertion for thesis flocks and SQLite write txns."""
-
-    if not _lock_order_assert_enabled():
-        return
-    if int(getattr(_ORDER_LOCAL, "depth", 0) or 0) <= 0:
-        return
-    with _REGISTRY_LOCK:
-        held = bool(_HELD_KEYS)
-    if not held:
-        raise AssertionError(f"model-writer lock must be held before {kind}")
+        if acquisition_pid == os.getpid():
+            for key in reversed(acquired):
+                _release_registry_key(key)
 
 
 def model_writer_lock_held_keys() -> tuple[str, ...]:
     with _REGISTRY_LOCK:
         return tuple(sorted(_HELD_KEYS))
-
-
-@contextmanager
-def _lock_order_scope() -> Iterator[None]:
-    if not _lock_order_assert_enabled():
-        yield
-        return
-    current = int(getattr(_ORDER_LOCAL, "depth", 0) or 0)
-    _ORDER_LOCAL.depth = current + 1
-    try:
-        yield
-    finally:
-        _ORDER_LOCAL.depth = current
 
 
 def _group_targets(targets: list[_ResolvedTarget]) -> list[tuple[str, list[_ResolvedTarget]]]:
@@ -428,7 +534,6 @@ def _restore_lock_content(lock_handle: TextIO, previous_content: str) -> None:
 
 __all__ = [
     "ModelWriterLockTimeout",
-    "assert_model_writer_lock_held",
     "describe_lock",
     "model_writer_lock",
     "model_writer_lock_held_keys",

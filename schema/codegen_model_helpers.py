@@ -1,27 +1,30 @@
-"""Model traversal helpers for :mod:`schema.codegen`."""
+"""Model traversal helpers: period order, item iteration, cached values, function names."""
 
 from __future__ import annotations
 
 import re
-import sys
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
-from .models import FinancialModel, ItemType, LineItem, PERIOD_MODE_YEARLY, ValueProvenance
+from .models import (
+    FinancialModel,
+    FormulaType,
+    ItemType,
+    LineItem,
+    PERIOD_MODE_YEARLY,
+    ValueProvenance,
+)
 
 
 _INPUT_PROVENANCE = {
     ValueProvenance.input,
+    ValueProvenance.default,
+    ValueProvenance.claim,
     ValueProvenance.imported_other,
     ValueProvenance.imported_edgar,
     ValueProvenance.imported_fmp,
+    ValueProvenance.imported_vendor,
+    ValueProvenance.historical_foundation,
 }
-
-
-def _parent_attr(name: str, default: Any) -> Any:
-    parent = sys.modules.get("schema.codegen")
-    if parent is None:
-        parent = sys.modules.get("codegen")
-    return getattr(parent, name, default) if parent is not None else default
 
 
 def _time_order(model: FinancialModel) -> List[int]:
@@ -55,17 +58,15 @@ def _build_cached_dicts(
     all_cached: Dict[str, Dict[int, float]] = {}
     cached_computed: Dict[str, Dict[int, float]] = {}
     period_mode = model.time_structure.period_mode or PERIOD_MODE_YEARLY
-    iter_items = _parent_attr("_iter_items", _iter_items)
-    input_provenance = _parent_attr("_INPUT_PROVENANCE", _INPUT_PROVENANCE)
 
-    for _sheet, _section, item in iter_items(model):
+    for _sheet, _section, item in _iter_items(model):
         if not item.values:
             continue
         for period, value_cell in item.values.values.items():
             if value_cell.value is None:
                 continue
             all_cached.setdefault(item.id, {})[int(period)] = float(value_cell.value)
-            if value_cell.provenance in input_provenance:
+            if value_cell.provenance in _INPUT_PROVENANCE:
                 input_cached.setdefault(item.id, {})[int(period)] = float(value_cell.value)
             if value_cell.provenance == ValueProvenance.computed:
                 cached_computed.setdefault(item.id, {})[int(period)] = float(value_cell.value)
@@ -73,6 +74,8 @@ def _build_cached_dicts(
                 ValueProvenance.imported_other,
                 ValueProvenance.imported_edgar,
                 ValueProvenance.imported_fmp,
+                ValueProvenance.imported_vendor,
+                ValueProvenance.historical_foundation,
             }:
                 cached_computed.setdefault(item.id, {})[int(period)] = float(value_cell.value)
 
@@ -82,10 +85,13 @@ def _build_cached_dicts(
 def _build_function_names(model: FinancialModel) -> Dict[str, str]:
     used: Dict[str, int] = {}
     names: Dict[str, str] = {}
-    iter_items = _parent_attr("_iter_items", _iter_items)
 
-    for _sheet, _section, item in iter_items(model):
-        if item.item_type != ItemType.derived:
+    for _sheet, _section, item in _iter_items(model):
+        has_formula_override = bool(
+            item.overrides
+            and any(spec.type != FormulaType.constant for spec in item.overrides.values())
+        )
+        if item.item_type != ItemType.derived and not has_formula_override:
             continue
         base = re.sub(r"[^A-Za-z0-9_]", "_", item.id).strip("_")
         if not base:
@@ -104,8 +110,7 @@ def _build_function_names(model: FinancialModel) -> Dict[str, str]:
 
 def _item_locations(model: FinancialModel) -> Dict[str, Tuple[str, str]]:
     out: Dict[str, Tuple[str, str]] = {}
-    iter_items = _parent_attr("_iter_items", _iter_items)
-    for sheet_name, section_label, item in iter_items(model):
+    for sheet_name, section_label, item in _iter_items(model):
         out[item.id] = (sheet_name, section_label)
     return out
 

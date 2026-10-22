@@ -6,7 +6,7 @@ import logging
 import os
 
 
-_EQUIVALENCE_FLAG_VALUES = {"false", "shadow", "true"}
+_EQUIVALENCE_FLAG_VALUES = {"false", "true"}
 
 
 def get_equivalence_flag() -> str:
@@ -18,8 +18,3 @@ def get_equivalence_flag() -> str:
         )
         return "true"
     return raw
-
-
-def is_analyst_cron_mode() -> bool:
-    return os.getenv("ANALYST_CRON_MODE", "false").strip().lower() == "true"
-

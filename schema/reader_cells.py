@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any, Optional, Tuple
 
-
-_PARENT_MODULE = "schema.reader"
-
-
-def _compat(name: str, fallback: Any) -> Any:
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is not None and hasattr(parent, name):
-        return getattr(parent, name)
-    return fallback
+from .dependency_graph_helpers import (
+    _col_to_index as _col_to_index,
+    _index_to_col as _index_to_col,
+)
 
 
 def _get_cell_value(cells: dict[tuple[int, int], Any], row: int, col: int) -> Optional[str]:
@@ -52,7 +46,7 @@ def _parse_period_token(value: Optional[str]) -> Optional[Tuple[int, Optional[in
     if m:
         slot = int(m.group(1))
         year_str = m.group(2)
-        year = _compat("_normalize_year_token", _normalize_year_token)(year_str)
+        year = _normalize_year_token(year_str)
         if year is not None:
             return year, slot, True
     try:
@@ -91,24 +85,6 @@ def _split_cell(cell_ref: str) -> Tuple[str, int]:
         else:
             row += ch
     return col, int(row)
-
-
-def _col_to_index(col: str) -> int:
-    col = col.upper()
-    index = 0
-    for ch in col:
-        if not ch.isalpha():
-            continue
-        index = index * 26 + (ord(ch) - ord("A") + 1)
-    return index
-
-
-def _index_to_col(idx: int) -> str:
-    letters = []
-    while idx > 0:
-        idx, rem = divmod(idx - 1, 26)
-        letters.append(chr(rem + ord("A")))
-    return "".join(reversed(letters))
 
 
 def _slugify(text: str) -> str:

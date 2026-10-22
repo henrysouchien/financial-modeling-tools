@@ -1,6 +1,7 @@
 """Lightweight agent-facing tools for schema financial models."""
 
 from __future__ import annotations
+from collections.abc import Mapping
 
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
@@ -25,18 +26,13 @@ from .models import (
 )
 from .renderer import _fixed_cell_anchor_period
 from .tools_periods import (
-    _VALUES_MAX_RESPONSE_CELLS,  # noqa: F401 - compatibility alias for schema.tools imports
     _all_periods,
     _annual_historical_periods,
     _annual_projection_periods,
     _historical_periods,
     _period_guidance,
-    _period_token_to_matches,  # noqa: F401 - compatibility alias for schema.tools imports
-    _period_year,  # noqa: F401 - compatibility alias for schema.tools imports
     _projection_periods,
     _resolve_period_list,
-    _resolve_period_token_list,  # noqa: F401 - compatibility alias for schema.tools imports
-    _validate_values_response_size,
 )
 from .tools_workbook import (
     _PARSED_WORKBOOK_MODEL_SOURCES,  # noqa: F401 - compatibility alias for schema.tools imports
@@ -47,10 +43,8 @@ from .tools_workbook import (
 )
 from .tools_items import (
     _ambiguous_labels,
-    _describe_item_suggestions,  # noqa: F401 - compatibility alias for schema.tools imports
     _format_context_label,  # noqa: F401 - compatibility alias for schema.tools imports
     _format_find_context,
-    _format_unknown_id_error,  # noqa: F401 - compatibility alias for schema.tools imports
     _item_locations,
     _label_key,
     _parent_headers,
@@ -90,7 +84,11 @@ from .tools_sensitivity import (
     _scenario_recompute_ids,  # noqa: F401 - compatibility alias for schema.tools imports
     _sensitivity_representative_rank,  # noqa: F401 - compatibility alias for schema.tools imports
 )
-from .tools_sensitivity_api import sensitivity  # noqa: F401 - public facade for schema.tools
+from .tools_sensitivity_api import (  # noqa: F401 - public facade for schema.tools
+    JudgmentBasis,
+    judgment_analysis,
+    sensitivity,
+)
 from .tools_scenarios import (
     _NEGATIVE_SCENARIO_OUTPUT_TOKENS,  # noqa: F401 - compatibility alias for schema.tools imports
     _POSITIVE_SCENARIO_OUTPUT_TOKENS,  # noqa: F401 - compatibility alias for schema.tools imports
@@ -101,7 +99,7 @@ from .tools_scenarios import (
 from .tools_summary import (
     _KEY_METRIC_PATTERNS,  # noqa: F401 - compatibility alias for schema.tools imports
     _find_key_metrics,
-    _formula_type,  # noqa: F401 - compatibility alias for schema.tools imports
+    _formula_type,
     _summarize_line_items,
 )
 class ModelToolError(ValueError):
@@ -146,14 +144,14 @@ def model_tool_error_payload(exc: Exception) -> Dict[str, Any]:
     error_code = getattr(exc, "error_code", None)
     if error_code:
         payload["error_code"] = str(error_code)
-    model_quality_readiness = getattr(exc, "model_quality_readiness", None)
-    if model_quality_readiness is not None:
-        if hasattr(model_quality_readiness, "to_dict"):
-            payload["model_quality_readiness"] = model_quality_readiness.to_dict()
-        elif hasattr(model_quality_readiness, "model_dump"):
-            payload["model_quality_readiness"] = model_quality_readiness.model_dump(mode="json")
+    statement_windows = getattr(exc, "statement_windows", None)
+    if statement_windows is not None:
+        if hasattr(statement_windows, "to_dict"):
+            payload["statement_windows"] = statement_windows.to_dict()
+        elif hasattr(statement_windows, "model_dump"):
+            payload["statement_windows"] = statement_windows.model_dump(mode="json")
         else:
-            payload["model_quality_readiness"] = model_quality_readiness
+            payload["statement_windows"] = statement_windows
     return payload
 
 
@@ -171,6 +169,8 @@ def load(
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
     persist: bool = False,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> _ModelBundle:
     """Load a model bundle, optionally persisting an explicit file-backed model.
 
@@ -185,6 +185,8 @@ def load(
         model=model,
         historical_cutoff_year=historical_cutoff_year,
         persist=persist,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
     ).to_bundle()
 
 
@@ -194,8 +196,16 @@ def summarize(
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
     include_items: bool = False,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> Dict:
-    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(
+        file_path,
+        model=model,
+        historical_cutoff_year=historical_cutoff_year,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
+    )
     model_obj = handle.model
     all_periods = _all_periods(model_obj)
     default_period = _default_period(model_obj) if all_periods else None
@@ -285,8 +295,16 @@ def find(
     *,
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> List[Dict]:
-    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(
+        file_path,
+        model=model,
+        historical_cutoff_year=historical_cutoff_year,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
+    )
     if not query:
         return []
 
@@ -335,6 +353,8 @@ def values(
     *,
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> Dict:
     deduped_item_ids: List[str] = []
     seen: Set[str] = set()
@@ -344,14 +364,14 @@ def values(
         deduped_item_ids.append(item_id)
         seen.add(item_id)
 
-    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
-    period_list, period_label = _resolve_period_list(periods, handle.model)
-    _validate_values_response_size(
-        deduped_item_ids,
-        period_list,
-        periods=periods,
-        model=handle.model,
+    handle = load_handle(
+        file_path,
+        model=model,
+        historical_cutoff_year=historical_cutoff_year,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
     )
+    period_list, period_label = _resolve_period_list(periods, handle.model)
 
     rows = []
     for item_id in deduped_item_ids:
@@ -360,7 +380,7 @@ def values(
         except KeyError:
             suggestions = _suggest_items(handle.model._index, item_id)
             structured_error = _unknown_item_error(handle.model, item_id, "item_id")
-            error_row = {
+            error_row: Dict[str, str | List[str] | List[Dict[str, Any]] | Dict[str, Any]] = {
                 "id": item_id,
                 "error": structured_error.message,
                 "error_code": structured_error.code,
@@ -397,7 +417,11 @@ def values(
     }
 
 
-def _fixed_cell_value(item: LineItem, computed_values: Dict[int, float], period: int) -> Optional[float]:
+def _fixed_cell_value(
+    item: LineItem,
+    computed_values: Mapping[int, float | None],
+    period: int,
+) -> Optional[float]:
     value = computed_values.get(period)
     if value is not None or item.column is None:
         return value
@@ -417,8 +441,16 @@ def drivers(
     *,
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> Dict:
-    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(
+        file_path,
+        model=model,
+        historical_cutoff_year=historical_cutoff_year,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
+    )
     if item_id not in handle.model._index:
         raise _unknown_item_error(handle.model, item_id, "item_id")
 
@@ -488,8 +520,16 @@ def scenario(
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
     recompute_policy: Literal["projection_safe", "legacy_global"] = "projection_safe",
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> Dict:
-    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(
+        file_path,
+        model=model,
+        historical_cutoff_year=historical_cutoff_year,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
+    )
     return _run_scenario(
         handle,
         overrides,
@@ -503,8 +543,16 @@ def period_guidance(
     *,
     model: Optional[FinancialModel] = None,
     historical_cutoff_year: Optional[int] = None,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
-    handle = load_handle(file_path, model=model, historical_cutoff_year=historical_cutoff_year)
+    handle = load_handle(
+        file_path,
+        model=model,
+        historical_cutoff_year=historical_cutoff_year,
+        refresh_stale_sidecar=refresh_stale_sidecar,
+        use_cache=use_cache,
+    )
     return _period_guidance(handle.model)
 
 
@@ -514,6 +562,8 @@ def invalid_override_period_error(
     file_path: Optional[str] = None,
     historical_cutoff_year: Optional[int] = None,
     cause: Optional[str] = None,
+    refresh_stale_sidecar: bool = True,
+    use_cache: bool = True,
 ) -> ModelToolError:
     details: Dict[str, Any] = {"period_key": raw_period}
     if cause:
@@ -523,6 +573,8 @@ def invalid_override_period_error(
             details["period_guidance"] = period_guidance(
                 file_path,
                 historical_cutoff_year=historical_cutoff_year,
+                refresh_stale_sidecar=refresh_stale_sidecar,
+                use_cache=use_cache,
             )
         except Exception:
             pass

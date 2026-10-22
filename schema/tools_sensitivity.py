@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import math
 import re
-import sys
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, NotRequired, Optional, Set, Tuple, TypedDict
 
 from .analysis import _downstream_nodes
+from .build_formula_eval import _constant_override_value
 from .dependency_graph import DependencyGraph
 from .model_readiness_scenario_bridge import (
     _scenario_bridge_anchor_id,
     _scenario_bridge_case_row_ids,
     _scenario_bridge_owners,
+    _scenario_select_case_row_ids,
 )
 from .models import (
     PERIOD_MODE_QUARTERLY5,
@@ -24,6 +25,7 @@ from .models import (
 )
 from .refs import line_item_ref_from_obj
 from .tools_periods import _all_periods
+from .tools_summary import _formula_type
 
 
 _SENSITIVITY_CANDIDATE_FILTERS = {"drivers", "inputs_only", "all"}
@@ -38,23 +40,45 @@ _SENSITIVITY_DRIVER_FORMULA_TYPES = {
     FormulaType.roll_forward,
     FormulaType.ratio,
 }
+
+
+class SensitivityImpactRow(TypedDict):
+    id: str
+    shocked_item_id: str
+    label: str
+    display_label: str
+    label_context: str | None
+    sheet: str | None
+    section: str | None
+    row: int | None
+    item_type: str
+    formula_type: str | None
+    base: float | None
+    scenario: float | None
+    target_period: int
+    bump_pct: float
+    delta: float | None
+    pct_change: float | None
+    leverage_ratio: float | None
+    impact_per_unit: float | None
+    impact_basis: str
+    high_leverage: bool
+    abs_impact: float
+    rank: int | None
+    computation_status: str
+    status_reason: str | None
+    sensitivity_mode: str
+    recompute_policy: str
+    candidate_scope: str
+    shock_periods: list[int]
+    readout_item_ids: list[str]
+    pinned_ids: list[str]
+    warnings: list[str]
+    alias_ids: NotRequired[list[str]]
+
+
 _SENSITIVITY_DEFAULT_MAX_CANDIDATES_QUARTERLY = 40
 _SCENARIO_DIVERGENCE_ABS_LIMIT = 1e20
-_PARENT_MODULE = "schema.tools"
-
-
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
-
-
-def _formula_type(item: LineItem) -> Optional[str]:
-    spec = item.projected or item.historical
-    return spec.type.value if spec else None
 
 
 def _fallback_formula(item: LineItem) -> Optional[FormulaSpec]:
@@ -73,8 +97,7 @@ def _fallback_formula(item: LineItem) -> Optional[FormulaSpec]:
 
 
 def _candidate_formula_type(item: LineItem) -> Optional[FormulaType]:
-    fallback_formula = _compat("_fallback_formula", _fallback_formula)
-    spec = fallback_formula(item)
+    spec = _fallback_formula(item)
     if spec is not None:
         return spec.type
 
@@ -91,9 +114,8 @@ def _candidate_formula_type(item: LineItem) -> Optional[FormulaType]:
 
 def _resolve_candidate_filter(candidate_filter: str) -> str:
     resolved = candidate_filter
-    candidate_filters = _compat("_SENSITIVITY_CANDIDATE_FILTERS", _SENSITIVITY_CANDIDATE_FILTERS)
-    if resolved not in candidate_filters:
-        allowed = ", ".join(sorted(candidate_filters))
+    if resolved not in _SENSITIVITY_CANDIDATE_FILTERS:
+        allowed = ", ".join(sorted(_SENSITIVITY_CANDIDATE_FILTERS))
         raise ValueError(f"candidate_filter must be one of: {allowed}")
     return resolved
 
@@ -103,13 +125,11 @@ def _resolve_sensitivity_semantics(
     sensitivity_mode: Optional[str],
     recompute_policy: str,
 ) -> Tuple[str, str]:
-    recompute_policies = _compat("_SENSITIVITY_RECOMPUTE_POLICIES", _SENSITIVITY_RECOMPUTE_POLICIES)
-    sensitivity_modes = _compat("_SENSITIVITY_MODES", _SENSITIVITY_MODES)
-    if recompute_policy not in recompute_policies:
-        allowed = ", ".join(sorted(recompute_policies))
+    if recompute_policy not in _SENSITIVITY_RECOMPUTE_POLICIES:
+        allowed = ", ".join(sorted(_SENSITIVITY_RECOMPUTE_POLICIES))
         raise ValueError(f"recompute_policy must be one of: {allowed}")
-    if sensitivity_mode is not None and sensitivity_mode not in sensitivity_modes:
-        allowed = ", ".join(sorted(sensitivity_modes))
+    if sensitivity_mode is not None and sensitivity_mode not in _SENSITIVITY_MODES:
+        allowed = ", ".join(sorted(_SENSITIVITY_MODES))
         raise ValueError(f"sensitivity_mode must be one of: {allowed}")
 
     if recompute_policy == "legacy_global":
@@ -153,18 +173,13 @@ def _filter_sensitivity_candidates(
         }
 
     filtered: Set[str] = set()
-    candidate_formula_type = _compat("_candidate_formula_type", _candidate_formula_type)
-    driver_formula_types = _compat(
-        "_SENSITIVITY_DRIVER_FORMULA_TYPES",
-        _SENSITIVITY_DRIVER_FORMULA_TYPES,
-    )
     for item_id in candidate_ids:
         item = model.get_item(item_id)
         if item.item_type == ItemType.input:
             filtered.add(item_id)
             continue
-        formula_type = candidate_formula_type(item)
-        if formula_type in driver_formula_types:
+        formula_type = _candidate_formula_type(item)
+        if formula_type in _SENSITIVITY_DRIVER_FORMULA_TYPES:
             filtered.add(item_id)
     return filtered
 
@@ -174,12 +189,11 @@ def _promote_projected_fallbacks(
     item_ids: Set[str],
 ) -> Dict[str, Optional[FormulaSpec]]:
     promoted: Dict[str, Optional[FormulaSpec]] = {}
-    fallback_formula = _compat("_fallback_formula", _fallback_formula)
     for item_id in item_ids:
         item = model.get_item(item_id)
         if item.projected is not None:
             continue
-        fallback = fallback_formula(item)
+        fallback = _fallback_formula(item)
         if fallback is None:
             continue
         promoted[item_id] = item.projected
@@ -188,10 +202,9 @@ def _promote_projected_fallbacks(
 
 
 def _build_ref_alias_groups(model: FinancialModel) -> Dict[str, str]:
-    same_period_ref_source = _compat("_same_period_ref_source", _same_period_ref_source)
     neighbors: Dict[str, Set[str]] = {item_id: set() for item_id in model._index}
     for item_id, item in model._index.items():
-        source_id = same_period_ref_source(item)
+        source_id = _same_period_ref_source(item)
         if source_id is None or source_id not in neighbors:
             continue
         neighbors[item_id].add(source_id)
@@ -220,8 +233,7 @@ def _build_ref_alias_groups(model: FinancialModel) -> Dict[str, str]:
 
 
 def _same_period_ref_source(item: LineItem) -> Optional[str]:
-    fallback_formula = _compat("_fallback_formula", _fallback_formula)
-    spec = fallback_formula(item)
+    spec = _fallback_formula(item)
     if spec is None or spec.type != FormulaType.ref:
         return None
     source = spec.params.get("source")
@@ -232,58 +244,64 @@ def _same_period_ref_source(item: LineItem) -> Optional[str]:
 
 
 def _dedupe_sensitivity_impacts(
-    impacts: List[Dict],
+    impacts: List[SensitivityImpactRow],
     model: FinancialModel,
     alias_group_by_id: Dict[str, str],
-) -> List[Dict]:
-    grouped: Dict[str, List[Dict]] = {}
+) -> List[SensitivityImpactRow]:
+    grouped: Dict[str, List[SensitivityImpactRow]] = {}
     for row in impacts:
         group_id = alias_group_by_id.get(row["id"], row["id"])
         grouped.setdefault(group_id, []).append(row)
 
-    deduped: List[Dict] = []
-    impacts_equivalent = _compat("_impacts_equivalent", _impacts_equivalent)
-    representative_rank = _compat("_sensitivity_representative_rank", _sensitivity_representative_rank)
+    deduped: List[SensitivityImpactRow] = []
     for rows in grouped.values():
-        clusters: List[List[Dict]] = []
+        clusters: List[List[SensitivityImpactRow]] = []
         for row in rows:
             placed = False
             for cluster in clusters:
-                if impacts_equivalent(row, cluster[0]):
+                if _impacts_equivalent(row, cluster[0]):
                     cluster.append(row)
                     placed = True
                     break
             if not placed:
                 clusters.append([row])
-
         for cluster in clusters:
             representative = min(
                 cluster,
-                key=lambda entry: representative_rank(model.get_item(entry["id"]), entry),
+                key=lambda entry: _sensitivity_representative_rank(
+                    model.get_item(entry["id"]),
+                    entry.get("formula_type"),
+                ),
             )
             if len(cluster) == 1:
                 deduped.append(representative)
                 continue
             aliases = sorted(entry["id"] for entry in cluster if entry["id"] != representative["id"])
-            row_copy = dict(representative)
+            row_copy = representative.copy()
             row_copy["alias_ids"] = aliases
             deduped.append(row_copy)
     return deduped
 
 
-def _sensitivity_representative_rank(item: LineItem, row: Dict) -> Tuple[int, int, int, int, str]:
+def _sensitivity_representative_rank(
+    item: LineItem,
+    formula_type: str | None,
+) -> Tuple[int, int, int, int, str]:
     is_input_penalty = 0 if item.item_type == ItemType.input else 1
-    is_ref_penalty = 1 if row.get("formula_type") == FormulaType.ref.value else 0
+    is_ref_penalty = 1 if formula_type == FormulaType.ref.value else 0
     row_suffix_penalty = 1 if re.search(r"_r\d+$", item.id) else 0
     return (is_input_penalty, is_ref_penalty, row_suffix_penalty, len(item.id), item.id)
 
 
-def _impacts_equivalent(left: Dict, right: Dict) -> bool:
+def _impacts_equivalent(
+    left: SensitivityImpactRow,
+    right: SensitivityImpactRow,
+) -> bool:
     left_delta = left.get("delta")
     right_delta = right.get("delta")
     if left_delta is None or right_delta is None:
         return left_delta is None and right_delta is None
-    return _compat("_float_close", _float_close)(left_delta, right_delta)
+    return _float_close(left_delta, right_delta)
 
 
 def _float_close(a: float, b: float, abs_eps: float = 1e-9, rel_eps: float = 1e-6) -> bool:
@@ -299,12 +317,8 @@ def _resolve_max_candidates(
 ) -> Optional[int]:
     if max_candidates is not None:
         return max(max_candidates, 0)
-    default_quarterly = _compat(
-        "_SENSITIVITY_DEFAULT_MAX_CANDIDATES_QUARTERLY",
-        _SENSITIVITY_DEFAULT_MAX_CANDIDATES_QUARTERLY,
-    )
     if model.time_structure.period_mode == PERIOD_MODE_QUARTERLY5 and candidate_filter == "drivers":
-        return default_quarterly
+        return _SENSITIVITY_DEFAULT_MAX_CANDIDATES_QUARTERLY
     return None
 
 
@@ -320,14 +334,12 @@ def _collapse_alias_candidates(
 
     collapsed: List[str] = []
     aliases_by_representative: Dict[str, List[str]] = {}
-    representative_rank = _compat("_sensitivity_representative_rank", _sensitivity_representative_rank)
-    formula_type = _compat("_formula_type", _formula_type)
     for group_ids in groups.values():
         representative = min(
             group_ids,
-            key=lambda candidate_id: representative_rank(
+            key=lambda candidate_id: _sensitivity_representative_rank(
                 model.get_item(candidate_id),
-                {"formula_type": formula_type(model.get_item(candidate_id))},
+                _formula_type(model.get_item(candidate_id)),
             ),
         )
         collapsed.append(representative)
@@ -343,17 +355,14 @@ def _rank_candidates_for_sensitivity(
     graph: DependencyGraph,
     target_id: str,
 ) -> List[str]:
-    candidate_distances_to_target = _compat("_candidate_distances_to_target", _candidate_distances_to_target)
-    representative_rank = _compat("_sensitivity_representative_rank", _sensitivity_representative_rank)
-    formula_type = _compat("_formula_type", _formula_type)
-    distances = candidate_distances_to_target(graph, target_id)
+    distances = _candidate_distances_to_target(graph, target_id)
     ranked = sorted(
         candidates,
         key=lambda candidate_id: (
             distances.get(candidate_id, 10**9),
-            representative_rank(
+            _sensitivity_representative_rank(
                 model.get_item(candidate_id),
-                {"formula_type": formula_type(model.get_item(candidate_id))},
+                _formula_type(model.get_item(candidate_id)),
             ),
             candidate_id,
         ),
@@ -387,13 +396,12 @@ def _scenario_recompute_ids(
     recompute_policy: str,
 ) -> Set[str]:
     recompute_ids: Set[str] = set()
-    downstream_nodes = _compat("_downstream_nodes", _downstream_nodes)
     if recompute_policy == "legacy_global":
         for item_id in overrides:
-            recompute_ids |= downstream_nodes(bundle.graph, item_id)
+            recompute_ids |= _downstream_nodes(bundle.graph, item_id)
         return recompute_ids
 
-    all_periods = _compat("_all_periods", _all_periods)(bundle.model)
+    all_periods = _all_periods(bundle.model)
     override_periods = sorted({period for values in overrides.values() for period in values})
     active_periods = (
         {period for period in all_periods if period >= min(override_periods)}
@@ -407,19 +415,14 @@ def _scenario_recompute_ids(
 
 def _offset_scenario_selector_id(owner: LineItem) -> Optional[str]:
     spec = owner.projected
-    if spec is None or spec.type != FormulaType.valuation or spec.subtype != "offset_scenario":
+    if (
+        spec is None
+        or spec.type != FormulaType.valuation
+        or spec.subtype not in {"offset_scenario", "scenario_select"}
+    ):
         return None
     selector_ref = line_item_ref_from_obj((spec.params or {}).get("selector"))
     return selector_ref.id if selector_ref is not None else None
-
-
-def _constant_spec_value(spec: Optional[FormulaSpec]) -> Optional[float]:
-    if spec is None or spec.type != FormulaType.constant:
-        return None
-    try:
-        return float((spec.params or {}).get("value"))
-    except (TypeError, ValueError):
-        return None
 
 
 def _scenario_case_row_values(model: FinancialModel, case_row_id: str) -> Dict[int, float]:
@@ -439,7 +442,7 @@ def _scenario_case_row_values(model: FinancialModel, case_row_id: str) -> Dict[i
                 continue
     if item.overrides:
         for period, spec in item.overrides.items():
-            value = _constant_spec_value(spec)
+            value = _constant_override_value(spec)
             if value is not None:
                 try:
                     values[int(period)] = value
@@ -463,7 +466,12 @@ def _scenario_case_selection_for_overrides(
         selector_id = _offset_scenario_selector_id(owner)
         if anchor_id is None or selector_id is None:
             continue
-        case_rows = _scenario_bridge_case_row_ids(model, anchor_id)
+        case_rows = (
+            _scenario_select_case_row_ids(model, owner)
+            if owner.projected is not None
+            and owner.projected.subtype == "scenario_select"
+            else _scenario_bridge_case_row_ids(model, anchor_id)
+        )
         for case, row_id in case_rows.items():
             if row_id and row_id in overrides:
                 matches.append(
@@ -560,7 +568,8 @@ def _scenario_case_override_conflict_error(
     selector_conflicts: List[str],
     owner_conflicts: List[Dict[str, Any]],
 ) -> Exception:
-    error_type = _compat("ModelToolError", None)
+    from .tools import ModelToolError
+
     message = (
         "Conflicting scenario overrides: when a topology case row is supplied, "
         "model_scenario maps that row to its owning economic row internally. "
@@ -578,9 +587,7 @@ def _scenario_case_override_conflict_error(
             "If you need a custom owner-row sensitivity instead, omit the topology case rows and pass owner-row overrides directly.",
         ]
     }
-    if error_type is None:
-        return ValueError(message)
-    return error_type(
+    return ModelToolError(
         "conflicting_scenario_case_overrides",
         message,
         details=details,
@@ -623,7 +630,6 @@ def _scenario_case_recompute_ids(
 ) -> Set[str]:
     if not selection or selection.get("status") != "auto_selected":
         return set()
-    downstream_nodes = _compat("_downstream_nodes", _downstream_nodes)
     recompute_ids: Set[str] = set()
     owner_ids = selection.get("owner_ids")
     if not isinstance(owner_ids, list):
@@ -632,7 +638,7 @@ def _scenario_case_recompute_ids(
         if not isinstance(owner_id, str) or owner_id not in bundle.graph.nodes:
             continue
         recompute_ids.add(owner_id)
-        recompute_ids |= downstream_nodes(bundle.graph, owner_id)
+        recompute_ids |= _downstream_nodes(bundle.graph, owner_id)
     return recompute_ids
 
 
@@ -661,7 +667,7 @@ def _compute_scenario_results(
             **compute_kwargs,
         )
 
-    all_periods = _compat("_all_periods", _all_periods)(model)
+    all_periods = _all_periods(model)
     override_periods = sorted({period for values in overrides.values() for period in values})
     if not override_periods:
         return bundle.base_results
@@ -679,8 +685,6 @@ def _compute_scenario_results(
         item_id: dict(values)
         for item_id, values in bundle.base_results.items()
     }
-    period_is_unstable = _compat("_period_is_unstable", _period_is_unstable)
-    merge_period_results = _compat("_merge_period_results", _merge_period_results)
     for period in active_periods:
         period_inputs = {
             item_id: {period: values[period]}
@@ -695,7 +699,7 @@ def _compute_scenario_results(
             seed_results=seed_results,
             **compute_kwargs,
         )
-        if period_is_unstable(period_results, period, recompute_ids):
+        if _period_is_unstable(period_results, period, recompute_ids):
             period_results = graph.compute(
                 period_inputs,
                 recompute=recompute_ids,
@@ -704,8 +708,8 @@ def _compute_scenario_results(
                 seed_results=seed_results,
                 **compute_kwargs,
             )
-        merge_period_results(seed_results, period_results, period)
-        merge_period_results(scenario_results, period_results, period)
+        _merge_period_results(seed_results, period_results, period)
+        _merge_period_results(scenario_results, period_results, period)
     return scenario_results
 
 
@@ -714,14 +718,13 @@ def _period_is_unstable(
     period: int,
     item_ids: Set[str],
 ) -> bool:
-    divergence_limit = _compat("_SCENARIO_DIVERGENCE_ABS_LIMIT", _SCENARIO_DIVERGENCE_ABS_LIMIT)
     for item_id in item_ids:
         value = results.get(item_id, {}).get(period)
         if not isinstance(value, (int, float)):
             continue
         if not math.isfinite(value):
             return True
-        if abs(float(value)) > divergence_limit:
+        if abs(float(value)) > _SCENARIO_DIVERGENCE_ABS_LIMIT:
             return True
     return False
 
@@ -738,43 +741,6 @@ def _merge_period_results(
         if value is None:
             continue
         destination.setdefault(item_id, {})[period] = value
-
-
-_ORIGINALS = {
-    "_SCENARIO_DIVERGENCE_ABS_LIMIT": _SCENARIO_DIVERGENCE_ABS_LIMIT,
-    "_SENSITIVITY_CANDIDATE_FILTERS": _SENSITIVITY_CANDIDATE_FILTERS,
-    "_SENSITIVITY_DEFAULT_MAX_CANDIDATES_QUARTERLY": _SENSITIVITY_DEFAULT_MAX_CANDIDATES_QUARTERLY,
-    "_SENSITIVITY_DRIVER_FORMULA_TYPES": _SENSITIVITY_DRIVER_FORMULA_TYPES,
-    "_SENSITIVITY_MODES": _SENSITIVITY_MODES,
-    "_SENSITIVITY_RECOMPUTE_POLICIES": _SENSITIVITY_RECOMPUTE_POLICIES,
-    "_all_periods": _all_periods,
-    "_candidate_distances_to_target": _candidate_distances_to_target,
-    "_candidate_formula_type": _candidate_formula_type,
-    "_build_ref_alias_groups": _build_ref_alias_groups,
-    "_collapse_alias_candidates": _collapse_alias_candidates,
-    "_compute_scenario_results": _compute_scenario_results,
-    "_dedupe_sensitivity_impacts": _dedupe_sensitivity_impacts,
-    "_downstream_nodes": _downstream_nodes,
-    "_fallback_formula": _fallback_formula,
-    "_filter_sensitivity_candidates": _filter_sensitivity_candidates,
-    "_float_close": _float_close,
-    "_formula_type": _formula_type,
-    "_impacts_equivalent": _impacts_equivalent,
-    "_merge_period_results": _merge_period_results,
-    "_normalize_candidate_ids": _normalize_candidate_ids,
-    "_period_is_unstable": _period_is_unstable,
-    "_promote_projected_fallbacks": _promote_projected_fallbacks,
-    "_rank_candidates_for_sensitivity": _rank_candidates_for_sensitivity,
-    "_resolve_candidate_filter": _resolve_candidate_filter,
-    "_resolve_max_candidates": _resolve_max_candidates,
-    "_resolve_sensitivity_semantics": _resolve_sensitivity_semantics,
-    "_same_period_ref_source": _same_period_ref_source,
-    "_apply_scenario_case_selection": _apply_scenario_case_selection,
-    "_scenario_case_recompute_ids": _scenario_case_recompute_ids,
-    "_scenario_case_selection_for_overrides": _scenario_case_selection_for_overrides,
-    "_scenario_recompute_ids": _scenario_recompute_ids,
-    "_sensitivity_representative_rank": _sensitivity_representative_rank,
-}
 
 
 __all__ = [

@@ -1,29 +1,18 @@
 from __future__ import annotations
 
 import math
-import sys
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, TypeGuard
 
-from .dependency_graph import DependencyGraph
-from .models import FinancialModel, ItemType
-
-
-def _compat(name: str, default: Any) -> Any:
-    parent = sys.modules.get("schema.model_readiness")
-    if parent is None:
-        parent = sys.modules.get("model_readiness")
-    return getattr(parent, name, default) if parent is not None else default
+from .dependency_graph import DependencyGraph, formula_owned_recompute_ids
+from .handle import ComputedValues
+from .models import FinancialModel
 
 
-def _computed_values(model: FinancialModel) -> dict[str, dict[int, float]]:
+def _computed_values(model: FinancialModel) -> ComputedValues:
     graph = DependencyGraph()
     graph.build(model)
-    derived_ids = {
-        item.id
-        for item in model._index.values()
-        if item.item_type == ItemType.derived
-    }
-    return graph.compute({}, recompute=derived_ids)
+    return graph.compute({}, recompute=formula_owned_recompute_ids(model))
 
 
 def _historical_periods(model: FinancialModel) -> list[int]:
@@ -36,7 +25,7 @@ def _projection_periods(model: FinancialModel) -> list[int]:
     return [int(period) for period in (ts.projection_periods or ts.projection_years)]
 
 
-def _is_present(value: Any) -> bool:
+def _is_present(value: Any) -> TypeGuard[int | float]:
     if value is None:
         return False
     if isinstance(value, (int, float)):
@@ -44,11 +33,10 @@ def _is_present(value: Any) -> bool:
     return False
 
 
-def _latest_numeric_value(values: dict[int, Any]) -> float | None:
-    is_present = _compat("_is_present", _is_present)
+def _latest_numeric_value(values: Mapping[int, float | None]) -> float | None:
     for period in sorted(values, reverse=True):
         value = values.get(period)
-        if is_present(value):
+        if _is_present(value):
             return float(value)
     return None
 
@@ -59,18 +47,18 @@ def _nearly_equal(left: float | None, right: float | None, *, tolerance: float =
     return abs(float(left) - float(right)) <= tolerance
 
 
-def _missing_periods(values: dict[int, Any], periods: list[int]) -> list[int]:
-    is_present = _compat("_is_present", _is_present)
-    return [period for period in periods if not is_present(values.get(period))]
+def _missing_periods(values: Mapping[int, Any], periods: list[int]) -> list[int]:
+    return [period for period in periods if not _is_present(values.get(period))]
 
 
-def _has_any_value(values: dict[int, Any], periods: list[int]) -> bool:
-    is_present = _compat("_is_present", _is_present)
-    return any(is_present(values.get(period)) for period in periods)
+def _has_any_value(values: Mapping[int, Any], periods: list[int]) -> bool:
+    return any(_is_present(values.get(period)) for period in periods)
 
 
-def _normalize_computed_values(values: dict[str, dict[int, float]]) -> dict[str, dict[int, float]]:
-    normalized: dict[str, dict[int, float]] = {}
+def _normalize_computed_values(
+    values: ComputedValues,
+) -> ComputedValues:
+    normalized: dict[str, dict[int, float | None]] = {}
     for item_id, item_values in (values or {}).items():
         normalized[str(item_id)] = {
             int(period): value

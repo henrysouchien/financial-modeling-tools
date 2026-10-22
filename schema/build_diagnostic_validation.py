@@ -6,46 +6,57 @@ from typing import Any
 
 from .build_diagnostic_types import CrossSourceValidationCheck, DiagnosticTolerances
 from .build_diagnostic_values import SEVERITY_ORDER
-from .models import DataSourceMapping
+from .provider_port.registry import (
+    ProviderId,
+    ProviderRegistry,
+    require_registered_provider_id,
+)
 from .validation_input import ValidationInput
+from .required_role_catalog import RequiredRoleCatalog, load_required_role_catalog
 
 
 def _check_cross_source_validation(
     validation_input: ValidationInput | None,
     *,
-    taxonomy: dict[str, DataSourceMapping],
+    role_catalog: RequiredRoleCatalog | None = None,
     tolerances: DiagnosticTolerances,
+    provider_registry: ProviderRegistry | None = None,
 ) -> CrossSourceValidationCheck:
     if validation_input is None:
         return CrossSourceValidationCheck(enabled=False)
 
     result = CrossSourceValidationCheck(enabled=True)
+    role_catalog = role_catalog or load_required_role_catalog()
+    admitted_roles = frozenset(role_catalog.role_ids())
     opted_in = sorted(
-        {str(concept_id) for concept_id in validation_input.opted_in_concepts}
+        {
+            str(role)
+            for role in validation_input.opted_in_roles
+            if str(role) in admitted_roles
+        }
     )
     historical_years = sorted(int(year) for year in validation_input.historical_years)
 
-    for concept_id in opted_in:
-        mapping = taxonomy.get(concept_id)
-        if mapping is None or mapping.validation_tolerance_pct is None:
+    for required_role in opted_in:
+        tolerance = validation_input.tolerance_pct_by_role.get(required_role)
+        if tolerance is None:
             continue
 
-        tolerance_pct = float(mapping.validation_tolerance_pct)
-        concept_payload: dict[str, Any] = {
+        tolerance_pct = float(tolerance)
+        role_payload: dict[str, Any] = {
             "tolerance_pct": tolerance_pct,
-            "preferred_source": mapping.preferred_source,
             "headline_severity": "ok",
             "by_year": {},
         }
 
         for year in historical_years:
             fmp_value = _validation_buffer_value(
-                validation_input.fmp_buffer.get(concept_id),
+                validation_input.fmp_buffer_by_role.get(required_role),
                 year,
                 ("values", "values_dict"),
             )
             edgar_value = _validation_buffer_value(
-                validation_input.edgar_buffer.get(concept_id),
+                validation_input.edgar_buffer_by_role.get(required_role),
                 year,
                 ("values_dict", "values"),
             )
@@ -54,10 +65,13 @@ def _check_cross_source_validation(
                 continue
 
             served_source = _validation_served_source(
-                validation_input, concept_id, year
+                validation_input,
+                required_role,
+                year,
+                provider_registry=provider_registry,
             )
             if fmp_value is None or edgar_value is None:
-                concept_payload["by_year"][str(year)] = {
+                role_payload["by_year"][str(year)] = {
                     "comparison_status": "incomparable",
                     "fmp_value": fmp_value,
                     "edgar_value": edgar_value,
@@ -85,7 +99,7 @@ def _check_cross_source_validation(
             elif abs_delta_pct >= tolerance_pct:
                 severity = "gap"
 
-            concept_payload["by_year"][str(year)] = {
+            role_payload["by_year"][str(year)] = {
                 "comparison_status": "compared",
                 "fmp_value": float(fmp_value),
                 "edgar_value": float(edgar_value),
@@ -98,19 +112,19 @@ def _check_cross_source_validation(
             result.summary["cells_compared"] += 1
             if (
                 SEVERITY_ORDER[severity]
-                > SEVERITY_ORDER[concept_payload["headline_severity"]]
+                > SEVERITY_ORDER[role_payload["headline_severity"]]
             ):
-                concept_payload["headline_severity"] = severity
+                role_payload["headline_severity"] = severity
 
-        result.by_concept[concept_id] = concept_payload
+        result.by_role[required_role] = role_payload
 
-    result.summary["concepts_checked"] = len(result.by_concept)
-    for payload in result.by_concept.values():
+    result.summary["roles_checked"] = len(result.by_role)
+    for payload in result.by_role.values():
         headline = payload.get("headline_severity")
         if headline == "gap":
-            result.summary["concepts_with_gap"] += 1
+            result.summary["roles_with_gap"] += 1
         elif headline == "material_gap":
-            result.summary["concepts_with_material_gap"] += 1
+            result.summary["roles_with_material_gap"] += 1
 
     return result
 
@@ -152,13 +166,25 @@ def _year_lookup(values: dict[Any, Any], year: int) -> Any | None:
 
 def _validation_served_source(
     validation_input: ValidationInput,
-    concept_id: str,
+    required_role: str,
     year: int,
-) -> str | None:
-    source_by_year = validation_input.served_source_by_concept_year.get(concept_id, {})
-    if year in source_by_year:
-        return source_by_year[year]
-    return source_by_year.get(str(year))  # type: ignore[arg-type]
+    *,
+    provider_registry: ProviderRegistry | None = None,
+) -> ProviderId | None:
+    source_by_year = validation_input.served_source_by_role_year.get(
+        required_role, {}
+    )
+    value = source_by_year.get(year, source_by_year.get(str(year)))  # type: ignore[arg-type]
+    if value is None:
+        return None
+    return require_registered_provider_id(
+        value,
+        provider_registry=provider_registry,
+        entry_point=(
+            f"cross-source validation served provider for role {required_role!r} "
+            f"year {year}"
+        ),
+    )
 
 
 __all__ = [

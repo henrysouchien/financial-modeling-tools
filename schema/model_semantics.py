@@ -2,22 +2,131 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import replace
-from typing import Any, Literal, Mapping
+import re
+from dataclasses import replace as dataclass_replace
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, runtime_checkable
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from .overrides_projections import ProjectionEntry, ScenarioEntry
-from .thesis_shared_slice import _ContractModel
+if TYPE_CHECKING:
+    from .business_model import DriverAssumptionPlan
+
+from .overrides import TickerOverrides, replace_ticker_overrides
+from .thesis_shared_slice import SourceRecord, _ContractModel
+from .versioned_artifact import canonical_json_bytes
 
 
 ScenarioName = Literal["base", "bull", "bear"]
 NonBaseScenarioName = Literal["bull", "bear"]
 ValuationMethod = Literal["dcf", "relative", "multiple", "mixed", "manual"]
+ProjectionValueScale = Literal["display", "model"]
+_YEAR_RE = re.compile(r"^\d{4}$")
+
+
+class ScenarioProvenance(_ContractModel):
+    source_skill: str
+    skill_run_id: str
+    writer_policy_id: str = Field(min_length=1)
+    last_writer_id: str = Field(min_length=1)
+    written_at: str
+    model_build_id: str | None = None
+
+
+class ScenarioEntry(_ContractModel):
+    """Typed forecast/scenario intent independent of durable override storage."""
+
+    values: dict[str, float]
+    value_scale: ProjectionValueScale = "display"
+    rationale: str
+    confidence: Literal["low", "medium", "high"]
+    held_at_base: bool = False
+    disclosed_guidance_horizon: int | None = None
+    extension_basis_by_period: dict[str, str | None] | None = None
+    source_refs_by_period: dict[str, list[str]] | None = None
+    sources: list[SourceRecord] = Field(default_factory=list)
+    provenance: ScenarioProvenance
+
+    @field_validator("values")
+    @classmethod
+    def _validate_year_keys(cls, value: dict[str, float]) -> dict[str, float]:
+        for key in value:
+            if _YEAR_RE.fullmatch(key) is None:
+                raise ValueError(f"year key must be 4-digit FY, got {key!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_period_consistency(self) -> "ScenarioEntry":
+        value_years = set(self.values)
+        if self.source_refs_by_period:
+            extra = set(self.source_refs_by_period) - value_years
+            if extra:
+                raise ValueError(
+                    f"source_refs_by_period has years not in values: {sorted(extra)}"
+                )
+        if self.extension_basis_by_period:
+            extra = set(self.extension_basis_by_period) - value_years
+            if extra:
+                raise ValueError(
+                    f"extension_basis_by_period has years not in values: {sorted(extra)}"
+                )
+        if self.source_refs_by_period:
+            source_ids = {source.id for source in self.sources}
+            for year, refs in self.source_refs_by_period.items():
+                missing = set(refs) - source_ids
+                if missing:
+                    raise ValueError(
+                        f"source_refs_by_period[{year}] references unknown source IDs: "
+                        f"{sorted(missing)} (sources block has "
+                        f"{sorted(source_ids) if source_ids else '[]'})"
+                    )
+        return self
+
+
+@runtime_checkable
+class _HasModelDump(Protocol):
+    def model_dump(self, *, mode: str) -> object: ...
+
+
+def canonical_workbook_semantics_hash(
+    *,
+    ticker: str,
+    control_curves: tuple[Any, ...],
+    valuation: Any | None,
+) -> str:
+    """Hash the one canonical control/valuation input projection for rendering."""
+
+    curve_keys = tuple(
+        (
+            curve.template_item_id.encode("utf-8"),
+            curve.domain,
+            curve.scenario.encode("utf-8"),
+            curve.control_id,
+        )
+        for curve in control_curves
+    )
+    if curve_keys != tuple(sorted(set(curve_keys))):
+        raise ValueError("control_curves must be canonically sorted and unique")
+    if valuation is None:
+        valuation_payload = None
+    elif isinstance(valuation, _HasModelDump):
+        valuation_payload = valuation.model_dump(mode="json")
+    else:
+        valuation_payload = valuation
+    payload = {
+        "schema_version": "canonical-workbook-semantics.v2",
+        "ticker": str(ticker).strip().upper(),
+        "control_curves": [curve.to_dict() for curve in control_curves],
+        "valuation": valuation_payload or None,
+    }
+    return hashlib.sha256(
+        b"canonical-workbook-semantics.v2\0" + canonical_json_bytes(payload)
+    ).hexdigest()
 
 
 class ForecastArtifactEntry(_ContractModel):
-    driver_key: str = Field(min_length=1)
+    driver_id: str = Field(pattern=r"^drv_[0-9a-f]{32}$")
+    control_id: str = Field(pattern=r"^ctl_[0-9a-f]{32}$")
+    binding_id: str = Field(pattern=r"^bnd_[0-9a-f]{32}$")
     item_id: str = Field(min_length=1)
     base: ScenarioEntry
 
@@ -27,12 +136,18 @@ class ForecastArtifact(_ContractModel):
     entries: list[ForecastArtifactEntry] = Field(default_factory=list)
 
     @property
-    def by_driver_key(self) -> dict[str, ForecastArtifactEntry]:
-        return {entry.driver_key: entry for entry in self.entries}
+    def by_driver_id(self) -> dict[str, ForecastArtifactEntry]:
+        return {entry.driver_id: entry for entry in self.entries}
+
+    @property
+    def by_item_id(self) -> dict[str, ForecastArtifactEntry]:
+        return {entry.item_id: entry for entry in self.entries}
 
 
 class ScenarioArtifactEntry(_ContractModel):
-    driver_key: str = Field(min_length=1)
+    driver_id: str = Field(pattern=r"^drv_[0-9a-f]{32}$")
+    control_id: str = Field(pattern=r"^ctl_[0-9a-f]{32}$")
+    binding_id: str = Field(pattern=r"^bnd_[0-9a-f]{32}$")
     item_id: str = Field(min_length=1)
     scenarios: dict[NonBaseScenarioName, ScenarioEntry] = Field(default_factory=dict)
 
@@ -48,14 +163,18 @@ class ScenarioSet(_ContractModel):
     entries: list[ScenarioArtifactEntry] = Field(default_factory=list)
 
     @property
-    def by_driver_key(self) -> dict[str, ScenarioArtifactEntry]:
-        return {entry.driver_key: entry for entry in self.entries}
+    def by_driver_id(self) -> dict[str, ScenarioArtifactEntry]:
+        return {entry.driver_id: entry for entry in self.entries}
+
+    @property
+    def by_item_id(self) -> dict[str, ScenarioArtifactEntry]:
+        return {entry.item_id: entry for entry in self.entries}
 
 
 class ModelSemanticsForecastPlanIssue(_ContractModel):
     field: str = Field(min_length=1)
     reason: str = Field(min_length=1)
-    driver_key: str | None = None
+    driver_id: str | None = None
     item_id: str | None = None
     got: Any = None
     expected: dict[str, Any] = Field(default_factory=dict)
@@ -79,12 +198,42 @@ class ValuationWaccInputs(_ContractModel):
     beta_floor: ValuationInputValue | None = None
 
 
+class ScenarioControlFamily(_ContractModel):
+    """One complete bull/base/bear family of durable valuation controls."""
+
+    bull: float = Field(strict=True, allow_inf_nan=False)
+    base: float = Field(strict=True, allow_inf_nan=False)
+    bear: float = Field(strict=True, allow_inf_nan=False)
+
+
+class ScenarioValuationControls(_ContractModel):
+    """Durable scenario controls owned by the pricing and DCF writers."""
+
+    selected_pe: ScenarioControlFamily | None = None
+    dcf_terminal_growth: ScenarioControlFamily | None = None
+    dcf_exit_multiple: ScenarioControlFamily | None = None
+
+    @model_validator(mode="after")
+    def _require_authored_family(self) -> "ScenarioValuationControls":
+        if all(
+            family is None
+            for family in (
+                self.selected_pe,
+                self.dcf_terminal_growth,
+                self.dcf_exit_multiple,
+            )
+        ):
+            raise ValueError("scenario controls must include at least one complete family")
+        return self
+
+
 class ValuationArtifact(_ContractModel):
     schema_version: Literal["1.0"] = "1.0"
     method: ValuationMethod | None = None
     wacc: ValuationWaccInputs = Field(default_factory=ValuationWaccInputs)
     terminal_growth_rate: ValuationInputValue | None = None
     exit_multiple: ValuationInputValue | None = None
+    scenario_controls: ScenarioValuationControls | None = None
     sensitivity_setup: dict[str, Any] = Field(default_factory=dict)
     references: dict[str, str | None] = Field(default_factory=dict)
 
@@ -109,44 +258,12 @@ class ModelSemantics(_ContractModel):
 
     @classmethod
     def from_ticker_overrides(cls, overrides: Any) -> "ModelSemantics":
-        forecast_entries: list[ForecastArtifactEntry] = []
-        scenario_entries: list[ScenarioArtifactEntry] = []
-        for item_id, value in sorted((getattr(overrides, "projections", {}) or {}).items()):
-            if not isinstance(item_id, str) or not item_id.strip():
-                continue
-            try:
-                projection = ProjectionEntry.model_validate(value)
-            except ValidationError:
-                continue
-            scenarios = projection.scenarios
-            if "base" in scenarios:
-                forecast_entries.append(
-                    ForecastArtifactEntry(
-                        driver_key=item_id,
-                        item_id=item_id,
-                        base=scenarios["base"],
-                    )
-                )
-            non_base = {
-                name: scenario
-                for name, scenario in scenarios.items()
-                if name in {"bull", "bear"}
-            }
-            if non_base:
-                scenario_entries.append(
-                    ScenarioArtifactEntry(
-                        driver_key=item_id,
-                        item_id=item_id,
-                        scenarios=non_base,
-                    )
-                )
-
         valuation_payload = getattr(overrides, "valuation", None) or None
         valuation = ValuationArtifact.model_validate(valuation_payload) if valuation_payload else None
         return cls(
             ticker=str(getattr(overrides, "ticker", "") or "").upper(),
-            forecast=ForecastArtifact(entries=forecast_entries),
-            scenarios=ScenarioSet(entries=scenario_entries),
+            forecast=ForecastArtifact(),
+            scenarios=ScenarioSet(),
             valuation=valuation,
         )
 
@@ -157,107 +274,82 @@ class ModelSemantics(_ContractModel):
 
 
 def apply_model_semantics(overrides: Any, semantics: ModelSemantics) -> Any:
-    projections = dict(getattr(overrides, "projections", {}) or {})
-    for entry in semantics.forecast.entries:
-        scenarios = _existing_projection_scenarios(projections.get(entry.item_id))
-        scenarios["base"] = entry.base
-        projections[entry.item_id] = ProjectionEntry(scenarios=scenarios).model_dump(mode="json")
-
-    for entry in semantics.scenarios.entries:
-        scenarios = _existing_projection_scenarios(projections.get(entry.item_id))
-        for scenario_name, scenario in entry.scenarios.items():
-            scenarios[scenario_name] = scenario
-        projections[entry.item_id] = ProjectionEntry(scenarios=scenarios).model_dump(mode="json")
+    if semantics.forecast.entries or semantics.scenarios.entries:
+        raise ValueError(
+            "forecast and scenario semantics must be written through canonical "
+            "stable-ID control snapshots"
+        )
 
     valuation = semantics.valuation.model_dump(mode="json") if semantics.valuation is not None else getattr(overrides, "valuation", {})
-    updated = replace(overrides, projections=projections, valuation=valuation)
+    if isinstance(overrides, TickerOverrides):
+        updated = replace_ticker_overrides(
+            overrides,
+            valuation=valuation,
+        )
+    else:
+        updated = dataclass_replace(
+            overrides,
+            valuation=valuation,
+        )
     ModelSemantics.from_ticker_overrides(updated)
     return updated
 
 
 def model_semantics_forecast_plan_issues(
     semantics: ModelSemantics,
-    driver_assumption_plan: Any | None,
+    driver_assumption_plan: DriverAssumptionPlan | None,
     *,
-    units_by_driver_key: Mapping[str, str] | None = None,
-    behaviors_by_driver_key: Mapping[str, str] | None = None,
+    units_by_driver_id: Mapping[str, str] | None = None,
+    behaviors_by_driver_id: Mapping[str, str] | None = None,
 ) -> list[ModelSemanticsForecastPlanIssue]:
     """Return forecast entries that do not conform to the BusinessModel driver plan."""
 
     if driver_assumption_plan is None:
         return []
 
-    unit_lookup = _normalized_string_map(units_by_driver_key or {})
-    behavior_lookup = _normalized_string_map(behaviors_by_driver_key or {})
+    unit_lookup = _normalized_string_map(units_by_driver_id or {})
+    behavior_lookup = _normalized_string_map(behaviors_by_driver_id or {})
     issues: list[ModelSemanticsForecastPlanIssue] = []
     for index, entry in enumerate(semantics.forecast.entries):
         field = f"forecast.entries[{index}]"
-        resolved: list[tuple[str, str, str]] = []
-        unresolved: list[dict[str, str]] = []
-        for suffix, value in (
-            ("driver_key", entry.driver_key),
-            ("item_id", entry.item_id),
-        ):
-            text = str(value or "").strip()
-            if not text:
-                continue
-            canonical = _resolve_plan_driver_key(driver_assumption_plan, text)
-            if canonical is None:
-                unresolved.append({"field": f"{field}.{suffix}", "value": text})
-            else:
-                resolved.append((suffix, text, canonical))
-
-        if not resolved:
-            issues.append(
-                ModelSemanticsForecastPlanIssue(
-                    field=f"{field}.driver_key",
-                    reason="forecast driver key must resolve through the accepted BusinessModel DriverAssumptionPlan",
-                    driver_key=entry.driver_key,
-                    item_id=entry.item_id,
-                    got={"unresolved": unresolved},
-                    expected={"accepted_driver_keys": _accepted_plan_driver_keys(driver_assumption_plan)[:20]},
-                    fix="use a canonical DriverAssumptionPlan key or alias from the accepted BusinessModel revision",
-                    example={"accepted_driver_keys": _accepted_plan_driver_keys(driver_assumption_plan)[:20]},
-                )
-            )
-            continue
-
-        canonical = resolved[0][2]
-        plan_entry = _plan_entry_for_driver_key(driver_assumption_plan, canonical)
+        plan_entry = driver_assumption_plan.entry_for_driver_id(entry.driver_id)
         if plan_entry is None:
             issues.append(
                 ModelSemanticsForecastPlanIssue(
-                    field=f"{field}.driver_key",
-                    reason="DriverAssumptionPlan resolved to a missing entry",
-                    driver_key=entry.driver_key,
+                    field=f"{field}.driver_id",
+                    reason="forecast driver_id is absent from the accepted stable plan",
+                    driver_id=entry.driver_id,
                     item_id=entry.item_id,
-                    got={"canonical_driver_key": canonical},
-                    fix="repair the accepted BusinessModel DriverAssumptionPlan before writing forecast semantics",
-                    example={"driver_key": canonical},
+                    got={"driver_id": entry.driver_id},
+                    fix="use an exact driver_id from the accepted stable plan",
+                    example={"driver_id": entry.driver_id},
                 )
             )
             continue
 
-        mismatches = [
-            {"field": f"{field}.{suffix}", "value": value, "resolved_driver_key": candidate}
-            for suffix, value, candidate in resolved
-            if candidate != canonical
-        ]
-        if mismatches or unresolved:
+        expected_binding = {
+            "driver_id": plan_entry.driver_id,
+            "control_id": plan_entry.control_id,
+            "binding_id": plan_entry.binding_id,
+            "item_id": plan_entry.template_item_id,
+        }
+        actual_binding = {
+            "driver_id": entry.driver_id,
+            "control_id": entry.control_id,
+            "binding_id": entry.binding_id,
+            "item_id": entry.item_id,
+        }
+        if actual_binding != expected_binding:
             issues.append(
                 ModelSemanticsForecastPlanIssue(
-                    field=f"{field}.driver_key",
-                    reason="all forecast driver/item keys must resolve to the same DriverAssumptionPlan entry",
-                    driver_key=entry.driver_key,
+                    field=f"{field}.binding_id",
+                    reason="forecast entry must equal one exact stable compile binding",
+                    driver_id=entry.driver_id,
                     item_id=entry.item_id,
-                    got={
-                        "canonical_driver_key": canonical,
-                        "mismatches": mismatches,
-                        "unresolved": unresolved,
-                    },
-                    expected={"driver_key": canonical},
-                    fix="do not mix arbitrary workbook item IDs with BusinessModel driver keys; use aliases for one canonical plan entry",
-                    example={"driver_key": canonical, "accepted_aliases": list(getattr(plan_entry, "aliases", []) or [])},
+                    got=actual_binding,
+                    expected=expected_binding,
+                    fix="copy the complete stable identity triplet and item target",
+                    example=expected_binding,
                 )
             )
             continue
@@ -265,54 +357,69 @@ def model_semantics_forecast_plan_issues(
         if not bool(getattr(plan_entry, "base_case_required", False)):
             issues.append(
                 ModelSemanticsForecastPlanIssue(
-                    field=f"{field}.driver_key",
+                    field=f"{field}.driver_id",
                     reason="DriverAssumptionPlan entry is not eligible for base-case forecast semantics",
-                    driver_key=entry.driver_key,
+                    driver_id=entry.driver_id,
                     item_id=entry.item_id,
                     got={
-                        "driver_key": canonical,
+                        "driver_id": entry.driver_id,
                         "compile_target_type": getattr(plan_entry, "compile_target_type", None),
                     },
                     expected={"base_case_required": True},
                     fix="write forecast semantics only for BusinessModel drivers compiled to assumption or existing rows",
-                    example={"driver_key": canonical, "base_case_required": True},
+                    example={"driver_id": entry.driver_id, "base_case_required": True},
                 )
             )
             continue
 
-        submitted_unit = _unit_for_forecast_entry(
-            unit_lookup,
-            entry=entry,
-            canonical_driver_key=canonical,
+        submitted_unit = next(
+            (
+                unit_lookup[key]
+                for key in (
+                    entry.driver_id,
+                    entry.control_id,
+                    entry.binding_id,
+                    entry.item_id,
+                )
+                if key in unit_lookup
+            ),
+            None,
         )
         if submitted_unit:
             accepted_units = _accepted_units_for_plan_entry(
                 plan_entry,
-                submitted_key=_unit_driver_key_candidate(entry, resolved, plan_entry=plan_entry),
             )
             if submitted_unit not in accepted_units:
                 issues.append(
                     ModelSemanticsForecastPlanIssue(
                         field=f"{field}.unit",
                         reason="forecast unit must match the resolved BusinessModel DriverAssumptionPlan entry",
-                        driver_key=entry.driver_key,
+                        driver_id=entry.driver_id,
                         item_id=entry.item_id,
                         got={
                             "unit": submitted_unit,
-                            "driver_key": canonical,
+                            "driver_id": entry.driver_id,
                             "accepted_units": sorted(accepted_units),
                             "plan_unit": _unit_value(getattr(plan_entry, "unit", None)),
                         },
                         expected={"unit": sorted(accepted_units)},
-                        fix="use the unit implied by the accepted BusinessModel driver or its growth-rate alias",
+                        fix="use the control unit bound by the exact stable compile binding",
                         example={"unit": sorted(accepted_units)[0] if accepted_units else _unit_value(getattr(plan_entry, "unit", None))},
                     )
                 )
 
-        submitted_behavior = _behavior_for_forecast_entry(
-            behavior_lookup,
-            entry=entry,
-            canonical_driver_key=canonical,
+        submitted_behavior = next(
+            (
+                behavior_lookup[key]
+                for key in (
+                    entry.driver_id,
+                    entry.control_id,
+                    entry.binding_id,
+                    entry.item_id,
+                )
+                if key in behavior_lookup
+            ),
+            None,
         )
         expected_behavior = _behavior_value(getattr(plan_entry, "behavior", None))
         if submitted_behavior and expected_behavior and submitted_behavior != expected_behavior:
@@ -320,11 +427,11 @@ def model_semantics_forecast_plan_issues(
                 ModelSemanticsForecastPlanIssue(
                     field=f"{field}.behavior",
                     reason="forecast behavior must match the resolved BusinessModel DriverAssumptionPlan entry",
-                    driver_key=entry.driver_key,
+                    driver_id=entry.driver_id,
                     item_id=entry.item_id,
                     got={
                         "behavior": submitted_behavior,
-                        "driver_key": canonical,
+                        "driver_id": entry.driver_id,
                         "plan_behavior": expected_behavior,
                     },
                     expected={"behavior": expected_behavior},
@@ -334,15 +441,6 @@ def model_semantics_forecast_plan_issues(
             )
 
     return issues
-
-
-def _existing_projection_scenarios(value: Any) -> dict[ScenarioName, ScenarioEntry]:
-    if not isinstance(value, dict) or not value.get("scenarios"):
-        return {}
-    try:
-        return dict(ProjectionEntry.model_validate(value).scenarios)
-    except ValidationError:
-        return {}
 
 
 def _forbidden_valuation_output_paths(value: Any, forbidden: set[str], *, path: str = "valuation") -> list[str]:
@@ -359,29 +457,6 @@ def _forbidden_valuation_output_paths(value: Any, forbidden: set[str], *, path: 
     return paths
 
 
-def _resolve_plan_driver_key(driver_assumption_plan: Any, driver_key: str) -> str | None:
-    resolver = getattr(driver_assumption_plan, "resolve_driver_key", None)
-    if not callable(resolver):
-        return None
-    resolved = resolver(driver_key)
-    text = str(resolved or "").strip()
-    return text or None
-
-
-def _plan_entry_for_driver_key(driver_assumption_plan: Any, driver_key: str) -> Any | None:
-    getter = getattr(driver_assumption_plan, "entry_for_driver_key", None)
-    if not callable(getter):
-        return None
-    return getter(driver_key)
-
-
-def _accepted_plan_driver_keys(driver_assumption_plan: Any) -> list[str]:
-    accepted = getattr(driver_assumption_plan, "accepted_driver_keys", None)
-    if callable(accepted):
-        return [str(value) for value in accepted()]
-    return []
-
-
 def _normalized_string_map(values: Mapping[str, str]) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for key, value in values.items():
@@ -392,76 +467,9 @@ def _normalized_string_map(values: Mapping[str, str]) -> dict[str, str]:
     return normalized
 
 
-def _unit_for_forecast_entry(
-    units_by_driver_key: Mapping[str, str],
-    *,
-    entry: ForecastArtifactEntry,
-    canonical_driver_key: str,
-) -> str | None:
-    for key in (entry.driver_key, entry.item_id, canonical_driver_key):
-        unit = units_by_driver_key.get(str(key or "").strip())
-        if unit:
-            return unit
-    return None
-
-
-def _behavior_for_forecast_entry(
-    behaviors_by_driver_key: Mapping[str, str],
-    *,
-    entry: ForecastArtifactEntry,
-    canonical_driver_key: str,
-) -> str | None:
-    for key in (entry.driver_key, entry.item_id, canonical_driver_key):
-        behavior = behaviors_by_driver_key.get(str(key or "").strip())
-        if behavior:
-            return behavior
-    return None
-
-
-def _unit_driver_key_candidate(
-    entry: ForecastArtifactEntry,
-    resolved: list[tuple[str, str, str]],
-    *,
-    plan_entry: Any | None = None,
-) -> str:
-    canonical_entry_key = str(getattr(plan_entry, "driver_key", "") or "").strip()
-    for suffix, value, _canonical in resolved:
-        if suffix == "item_id" and str(value or "").strip() != canonical_entry_key:
-            return value
-    if plan_entry is not None:
-        for _suffix, value, _canonical in resolved:
-            if str(value or "").strip() != canonical_entry_key and _is_growth_rate_alias(plan_entry, value):
-                return value
-    return entry.item_id or entry.driver_key
-
-
-def _accepted_units_for_plan_entry(plan_entry: Any, submitted_key: str) -> set[str]:
-    units = {_unit_value(getattr(plan_entry, "unit", None))}
-    if _is_growth_rate_alias(plan_entry, submitted_key):
-        units.add("percentage")
-    return {unit for unit in units if unit}
-
-
-def _is_growth_rate_alias(plan_entry: Any, submitted_key: str) -> bool:
-    key = str(submitted_key or "").strip()
-    if not key:
-        return False
-    aliases = {str(value or "").strip() for value in getattr(plan_entry, "aliases", []) or []}
-    if key in aliases and _looks_like_growth_rate_key(key):
-        return True
-    segment_id = str(getattr(plan_entry, "segment_id", "") or "").strip()
-    node_id = str(getattr(plan_entry, "driver_node_id", "") or "").strip()
-    if not (segment_id and node_id):
-        return False
-    return key.startswith(f"{segment_id}.{node_id}.") or key.startswith(f"bm.{segment_id}.{node_id}__")
-
-
-def _looks_like_growth_rate_key(key: str) -> bool:
-    text = str(key or "").strip().lower()
-    if not text:
-        return False
-    suffix = text.rsplit("__", 1)[-1].rsplit(".", 1)[-1]
-    return "growth" in suffix or "rate" in suffix or suffix.endswith("_pct")
+def _accepted_units_for_plan_entry(plan_entry: Any) -> set[str]:
+    unit = _unit_value(getattr(plan_entry, "control_unit", None))
+    return {unit} if unit else set()
 
 
 def _unit_value(value: Any) -> str:
@@ -478,12 +486,17 @@ __all__ = [
     "ModelSemantics",
     "ModelSemanticsForecastPlanIssue",
     "ScenarioArtifactEntry",
+    "ScenarioControlFamily",
+    "ScenarioEntry",
     "ScenarioName",
+    "ScenarioProvenance",
     "ScenarioSet",
+    "ScenarioValuationControls",
     "ValuationArtifact",
     "ValuationInputValue",
     "ValuationMethod",
     "ValuationWaccInputs",
     "apply_model_semantics",
+    "canonical_workbook_semantics_hash",
     "model_semantics_forecast_plan_issues",
 ]

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Dict, Set
 
+from ..models import (
+    COLUMN_OFFSET_MODE_PERIOD_RELATIVE as _COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
+)
+
 EXPECTED_HEADER_DEPENDENCY_TARGETS_GENERIC: Set[str] = {
     "assumptions.2",
     "assumptions.add_less_acquisitions_write_offs",
@@ -24,8 +28,6 @@ SCENARIO_LINKED_IDS_GENERIC: Set[str] = {
 }
 
 _SCENARIO_SELECTOR_ID = "tpl.a.header.scenario_value"
-
-_COLUMN_OFFSET_MODE_PERIOD_RELATIVE = "period_relative"
 
 _SCENARIO_LINKED_OFFSET_ANCHORS: Dict[str, str] = {
     "tpl.a.revenue_drivers.volume_1_growth": "tpl.a.scenario_tables.scenario_volume_growth_label",
@@ -90,7 +92,19 @@ INPUT_IDS_GENERIC: Set[str] = {
     "financial_model.current_asset_4",
     "financial_model.current_liability_1",
     "financial_model.acquisitions_of_businesses",
+    # Cash-flow and balance-sheet rows the forecast-control profile admits as
+    # authored policy controls (schema/forecast_control_profile.py); the driver
+    # resolver lowers a control only onto an input row.
+    "financial_model.deferred_revenue_noncurrent",
+    "financial_model.purchases_of_investments",
+    "financial_model.sales_maturities_of_investments",
+    "financial_model.other_changes_in_investing_activities",
+    "financial_model.effect_of_exchange_rate_on_cash",
 }
+
+PROJECTED_ZERO_DEFAULT_TEMPLATE_IDS_GENERIC = (
+    "tpl.fm.cash_flow.other_changes_in_investing_activities",
+)
 
 KEY_DRIVER_IDS_GENERIC: Set[str] = {
     "assumptions.y_y_chg",
@@ -134,6 +148,12 @@ OPTIONAL_IDS_GENERIC: Set[str] = {
     "financial_model.other_cash_flows_from_financing",
 }
 
+# Generic balance-sheet slots have no required role; their section and total
+# membership belongs to the template rather than the statement-role catalog.
+OPTIONAL_BALANCE_SHEET_SLOT_PARENT_TOTALS_GENERIC: Dict[str, str] = {
+    "tpl.fm.balance_sheet.current_asset_4": "tpl.fm.balance_sheet.total_current_assets",
+}
+
 TEMPLATE_TOKENS_GENERIC: Dict[str, str] = {
     "assumptions.volume_driver_1": "[Volume driver 1]",
     "assumptions.volume_driver_2": "[Volume driver 2]",
@@ -149,6 +169,7 @@ TEMPLATE_TOKENS_GENERIC: Dict[str, str] = {
     "assumptions.software_investment_if_applicable": "[Software investment, if applicable]",
     "assumptions.long_term_asset_1": "[Long-term asset 1]",
     "assumptions.long_term_asset_2": "[Long-term asset 2]",
+    "assumptions.long_term_asset_3": "[Long-term asset 3]",
     "financial_model.company_name_ticker": "[Company Name] ([TICKER])",
     "financial_model.business_segment_1": "[Business Segment 1]",
     "financial_model.business_segment_2": "[Business Segment 2]",
@@ -160,6 +181,7 @@ TEMPLATE_TOKENS_GENERIC: Dict[str, str] = {
     "financial_model.software_investment_if_applicable": "[Software investment, if applicable]",
     "financial_model.long_term_asset_1": "[Long-term asset 1]",
     "financial_model.long_term_asset_2": "[Long-term asset 2]",
+    "financial_model.long_term_asset_3": "[Long-term asset 3]",
     "financial_model.other_cash_flows_from_financing": "[Other cash flows from financing]",
 }
 
@@ -181,17 +203,19 @@ BUILD_NOTES_GENERIC: Dict[str, str] = {
     "assumptions.software_investment_if_applicable": "Rename if the company uses a different software investment label or omit if not applicable.",
     "assumptions.long_term_asset_1": "Rename to the first long-term asset placeholder if needed.",
     "assumptions.long_term_asset_2": "Rename to the second long-term asset placeholder if needed.",
+    "assumptions.long_term_asset_3": "Rename to the third long-term asset placeholder if needed.",
     "financial_model.company_name_ticker": "Replace with the target company name and ticker during template instantiation.",
     "financial_model.business_segment_1": "Rename to the primary business segment line.",
     "financial_model.business_segment_2": "Rename to the secondary business segment line if used.",
     "financial_model.current_asset_1": "Rename to the first current asset concept if needed.",
     "financial_model.current_asset_2": "Rename to the second current asset concept if needed.",
     "financial_model.current_asset_3": "Optional current asset input. Leave blank unless the company needs it.",
-    "financial_model.current_asset_4": "Optional post-subtotal current asset input for company-specific current assets.",
+    "financial_model.current_asset_4": "Optional current asset input for company-specific current assets.",
     "financial_model.current_liability_1": "Optional current liability input. Use for deferred revenue or another current liability if needed.",
     "financial_model.software_investment_if_applicable": "Rename if the company uses a different software investment label or omit if not applicable.",
     "financial_model.long_term_asset_1": "Rename to the first long-term asset placeholder if needed.",
     "financial_model.long_term_asset_2": "Rename to the second long-term asset placeholder if needed.",
+    "financial_model.long_term_asset_3": "Rename to the third long-term asset placeholder if needed.",
     "financial_model.other_cash_flows_from_financing": "Optional financing catch-all row. Leave at zero unless needed.",
 }
 
@@ -202,15 +226,14 @@ LABEL_OVERRIDES_GENERIC: Dict[str, str] = {
     "assumptions.avg_capitalized_internal_use_software": "  Avg. Capitalized software",
     "assumptions.amortization_of_beginning_capitalized_internal_use_software": "   % Amortization of beginning capitalized software",
     "assumptions.capitalized_portion_of_r_d_as_of_internal_use_software_costs": "Capitalized portion of R&D as % of capitalized software costs",
-    "assumptions.funds_held_for_clients": "Optional current asset bridge",
-    "assumptions.funds_held_for_client_s_cash_and_cash_equivalents": "Optional cash bridge adjustment",
-    "financial_model.total_current_assets_before_funds_held_for_clients": "Subtotal current assets",
-    "financial_model.total_current_liabilities_before_client_fund_obligations": "Subtotal current liabilities",
     "financial_model.current_asset_2_r146": " Change in inventory",
-    "financial_model.long_term_asset_1": " Long-term marketable securities",
     "financial_model.long_term_operating_lease_liabilities": " Long-term lease liabilities",
     "financial_model.reconciliation_of_cash_equivalents_and_client_funds": "Reconciliation of cash and equivalents",
-    "financial_model.funds_held_for_client_s_cash_and_cash_equivalents": " Optional cash bridge adjustment",
+    "financial_model.funds_held_for_client_s_cash_and_cash_equivalents": " Cash reconciliation adjustment",
+    "assumptions.stock_based_compensation_and_related_payroll_taxes": "Stock-based compensation add-back",
+    "assumptions.stock_based_compensation_and_related_payroll_taxes_r143": "Stock-based compensation add-back",
+    "financial_model.stock_based_compensation_and_related_payroll_taxes": "Stock-based compensation add-back",
+    "financial_model.stock_based_compensation_and_related_payroll_taxes_r33": "Stock-based compensation add-back",
 }
 
 HEADER_DEPENDENCY_NOTES_GENERIC: Dict[str, str] = {
@@ -254,82 +277,6 @@ REPEAT_GROUP_IDS_GENERIC: Dict[str, str] = {
     item_id: "revenue_segment" for item_id in REPEAT_GROUP_ROLES_GENERIC
 }
 
-DATA_CONCEPT_MAP_GENERIC: Dict[str, str] = {
-    "financial_model.total_revenues": "revenue",
-    "financial_model.cost_of_goods_sold": "cost_of_revenue",
-    "financial_model.sales_and_marketing": "sales_and_marketing",
-    "financial_model.research_and_development": "research_and_development",
-    "financial_model.general_and_administrative": "general_and_administrative",
-    "financial_model.total_operating_expenses": "operating_expenses",
-    "financial_model.operating_income": "operating_income",
-    "financial_model.other_income_expense": "other_income_expense",
-    "financial_model.interest_expense": "interest_expense",
-    "financial_model.income_before_income_taxes": "pretax_income",
-    "financial_model.income_tax_expense_benefit": "income_tax",
-    "financial_model.net_income": "net_income",
-    "financial_model.eps": "eps_diluted",
-    "financial_model.diluted_shares_outstanding_m": "diluted_shares",
-    "financial_model.ebitda": "ebitda",
-    "financial_model.depreciation_and_amortization_r134": "depreciation_amortization",
-    "financial_model.share_based_compensation": "stock_based_compensation",
-    "financial_model.cash_and_marketable_securities": "cash_and_short_term_investments",
-    "financial_model.cash_and_cash_equivalents": "cash_and_equivalents",
-    "financial_model.accounts_receivable_net": "accounts_receivable",
-    "financial_model.current_asset_1": "other_current_assets",
-    "financial_model.current_asset_2": "inventory",
-    "financial_model.current_asset_3": "prepaid_expenses",
-    "financial_model.total_current_assets": "total_current_assets",
-    "financial_model.property_and_equipment_net": "property_plant_equipment_net",
-    "financial_model.goodwill": "goodwill",
-    "financial_model.intangible_assets_net": "intangible_assets",
-    "financial_model.operating_lease_right_of_use_assets": "operating_lease_right_of_use_assets",
-    "financial_model.long_term_asset_1": "marketable_securities_noncurrent",
-    "financial_model.long_term_asset_2": "other_non_current_assets",
-    "financial_model.total_assets": "total_assets",
-    "financial_model.accounts_payable": "accounts_payable",
-    "financial_model.accrued_expenses": "accrued_expenses",
-    "financial_model.current_liability_1": "deferred_revenue",
-    "financial_model.current_liability_2": "other_current_liabilities",
-    "financial_model.current_liability_3": "commercial_paper",
-    "financial_model.total_current_liabilities": "total_current_liabilities",
-    "financial_model.current_portion_of_long_term_debt": "short_term_debt",
-    "financial_model.deferred_income_tax_assets": "deferred_tax_assets",
-    "financial_model.other_long_term_liabilities": "other_non_current_liabilities",
-    "financial_model.deferred_income_tax_liabilities": "deferred_tax_liabilities",
-    "financial_model.long_term_operating_lease_liabilities": "lease_liability_noncurrent",
-    "financial_model.long_term_debt": "long_term_debt",
-    "financial_model.deferred_revenue_noncurrent": "deferred_revenue_noncurrent",
-    "financial_model.total_liabilities": "total_liabilities",
-    "financial_model.common_stock": "common_stock",
-    "financial_model.additional_paid_in_capital": "additional_paid_in_capital",
-    "financial_model.retained_earnings": "retained_earnings",
-    "financial_model.accumulated_other_comprehensive_income_loss": "accumulated_other_comprehensive_income",
-    "financial_model.shareholders_equity": "total_equity",
-    "financial_model.net_cash_provided_by_operating_activities": "operating_cash_flow",
-    "financial_model.other_non_cash_adjustments": "cf_other_non_cash_items",
-    "financial_model.deferred_income_tax_assets_r140": "change_in_deferred_income_taxes",
-    "financial_model.accounts_receivable_net_r144": "change_in_accounts_receivable",
-    "financial_model.changes_in_operating_assets_and_liabilities": "change_in_other_working_capital",
-    "financial_model.current_asset_2_r146": "change_in_inventory",
-    "financial_model.accounts_payable_r147": "change_in_accounts_payable",
-    "financial_model.accrued_expenses_r148": "change_in_accrued_expenses",
-    "financial_model.acquisitions_of_businesses": "acquisitions_of_businesses",
-    "financial_model.purchases_of_investments": "purchases_of_investments",
-    "financial_model.sales_maturities_of_investments": "sales_maturities_of_investments",
-    "financial_model.other_changes_in_investing_activities": "cf_other_investing_activities",
-    "financial_model.net_cash_provided_by_investing_activities": "investing_cash_flow",
-    "financial_model.proceeds_or_payment_for_debt": "net_long_term_debt_issuance",
-    "financial_model.proceeds_from_employee_stock_purchase_plan": "proceeds_from_stock_plans",
-    "financial_model.other_financing_activities": "cf_other_financing_activities",
-    "financial_model.net_cash_provided_by_financing_activities": "financing_cash_flow",
-    "financial_model.effect_of_exchange_rate_on_cash": "effect_of_exchange_rate_on_cash",
-    "financial_model.cash_and_cash_equivalents_end_of_period": "cash_flow_cash_end_of_period",
-    "financial_model.purchases_of_property_and_equipment": "capital_expenditures",
-    "financial_model.dividends": "dividends_paid",
-    "financial_model.share_repurchases": "share_repurchases",
-    "assumptions.end_of_period_shares_outstanding": "shares_outstanding",
-    "financial_model.free_cash_flow": "free_cash_flow",
-}
 
 
 __all__ = [
@@ -342,11 +289,11 @@ __all__ = [
     "INPUT_IDS_GENERIC",
     "KEY_DRIVER_IDS_GENERIC",
     "OPTIONAL_IDS_GENERIC",
+    "OPTIONAL_BALANCE_SHEET_SLOT_PARENT_TOTALS_GENERIC",
     "TEMPLATE_TOKENS_GENERIC",
     "BUILD_NOTES_GENERIC",
     "LABEL_OVERRIDES_GENERIC",
     "HEADER_DEPENDENCY_NOTES_GENERIC",
     "REPEAT_GROUP_ROLES_GENERIC",
     "REPEAT_GROUP_IDS_GENERIC",
-    "DATA_CONCEPT_MAP_GENERIC",
 ]

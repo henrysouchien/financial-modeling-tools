@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from .business_model import DriverExpr, DriverNode, NodeRef
+from .business_model import (
+    DriverExpr,
+    DriverNode,
+    NodeMeasure,
+    NodeRef,
+    node_measure,
+    sum_operand_matches_output,
+)
 from .business_model_compiler_errors import BusinessModelCompileError
 from .models import FormulaSpec, FormulaType, LineItemRef
-from .segments import _ratio_formula
+from .business_model_compiler_ratio import ratio_terms
 
 
 def _compile_formula(
@@ -16,13 +23,24 @@ def _compile_formula(
     node_lookup: dict[str, str],
     non_materialized: dict[str, str],
     current_item_id: str,
+    output_measure: NodeMeasure | None,
+    nodes_by_id: dict[str, DriverNode],
+    product_scale_multiplier: float = 1.0,
+    ratio_scale_multiplier: float = 1.0,
+    ratio_averages_denominator: bool = False,
 ) -> FormulaSpec:
     if expr.type == "product":
+        scale_operands = (
+            [product_scale_multiplier]
+            if product_scale_multiplier != 1.0
+            else []
+        )
         return FormulaSpec(
             type=FormulaType.arithmetic,
             params={
                 "operands": [
                     "*",
+                    *scale_operands,
                     *[
                         _resolve_ref_expr(
                             operand,
@@ -39,24 +57,34 @@ def _compile_formula(
         )
 
     if expr.type == "sum":
+        operands: list[Any] = ["+"]
+        for ref in expr.params.operands:
+            resolved = _resolve_ref_expr(
+                ref,
+                segment_id=segment_id,
+                referencing_node_id=referencing_node_id,
+                node_lookup=node_lookup,
+                non_materialized=non_materialized,
+                current_item_id=current_item_id,
+            )
+            if output_measure is not None:
+                operand_id = referencing_node_id if ref.node_id == "self" else ref.node_id
+                operand = nodes_by_id[operand_id]
+                measure = node_measure(operand)
+                if not sum_operand_matches_output(measure, output_measure):
+                    node_key = f"{segment_id}.{referencing_node_id}"
+                    operand_key = f"{segment_id}.{operand.id}"
+                    raise BusinessModelCompileError(
+                        "business_model_node_history_target_type_mismatch: "
+                        f"node {node_key!r} calculates a sum over "
+                        f"{operand_key!r} ({measure.unit.value}, {measure.model_scale}), "
+                        f"which does not yield its declared ({output_measure.unit.value}, {output_measure.model_scale}); "
+                        "a sum's operands share its type"
+                    )
+            operands.append(resolved)
         return FormulaSpec(
             type=FormulaType.arithmetic,
-            params={
-                "operands": [
-                    "+",
-                    *[
-                        _resolve_ref_expr(
-                            operand,
-                            segment_id=segment_id,
-                            referencing_node_id=referencing_node_id,
-                            node_lookup=node_lookup,
-                            non_materialized=non_materialized,
-                            current_item_id=current_item_id,
-                        )
-                        for operand in expr.params.operands
-                    ],
-                ]
-            },
+            params={"operands": operands},
         )
 
     if expr.type == "derived":
@@ -76,11 +104,20 @@ def _compile_formula(
             non_materialized=non_materialized,
             current_item_id=current_item_id,
         )
-        if numerator.t == 0 and denominator.t == 0:
-            return _ratio_formula(numerator.id, denominator.id)
+        opening = (
+            LineItemRef(id=denominator.id, t=denominator.t - 1)
+            if ratio_averages_denominator
+            else None
+        )
+        ratio_numerator, ratio_denominator = ratio_terms(
+            numerator,
+            denominator,
+            multiplier=ratio_scale_multiplier,
+            opening_denominator=opening,
+        )
         return FormulaSpec(
             type=FormulaType.ratio,
-            params={"numerator": numerator, "denominator": denominator},
+            params={"numerator": ratio_numerator, "denominator": ratio_denominator},
         )
 
     if expr.type == "roll_forward":

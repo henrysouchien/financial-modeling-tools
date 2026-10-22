@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 import uuid
-from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
@@ -23,25 +20,11 @@ from ._outcome_shared import (
     ValuationBasisKind,
     ValuationMultipleKind,
 )
-from ._uuid import _NS_OUTCOME
 from .model_ref import ModelVersionRef
-from .thesis_shared_slice import SourceId
+from industry_slice_core.thesis_shared_sources import SourceId
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_JSON_SEPARATORS = (",", ":")
-
-
-def _canonical_json(payload: Any) -> str:
-    return json.dumps(
-        payload,
-        sort_keys=True,
-        separators=_JSON_SEPARATORS,
-        ensure_ascii=True,
-        allow_nan=False,
-    )
-
-
 def _canonical_utc_datetime(value: object, *, field_name: str) -> str:
     if isinstance(value, datetime):
         parsed = value
@@ -254,7 +237,7 @@ class ValuationBasis(BaseModel):
 
 
 class FundamentalBasis(BaseModel):
-    concept_id: str = Field(min_length=1)
+    series_id: str = Field(min_length=1)
     fiscal_period: str = Field(min_length=1)
     earnings_basis: EarningsBasis | None = None
     restatement_policy: RestatementPolicy
@@ -348,9 +331,6 @@ class PredictionTarget(BaseModel):
             self._require_basis(SentimentBasis)
         elif self.component == "market_risk":
             self._require_basis(MarketRiskBasis)
-        elif self.component == "thesis_risk" and self.basis is not None:
-            if not isinstance(self.basis, _BASIS_TYPES):
-                raise ValueError("thesis_risk basis must be a known measurement basis")
 
         expected_metric = (
             self.metric if self.component == "thesis_risk" and self.basis is None
@@ -384,15 +364,6 @@ class PredictionTarget(BaseModel):
     model_config = _FROZEN_CONTRACT
 
 
-_BASIS_TYPES = (
-    ReturnBasis,
-    ValuationBasis,
-    FundamentalBasis,
-    SentimentBasis,
-    MarketRiskBasis,
-)
-
-
 def _basis_metric(basis: MeasurementBasis | None) -> str | None:
     if basis is None:
         return None
@@ -401,82 +372,22 @@ def _basis_metric(basis: MeasurementBasis | None) -> str | None:
     if isinstance(basis, ValuationBasis):
         return basis.multiple_kind
     if isinstance(basis, FundamentalBasis):
-        return basis.concept_id
+        return basis.series_id
     if isinstance(basis, SentimentBasis):
         return basis.signal_kind
-    if isinstance(basis, MarketRiskBasis):
-        return basis.risk_metric
-    raise TypeError(f"Unsupported basis type: {type(basis).__name__}")
+    return basis.risk_metric
 
 
-_TARGET_ID_EXCLUDE = {
-    "prediction_target_id",
-    "confidence",
-    "produced_by",
-    "source_refs",
-}
-_CONTENT_HASH_EXCLUDE = _TARGET_ID_EXCLUDE | {"derived_from"}
+def new_prediction_target_id() -> str:
+    """Return an opaque identifier for one persisted prediction target."""
+
+    return str(uuid.uuid4())
 
 
-def _coerce_target(target: PredictionTarget | Mapping[str, Any]) -> PredictionTarget:
-    if isinstance(target, PredictionTarget):
-        return target
-    if isinstance(target, Mapping):
-        data = dict(target)
-        data.setdefault("prediction_target_id", "__pending__")
-        return PredictionTarget.model_validate(data)
-    raise TypeError("target must be a PredictionTarget or mapping")
+def new_prediction_snapshot_id() -> str:
+    """Return an opaque identifier for one persisted prediction snapshot."""
 
-
-def _target_dump(
-    target: PredictionTarget | Mapping[str, Any],
-    *,
-    exclude: set[str],
-) -> dict[str, Any]:
-    target_model = _coerce_target(target)
-    return target_model.model_dump(
-        mode="json",
-        exclude_none=True,
-        by_alias=False,
-        exclude=exclude,
-    )
-
-
-def compute_prediction_target_id(
-    research_file_id: int,
-    target_without_id: PredictionTarget | Mapping[str, Any],
-) -> str:
-    identity = {
-        "research_file_id": research_file_id,
-        **_target_dump(target_without_id, exclude=_TARGET_ID_EXCLUDE),
-    }
-    serialized = _canonical_json(identity)
-    return str(uuid.uuid5(_NS_OUTCOME, "prediction_target|" + serialized))
-
-
-def compute_content_hash(
-    targets: Iterable[PredictionTarget | Mapping[str, Any]],
-) -> str:
-    serialized_targets = [
-        _canonical_json(_target_dump(target, exclude=_CONTENT_HASH_EXCLUDE))
-        for target in targets
-    ]
-    payload = "[" + ",".join(sorted(serialized_targets)) + "]"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def compute_prediction_snapshot_id(
-    research_file_id: int,
-    as_of: str,
-    content_hash: str,
-) -> str:
-    canonical_as_of = _canonical_utc_datetime(as_of, field_name="as_of")
-    return str(
-        uuid.uuid5(
-            _NS_OUTCOME,
-            f"prediction_snapshot|{research_file_id}|{canonical_as_of}|{content_hash}",
-        )
-    )
+    return str(uuid.uuid4())
 
 
 class PredictionSnapshot(BaseModel):
@@ -488,7 +399,6 @@ class PredictionSnapshot(BaseModel):
     targets: tuple[PredictionTarget, ...] = Field(min_length=1)
     produced_by: ProducedBy
     conditioning_ref: ConditioningRef | None = None
-    content_hash: str = Field(min_length=1)
     supersedes: str | None = Field(default=None, min_length=1)
 
     @field_validator("as_of", mode="before")
@@ -497,33 +407,13 @@ class PredictionSnapshot(BaseModel):
         return _canonical_utc_datetime(value, field_name="as_of")
 
     @model_validator(mode="after")
-    def _identity_surfaces_match(self) -> PredictionSnapshot:
-        expected_content_hash = compute_content_hash(self.targets)
-        if self.content_hash != expected_content_hash:
-            raise ValueError("content_hash does not match targets")
-
-        expected_snapshot_id = compute_prediction_snapshot_id(
-            self.research_file_id,
-            self.as_of,
-            self.content_hash,
-        )
-        if self.prediction_snapshot_id != expected_snapshot_id:
-            raise ValueError("prediction_snapshot_id does not match content hash")
-
+    def _relationships_are_coherent(self) -> PredictionSnapshot:
         seen_target_ids: set[str] = set()
         for target in self.targets:
             if target.prediction_target_id in seen_target_ids:
                 raise ValueError("duplicate prediction_target_id")
             seen_target_ids.add(target.prediction_target_id)
 
-            expected_target_id = compute_prediction_target_id(
-                self.research_file_id,
-                target,
-            )
-            if target.prediction_target_id != expected_target_id:
-                raise ValueError(
-                    f"prediction_target_id does not match target: {target.metric}"
-                )
             if target.horizon.as_of != self.as_of:
                 raise ValueError("target.horizon.as_of must equal snapshot as_of")
         return self
@@ -550,7 +440,6 @@ __all__ = [
     "ValueRange",
     "ValueThreshold",
     "ValuationBasis",
-    "compute_content_hash",
-    "compute_prediction_snapshot_id",
-    "compute_prediction_target_id",
+    "new_prediction_snapshot_id",
+    "new_prediction_target_id",
 ]

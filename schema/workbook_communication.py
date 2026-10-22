@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .workbook_communication_specs import (
@@ -16,22 +17,7 @@ from .workbook_communication_specs import (
     _VISUAL_CLEANUP_SPECS,
     _VisualCleanupSpec as _VisualCleanupSpec,
 )
-from .workbook_communication_sources import (
-    WorkbookCommunicationSourceValue,
-    _derive_expected_return as _derive_expected_return,
-    _field_from_mapping as _field_from_mapping,
-    _iter_scenarios as _iter_scenarios,
-    _load_artifact_payload as _load_artifact_payload,
-    _merge_current_model_values as _merge_current_model_values,
-    _merge_expected_value_values as _merge_expected_value_values,
-    _merge_price_target_values as _merge_price_target_values,
-    _merge_scenario_values as _merge_scenario_values,
-    _merge_valuation_method_values as _merge_valuation_method_values,
-    _normalize_source_values,
-    _scenario_case as _scenario_case,
-    _set_number as _set_number,
-    source_values_from_artifacts as source_values_from_artifacts,
-)
+from .workbook_communication_sources import _normalize_source_values
 from .workbook_communication_types import (
     WorkbookCommunicationCandidateWrite,
     WorkbookCommunicationFieldReport,
@@ -42,18 +28,13 @@ from .workbook_communication_types import (
     WorkbookCommunicationStatus,
 )
 from .workbook_communication_utils import (
-    _artifact_ref as _artifact_ref,
-    _first_mapping as _first_mapping,
-    _first_number as _first_number,
-    _get_path as _get_path,
     _is_blankish,
     _is_formula,
     _normalize_label,
-    _number_from_source as _number_from_source,
-    _number_or_none as _number_or_none,
-    _string_or_none as _string_or_none,
     _values_equivalent,
 )
+if TYPE_CHECKING:
+    from .workbook_communication_sources import WorkbookCommunicationSourceValue
 
 
 def plan_workbook_communication_readiness(
@@ -299,6 +280,7 @@ def _direct_cell_fields(
                 cached=cached[spec.sheet],
                 cell=spec.cell,
                 source=sources.get(spec.source_field),
+                materializable=spec.materializable,
             )
         )
     return fields
@@ -343,15 +325,23 @@ def _field_report(
     cached: Worksheet,
     cell: str,
     source: WorkbookCommunicationSourceValue | None,
+    materializable: bool = True,
 ) -> WorkbookCommunicationFieldReport:
     formula_value = formulas[cell].value
     cached_value = cached[cell].value
     current_formula = formula_value if _is_formula(formula_value) else None
     current_display_value = cached_value if current_formula is not None else formula_value
-    has_source = source is not None and not _is_blankish(source.value)
     has_display = not _is_blankish(current_display_value)
 
-    if has_source and (not has_display or not _values_equivalent(source.value, current_display_value)):
+    if (
+        materializable
+        and source is not None
+        and not _is_blankish(source.value)
+        and (
+            not has_display
+            or not _values_equivalent(source.value, current_display_value)
+        )
+    ):
         reason = (
             "typed_source_can_materialize_formula_only_display"
             if not has_display
@@ -491,7 +481,7 @@ def _find_table_value_column(worksheet: Worksheet, row_label: str, value_label: 
         row_has_label = any(_normalize_label(cell.value) == row_target for cell in row)
         if not row_has_label:
             continue
-        for cell in row:
+        for column_index, cell in enumerate(row, start=1):
             if _normalize_label(cell.value) == value_target:
-                return cell.column_letter
+                return get_column_letter(column_index)
     return None

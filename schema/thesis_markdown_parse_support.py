@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Any
-import uuid
+from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 
+from .model_ref import ModelVersionRef
 from .thesis import (
     BusinessModelRef,
     DecisionsLogEntry,
@@ -15,7 +15,6 @@ from .thesis import (
     Thesis,
     ThesisFromIdea,
     ThesisLink,
-    ThesisModelRef,
     UnknownSection,
 )
 from .thesis_markdown_utils import _has_meaningful_value, _normalize_label_key
@@ -79,7 +78,7 @@ _SECTION_SPECS: tuple[tuple[str, str], ...] = (
     ("model_links", "Model Linkage"),
     ("decisions_log", "Decisions Log"),
 )
-_ANCHOR_TO_HEADER = dict(_SECTION_SPECS)
+_ANCHOR_TO_HEADER: dict[str, str] = dict(_SECTION_SPECS)
 _HEADER_TO_ANCHOR = {header: anchor for anchor, header in _SECTION_SPECS}
 _CANONICAL_ANCHORS = tuple(anchor for anchor, _ in _SECTION_SPECS)
 _ROLE_TO_PRIOR_FIELD = {
@@ -97,6 +96,29 @@ class ParseWarning(_ContractModel):
     section: str | None = None
     message: str
     context: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class VersionMarkerPresent:
+    marker_present: Literal[True]
+    version_marker: int
+
+
+@dataclass(frozen=True)
+class VersionMarkerAbsent:
+    marker_present: Literal[False] = False
+    version_marker: None = None
+
+
+def discriminate_version_marker(
+    version_marker: object,
+    marker_present: object,
+) -> VersionMarkerPresent | VersionMarkerAbsent:
+    if bool(marker_present):
+        if not isinstance(version_marker, int):
+            raise TypeError("marker_present requires an integer version_marker")
+        return VersionMarkerPresent(marker_present=True, version_marker=version_marker)
+    return VersionMarkerAbsent()
 
 
 class PriorNormalizedEntry(_ContractModel):
@@ -163,12 +185,18 @@ class ParsedThesis(_ContractModel):
     quantitative_framing: QuantitativeFraming | None = None
     position_metadata: PositionMetadata | None = None
     sources: list[SourceRecord] | None = None
-    model_ref: ThesisModelRef | None = None
+    model_ref: ModelVersionRef | None = None
     business_model_ref: BusinessModelRef | None = None
     model_links: list[ThesisLink] | None = None
     decisions_log: list[DecisionsLogEntry] | None = None
     raw_markdown_extras: list[UnknownSection] = Field(default_factory=list)
     parse_warnings: list[ParseWarning] = Field(default_factory=list)
+
+    @property
+    def discriminated_version_marker(
+        self,
+    ) -> VersionMarkerPresent | VersionMarkerAbsent:
+        return discriminate_version_marker(self.version_marker, self.marker_present)
 
 
 @dataclass(frozen=True)
@@ -284,19 +312,17 @@ def _safe_validate(model_type: Any, payload: dict[str, Any], state: _ParseState,
         return None
 
 
-def _resolve_item_id(role: str, subsection_title: str | None, payload: dict[str, Any], state: _ParseState) -> str | int:
+def _resolve_item_id(role: str, subsection_title: str | None, payload: dict[str, Any], state: _ParseState) -> str | int | None:
     explicit_id = _extract_explicit_id(role, subsection_title)
     if explicit_id is not None:
         return explicit_id
     if state.prior is None:
-        return str(uuid.uuid4())
+        return None
     matched = _match_prior_id(role, payload, state)
     if matched is not None:
         state.claimed_prior_ids[role].add(matched)
         return matched
-    new_id = str(uuid.uuid4())
-    state.warnings.append(ParseWarning(code="id_reassigned", section=role, message=f"assigned new id for {role} item because no safe prior match was found", context={"role": role, "new_id": new_id}))
-    return new_id
+    return None
 
 
 def _extract_explicit_id(role: str, subsection_title: str | None) -> str | None:
@@ -316,7 +342,7 @@ def _match_prior_id(role: str, payload: dict[str, Any], state: _ParseState) -> s
         return None
     entry = _build_prior_entry(role, payload)
     candidates: dict[str | int, PriorNormalizedEntry] = getattr(state.prior, _ROLE_TO_PRIOR_FIELD[role])
-    scored: list[tuple[float, str]] = []
+    scored: list[tuple[float, str | int]] = []
     for identifier, candidate in candidates.items():
         if identifier in state.claimed_prior_ids[role]:
             continue
@@ -381,6 +407,9 @@ __all__ = [
     "ParsedThesis",
     "PriorNormalizedEntry",
     "PriorThesisIndex",
+    "VersionMarkerAbsent",
+    "VersionMarkerPresent",
+    "discriminate_version_marker",
     "_ANCHOR_TO_HEADER",
     "_CANONICAL_ANCHORS",
     "_HEADER_TO_ANCHOR",

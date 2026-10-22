@@ -1,9 +1,16 @@
-"""Formula-first reconciliation helpers for schema build orchestration."""
+"""Formula-first reconciliation helpers for schema build orchestration.
+
+``apply_formula_first`` drops a constant override wherever the item's formula
+reproduces it. A pinned EDGAR filing subtotal its children do not reproduce
+keeps the filed value and is reported as the
+``pinned_filing_subtotal_reconciliation_failed`` Finding; the compile goes on.
+Catalog-optional, unreported statement SUM terms do not block reconciliation;
+their rows stay missing while the present terms still have to match the pin.
+"""
 
 from __future__ import annotations
 
 import logging
-import sys
 
 from .build_formula_eval import (
     _constant_override_value as _formula_constant_override_value,
@@ -12,13 +19,17 @@ from .build_formula_eval import (
 from .build_formula_refs import (
     _all_refs_same_period as _formula_all_refs_same_period,
     _extract_ref_ids as _formula_extract_ref_ids,
+    _extract_single_ref as _formula_extract_single_ref,
 )
+from .build_findings import make_finding
 from .build_model_items import _iter_items as _model_iter_items
 from .build_real_data import (
     _item_has_direct_real_data as _real_item_has_direct_real_data,
     _item_has_real_data as _real_item_has_real_data,
 )
-from .models import FinancialModel, FormulaType, LineItem
+from .finding_vocabulary import Finding
+from .models import FinancialModel, FormulaSpec, FormulaType, LineItem
+from .required_role_catalog import load_required_role_catalog
 
 
 _SYNTHETIC_FAST_PATH_TYPES = frozenset({
@@ -26,11 +37,8 @@ _SYNTHETIC_FAST_PATH_TYPES = frozenset({
     FormulaType.ref,
     FormulaType.ratio,
 })
+_REPORTED_TOTAL_REVENUE_ITEM_ID = "tpl.fm.income_statement.total_revenue"
 _FORMULA_FIRST_EXCLUDED_ITEM_IDS = frozenset({
-    # Reported consolidated revenue is the independent top-line control. A
-    # segment formula can be close in percentage terms while omitting a small
-    # revenue stream that is material to downstream profit subtotals.
-    "tpl.fm.income_statement.total_revenue",
     # Direct CF ending-cash actuals are statement-basis values. The historical
     # formula is a no-source fallback bridge from BS cash, not an equivalence
     # proof when restricted cash moves separately.
@@ -38,10 +46,62 @@ _FORMULA_FIRST_EXCLUDED_ITEM_IDS = frozenset({
 })
 
 
-def _parent_attr(name: str, fallback):
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    return getattr(parent, name, fallback) if parent is not None else fallback
+def _reconciliation_formula(item: LineItem, period: int) -> FormulaSpec | None:
+    """The period's lowered expression, while its filed constant still wins."""
+    override = (item.overrides or {}).get(int(period))
+    if override is not None:
+        saved = override.params.get("_not_separately_presented", {}).get("lowered_formula")
+        if saved is not None:
+            return FormulaSpec.model_validate_json(saved)
+    return item.historical
+
+
+def _is_pinned_filing_subtotal(item: LineItem, period: int) -> bool:
+    if item.required_role is None or not item.required_role.startswith("statement."):
+        return False
+    if item.overrides is None:
+        return False
+    override = item.overrides.get(int(period))
+    if override is None or override.vendor_provenance is None:
+        return False
+    return override.vendor_provenance.provider == "edgar"
+
+
+def _pinned_filing_subtotal_finding(
+    item: LineItem,
+    period: int,
+    computed: float | None,
+    children: tuple[str, ...],
+) -> Finding:
+    """The filed subtotal its template children do not reproduce, as a Finding."""
+
+    assert item.overrides is not None
+    exhibited = _formula_constant_override_value(item.overrides[int(period)])
+    delta = (
+        None
+        if computed is None or exhibited is None
+        else round(float(exhibited) - float(computed), 6)
+    )
+    computed_text = "no value" if computed is None else f"{computed:g}"
+    return make_finding(
+        "pinned_filing_subtotal_reconciliation_failed",
+        message=(
+            f"{item.id} FY{int(period)}: children {list(children)} sum to "
+            f"{computed_text}; the pinned filing value is {exhibited} "
+            f"(filed minus children = {delta}). The filed value stays on the "
+            "row. Repair the template composition or the statement binding, "
+            "or decline."
+        ),
+        item_id=item.id,
+        periods=(int(period),),
+        operands=children,
+        observed={
+            "required_role": item.required_role,
+            "computed": None if computed is None else round(float(computed), 6),
+            "exhibited": exhibited,
+            "delta": delta,
+        },
+    )
 
 
 def _active_formula_first_periods(
@@ -58,6 +118,58 @@ def _active_formula_first_periods(
     }
 
 
+def _unreported_optional_sum_terms(
+    model: FinancialModel,
+    item: LineItem,
+    period: int,
+    formula: FormulaSpec | None,
+) -> frozenset[str]:
+    """Missing direct SUM members the statement catalog permits omitting."""
+
+    if (
+        formula is None
+        or formula.type is not FormulaType.arithmetic
+        or formula.params.get("function") != "SUM"
+        or "expr" in formula.params
+    ):
+        return frozenset()
+    catalog = load_required_role_catalog()
+    # A catalog statement total's optional members, and an income-statement
+    # SUM's optional income-statement roles (restructuring rolls into
+    # operating expenses with no ``parent_total`` of its own).
+    candidate_roles = (
+        catalog.roles_rolling_into(item.id)
+        if item.id in catalog.statement_totals()
+        else ()
+    )
+    if item.id.startswith("tpl.fm.income_statement."):
+        candidate_roles = (
+            *candidate_roles,
+            *(
+                role
+                for role in catalog.required_roles
+                if role.statement == "income_statement"
+            ),
+        )
+    optional_ids = {
+        item_id
+        for role in candidate_roles
+        if role.optional_if_unreported
+        for item_id in role.template_items
+    }
+    if not optional_ids:
+        return frozenset()
+    omitted = set()
+    for term in formula.params.get("items", []) or []:
+        ref = _formula_extract_single_ref({"source": term})
+        if ref is None or ref[1] != 0 or ref[0] not in optional_ids:
+            continue
+        member = model._index.get(ref[0])
+        if member is None or not _real_item_has_real_data(member, period, model=model):
+            omitted.add(ref[0])
+    return frozenset(omitted)
+
+
 def _formula_first_node_periods(
     model: FinancialModel,
     historical_periods: list[int],
@@ -66,40 +178,13 @@ def _formula_first_node_periods(
 
     model.build_index()
     periods = [int(period) for period in historical_periods]
-    iter_items = _parent_attr("_iter_items", _model_iter_items)
-    item_has_real_data = _parent_attr("_item_has_real_data", _real_item_has_real_data)
-    active_periods_for_item = _parent_attr(
-        "_active_formula_first_periods",
-        _active_formula_first_periods,
-    )
-    extract_ref_ids = _parent_attr("_extract_ref_ids", _formula_extract_ref_ids)
-    all_refs_same_period = _parent_attr(
-        "_all_refs_same_period",
-        _formula_all_refs_same_period,
-    )
-    constant_override_value = _parent_attr(
-        "_constant_override_value",
-        _formula_constant_override_value,
-    )
-    item_has_direct_real_data = _parent_attr(
-        "_item_has_direct_real_data",
-        _real_item_has_direct_real_data,
-    )
-    synthetic_types = _parent_attr(
-        "_SYNTHETIC_FAST_PATH_TYPES",
-        _SYNTHETIC_FAST_PATH_TYPES,
-    )
-    excluded_item_ids = _parent_attr(
-        "_FORMULA_FIRST_EXCLUDED_ITEM_IDS",
-        _FORMULA_FIRST_EXCLUDED_ITEM_IDS,
-    )
 
-    items_by_id = {item.id: item for item in iter_items(model)}
+    items_by_id = {item.id: item for item in _model_iter_items(model)}
     has_real_data = {
         item.id: {
             period
             for period in periods
-            if item_has_real_data(item, period, model=model)
+            if _real_item_has_real_data(item, period, model=model)
         }
         for item in items_by_id.values()
     }
@@ -108,33 +193,44 @@ def _formula_first_node_periods(
     for item in items_by_id.values():
         if item.historical is None:
             continue
-        if item.id in excluded_item_ids:
+        if item.id in _FORMULA_FIRST_EXCLUDED_ITEM_IDS:
             continue
 
-        active_periods = active_periods_for_item(item, periods)
+        active_periods = _active_formula_first_periods(item, periods)
         if not active_periods:
             continue
 
-        if (
-            item.historical.type in synthetic_types
-            and not all_refs_same_period(item.historical.params)
-        ):
-            continue
-
-        if item.data_concept_id:
-            is_constant_formula = item.historical.type is FormulaType.constant
-            ref_ids = extract_ref_ids(item.historical.params)
-            if not ref_ids and not is_constant_formula:
-                continue
+        if item.required_role:
             for period in active_periods:
                 if item.overrides is None or int(period) not in item.overrides:
                     continue
                 override = item.overrides[int(period)]
                 if override.type is not FormulaType.constant:
                     continue
+                formula = _reconciliation_formula(item, period)
+                if formula is None:
+                    continue
+                if (
+                    formula.type in _SYNTHETIC_FAST_PATH_TYPES
+                    and not _formula_all_refs_same_period(formula.params)
+                ):
+                    continue
+                is_constant_formula = formula.type is FormulaType.constant
+                ref_ids = _formula_extract_ref_ids(formula.params)
+                if not ref_ids and not is_constant_formula:
+                    continue
+                if (
+                    item.id == _REPORTED_TOTAL_REVENUE_ITEM_ID
+                    and _real_item_has_direct_real_data(item, int(period))
+                ):
+                    # Reported consolidated revenue is the independent top-line
+                    # control. A segment formula can be close while omitting a
+                    # small stream that is material downstream. Synthetic
+                    # missing-data placeholders may still yield to the formula.
+                    continue
                 if is_constant_formula:
-                    formula_value = constant_override_value(item.historical)
-                    override_value = constant_override_value(override)
+                    formula_value = _formula_constant_override_value(formula)
+                    override_value = _formula_constant_override_value(override)
                     if (
                         formula_value is None
                         or override_value is None
@@ -152,19 +248,19 @@ def _formula_first_node_periods(
         if node in removable_candidates or node in bridge_candidates:
             return
         item = items_by_id.get(item_id)
-        if item is None or item.data_concept_id or item.historical is None:
+        if item is None or item.required_role or item.historical is None:
             return
-        if int(period) not in active_periods_for_item(item, periods):
+        if int(period) not in _active_formula_first_periods(item, periods):
             return
         if (
-            item.historical.type not in synthetic_types
-            or not all_refs_same_period(item.historical.params)
-            or item_has_direct_real_data(item, period)
+            item.historical.type not in _SYNTHETIC_FAST_PATH_TYPES
+            or not _formula_all_refs_same_period(item.historical.params)
+            or _real_item_has_direct_real_data(item, period)
         ):
             return
 
         bridge_candidates.add(node)
-        for ref_id in extract_ref_ids(item.historical.params):
+        for ref_id in _formula_extract_ref_ids(item.historical.params):
             add_bridge_dependency(ref_id, int(period))
 
     for item_id, period in sorted(removable_candidates):
@@ -173,7 +269,9 @@ def _formula_first_node_periods(
             continue
         if item.overrides[int(period)].note != "synthetic":
             continue
-        for ref_id in extract_ref_ids(item.historical.params if item.historical else None):
+        for ref_id in _formula_extract_ref_ids(
+            item.historical.params if item.historical else None
+        ):
             add_bridge_dependency(ref_id, int(period))
 
     removable: dict[str, set[int]] = {}
@@ -184,8 +282,15 @@ def _formula_first_node_periods(
         newly_derivable: list[tuple[str, int]] = []
         for item_id, period in sorted(unresolved):
             item = items_by_id[item_id]
-            ref_ids = extract_ref_ids(item.historical.params if item.historical else None)
-            if all(period in has_real_data.get(ref_id, set()) for ref_id in ref_ids):
+            formula = _reconciliation_formula(item, period)
+            ref_ids = _formula_extract_ref_ids(
+                formula.params if formula is not None else None
+            )
+            omitted = _unreported_optional_sum_terms(model, item, period, formula)
+            if all(
+                period in has_real_data.get(ref_id, set()) or ref_id in omitted
+                for ref_id in ref_ids
+            ):
                 newly_derivable.append((item_id, period))
 
         if not newly_derivable:
@@ -208,8 +313,7 @@ def _compute_derivable_periods(
 ) -> dict[str, set[int]]:
     """Return candidate historical periods where formula-backed overrides can be removed."""
 
-    node_periods = _parent_attr("_formula_first_node_periods", _formula_first_node_periods)
-    removable, _bridges = node_periods(model, historical_periods)
+    removable, _bridges = _formula_first_node_periods(model, historical_periods)
     return removable
 
 
@@ -224,19 +328,11 @@ def _reconcile_override(
     if item.overrides is None or int(period) not in item.overrides:
         return False
     spec = item.overrides[int(period)]
-    synthetic_types = _parent_attr(
-        "_SYNTHETIC_FAST_PATH_TYPES",
-        _SYNTHETIC_FAST_PATH_TYPES,
-    )
-    all_refs_same_period = _parent_attr(
-        "_all_refs_same_period",
-        _formula_all_refs_same_period,
-    )
     if (
         spec.note == "synthetic"
         and item.historical is not None
-        and item.historical.type in synthetic_types
-        and all_refs_same_period(item.historical.params)
+        and item.historical.type in _SYNTHETIC_FAST_PATH_TYPES
+        and _formula_all_refs_same_period(item.historical.params)
     ):
         # Synthetic markers are placeholders, not data. When the historical
         # formula is a real derivation over same-period refs and produced a
@@ -244,11 +340,7 @@ def _reconcile_override(
         # derivability currently validates dependencies at the candidate period.
         return computed_value is not None
 
-    constant_override_value = _parent_attr(
-        "_constant_override_value",
-        _formula_constant_override_value,
-    )
-    override_value = constant_override_value(spec)
+    override_value = _formula_constant_override_value(spec)
     if override_value is None:
         return False
 
@@ -261,13 +353,18 @@ def _reconcile_override(
 def apply_formula_first(
     model: FinancialModel,
     historical_periods: list[int],
+    *,
+    findings: list[Finding] | None = None,
 ) -> dict[str, set[int]]:
-    """Remove reconciled constant overrides from derivable formula-backed items."""
+    """Remove reconciled constant overrides from derivable formula-backed items.
 
-    log = _parent_attr("logging", logging)
+    A pinned EDGAR filing subtotal whose children do not reproduce it keeps
+    its override and appends one ``pinned_filing_subtotal_reconciliation_failed``
+    Finding per period to ``findings``.
+    """
+
     model.build_index()
-    node_periods = _parent_attr("_formula_first_node_periods", _formula_first_node_periods)
-    candidate_periods, bridge_periods = node_periods(
+    candidate_periods, bridge_periods = _formula_first_node_periods(
         model,
         historical_periods,
     )
@@ -287,7 +384,6 @@ def apply_formula_first(
     candidate_nodes = removable_nodes | bridge_nodes
     dependencies: dict[tuple[str, int], set[tuple[str, int]]] = {}
     reverse_dependencies: dict[tuple[str, int], set[tuple[str, int]]] = {}
-    extract_ref_ids = _parent_attr("_extract_ref_ids", _formula_extract_ref_ids)
 
     graph_periods: dict[str, set[int]] = {}
     for item_id, periods in candidate_periods.items():
@@ -297,8 +393,12 @@ def apply_formula_first(
 
     for item_id, periods in graph_periods.items():
         item = model.get_item(item_id)
-        ref_ids = extract_ref_ids(item.historical.params if item.historical else None)
+        # Lowering is period-local; each candidate has its own operand set.
         for period in periods:
+            formula = _reconciliation_formula(item, period)
+            ref_ids = _formula_extract_ref_ids(
+                formula.params if formula is not None else None
+            )
             node = (item_id, int(period))
             deps = {
                 (ref_id, int(period))
@@ -328,11 +428,6 @@ def apply_formula_first(
     computed_values: dict[tuple[str, int], float] = {}
     validated: dict[str, set[int]] = {}
     rejected: set[tuple[str, int]] = set()
-    evaluate_formula_simple = _parent_attr(
-        "_evaluate_formula_simple",
-        _formula_evaluate_formula_simple,
-    )
-    reconcile_override = _parent_attr("_reconcile_override", _reconcile_override)
 
     def reject_with_downstream(node: tuple[str, int]) -> None:
         stack = [node]
@@ -348,7 +443,7 @@ def apply_formula_first(
             continue
 
         if any(dep not in computed_values for dep in dependencies.get(node, set())):
-            log.warning(
+            logging.warning(
                 "Formula-first reconciliation skipped for %s period=%s due to unresolved derivable deps",
                 node[0],
                 node[1],
@@ -358,10 +453,25 @@ def apply_formula_first(
 
         item_id, period = node
         item = model.get_item(item_id)
-        computed_value = evaluate_formula_simple(model, item, period, computed_values)
+        formula = _reconciliation_formula(item, period)
+        omitted = _unreported_optional_sum_terms(model, item, period, formula)
+        # These are local SUM identities, not numeric values on the missing
+        # rows. Keep any already-computed optional member in the reconciliation.
+        evaluation_values = computed_values
+        if omitted:
+            evaluation_values = {
+                **dict.fromkeys(((ref_id, period) for ref_id in omitted), 0.0),
+                **computed_values,
+            }
+        computed_value = _formula_evaluate_formula_simple(
+            model,
+            item if formula is item.historical else item.model_copy(update={"historical": formula}),
+            period,
+            evaluation_values,
+        )
         if node in bridge_nodes:
             if computed_value is None:
-                log.warning(
+                logging.warning(
                     "Formula-first bridge evaluation failed for %s period=%s",
                     item_id,
                     period,
@@ -375,8 +485,27 @@ def apply_formula_first(
         if item.overrides is not None and int(period) in item.overrides:
             override_value = item.overrides[int(period)].params.get("value")
 
-        if computed_value is None or not reconcile_override(item, period, computed_value):
-            log.warning(
+        if computed_value is None or not _reconcile_override(
+            item,
+            period,
+            computed_value,
+        ):
+            if findings is not None and _is_pinned_filing_subtotal(item, period):
+                findings.append(
+                    _pinned_filing_subtotal_finding(
+                        item,
+                        period,
+                        computed_value,
+                        tuple(
+                            sorted(
+                                _formula_extract_ref_ids(
+                                    formula.params if formula is not None else None
+                                )
+                            )
+                        ),
+                    )
+                )
+            logging.warning(
                 "Formula-first reconciliation failed for %s period=%s: computed=%s override=%s",
                 item_id,
                 period,
@@ -387,6 +516,10 @@ def apply_formula_first(
             continue
 
         computed_values[node] = computed_value
+        if omitted:
+            # The filed total reconciles, but the retained SUM reads each
+            # omitted member's empty cell as Missing; the pin stays the value.
+            continue
         validated.setdefault(item_id, set()).add(int(period))
 
     for item_id, periods in validated.items():
@@ -394,7 +527,22 @@ def apply_formula_first(
         if item.overrides is None:
             continue
         for period in periods:
-            item.overrides.pop(int(period), None)
+            override = item.overrides[int(period)]
+            formula = _reconciliation_formula(item, period)
+            metadata = override.params.get("_not_separately_presented", {})
+            if metadata.get("lowered_formula") is not None and formula is not None:
+                item.overrides[int(period)] = formula.model_copy(
+                    update={"params": {
+                        **formula.params,
+                        "_not_separately_presented": {
+                            key: value for key, value in metadata.items()
+                            if key != "lowered_formula"
+                        },
+                    }},
+                    deep=True,
+                )
+            else:
+                item.overrides.pop(int(period), None)
         if not item.overrides:
             item.overrides = None
 

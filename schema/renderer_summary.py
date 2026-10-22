@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Container, Mapping, Sequence
 from typing import Any, Dict, List
 
+from .annual_presentation_guard import _is_visible_template_residue
+from .finding_vocabulary import finding_is_cleared
 from .formatter import ModelFormatter
-from .models import FinancialModel, LineItem, Sheet
+from .models import FinancialModel, LineItem
 from .renderer_columns import AbsoluteColumnMapper, _historical_periods, _projection_periods
 from .renderer_formula import _quote_sheet_name
 from .renderer_payload import _col_to_index, _index_to_col, _split_range
-from .renderer_types import CellFormat, CellWrite, RenderPlan, SheetSetup
+from .renderer_types import (
+    AnnualRenderContext,
+    CellFormat,
+    CellWrite,
+    RenderPlan,
+    SheetSetup,
+)
 
 
 _SUMMARY_OUTPUT_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -45,7 +55,7 @@ _SUMMARY_SCENARIO_ROWS: tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]
             ("Operating Margin", ("tpl.s.thesis_snapshot.bull_op_margin_pct",)),
             ("EBITDA Margin", ("tpl.s.thesis_snapshot.bull_ebitda_margin_pct",)),
             ("FCF/Share", ("tpl.s.thesis_snapshot.bull_fcf_per_share",)),
-            ("Target Price", ("tpl.s.valuation_scenarios.bull_valuation_avg",)),
+            ("Target Price", ("tpl.s.expected_value.upside_price",)),
             ("Probability", ("tpl.s.expected_value.bull_probability",)),
         ),
     ),
@@ -57,7 +67,7 @@ _SUMMARY_SCENARIO_ROWS: tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]
             ("Operating Margin", ("tpl.s.thesis_snapshot.base_op_margin_pct",)),
             ("EBITDA Margin", ("tpl.s.thesis_snapshot.base_ebitda_margin_pct",)),
             ("FCF/Share", ("tpl.s.thesis_snapshot.base_fcf_per_share",)),
-            ("Target Price", ("tpl.s.valuation_scenarios.base_valuation_avg",)),
+            ("Target Price", ("tpl.s.expected_value.base_price",)),
             ("Probability", ("tpl.s.expected_value.base_probability",)),
         ),
     ),
@@ -69,18 +79,23 @@ _SUMMARY_SCENARIO_ROWS: tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]
             ("Operating Margin", ("tpl.s.thesis_snapshot.bear_op_margin_pct",)),
             ("EBITDA Margin", ("tpl.s.thesis_snapshot.bear_ebitda_margin_pct",)),
             ("FCF/Share", ("tpl.s.thesis_snapshot.bear_fcf_per_share",)),
-            ("Target Price", ("tpl.s.valuation_scenarios.bear_valuation_avg",)),
+            ("Target Price", ("tpl.s.expected_value.downside_price",)),
             ("Probability", ("tpl.s.expected_value.bear_probability",)),
         ),
     ),
 )
 _SUMMARY_VALUATION_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Current Price", ("tpl.v.current_valuation.stock_price",)),
-    ("Blended Target Price", ("tpl.v.blended_target.blended_price",)),
-    ("Expected Return", ("tpl.v.blended_target.expected_return",)),
+    ("Price Target", ("tpl.s.expected_value.base_price",)),
+    ("Expected Return", ("tpl.s.expected_value.base_return",)),
     ("DCF Price", ("tpl.v.dcf.dcf_price_summary", "tpl.v.dcf.dcf_price")),
-    ("Forward P/E Price", ("tpl.v.forward_pe.forward_pe_price",)),
-    ("EV/EBITDA Price", ("tpl.v.forward_ev_ebitda.ev_ebitda_price",)),
+    ("Forward P/E Price", ("tpl.v.forward_pe.method_price",)),
+    ("EV/EBITDA Price", ("tpl.v.forward_ev_ebitda.method_price",)),
+    ("At current multiple (P/E)", ("tpl.v.forward_pe.forward_pe_price",)),
+    (
+        "At current multiple (EV/EBITDA)",
+        ("tpl.v.forward_ev_ebitda.ev_ebitda_price",),
+    ),
     ("WACC", ("tpl.v.wacc.wacc", "tpl.v.dcf.dcf_wacc")),
     ("Terminal Growth", ("tpl.v.dcf.terminal_growth_summary", "tpl.v.dcf.terminal_growth_rate")),
 )
@@ -91,6 +106,8 @@ def _append_summary_sheet(
     plan: RenderPlan,
     mappers: Dict[str, AbsoluteColumnMapper],
     formatter: ModelFormatter,
+    *,
+    annual_context: AnnualRenderContext | None = None,
 ) -> None:
     sheet_name = _unique_sheet_name(formatter.summary_sheet_name or "Summary", model.sheets)
     locations = _item_locations(model)
@@ -156,7 +173,17 @@ def _append_summary_sheet(
 
     row = 4
     write(f"A{row}", "Model Identity")
-    section_row(row, "E")
+    write(f"D{row}", "Model version")
+    write(
+        f"E{row}",
+        annual_context.version_label if annual_context else "Working build",
+    )
+    if annual_context is None:
+        # A build's verdict is appended after validation
+        # (``append_summary_findings``); other renders have none.
+        write(f"F{row}", "Status")
+        write(f"G{row}", "Status available after validation")
+    section_row(row, "H")
     row += 1
     identity_rows = (
         ("Company", model.company.name),
@@ -370,6 +397,268 @@ def _append_summary_sheet(
     plan.formats.extend(formats)
 
 
+_VERDICT_DISPLAY: Dict[str, str] = {
+    "ready": "Ready",
+    "ready_with_warnings": "Ready with warnings",
+    "blocked": "Blocked",
+}
+_SEVERITY_DISPLAY: Dict[str, str] = {
+    "error": "Error",
+    "warning": "Warning",
+    "info": "Info",
+}
+
+
+def _summary_sheet_name(plan: RenderPlan) -> str | None:
+    return next(
+        (
+            write.sheet
+            for write in plan.writes
+            if write.cell == "A1"
+            and isinstance(write.value, str)
+            and write.value.endswith(" Financial Model Summary")
+        ),
+        None,
+    )
+
+
+def _display_text(value: str) -> str:
+    # Square brackets read as template placeholders to the annual
+    # presentation guard; the Summary shows them as parentheses.
+    return value.replace("[", "(").replace("]", ")")
+
+
+def _status_display(status: str) -> str:
+    return _VERDICT_DISPLAY.get(status, status.title())
+
+
+def append_summary_findings(
+    plan: RenderPlan,
+    model: FinancialModel,
+    verdict: str,
+    findings: Sequence[Any],
+    formatter: ModelFormatter,
+    *,
+    subject_items: Mapping[str, str],
+) -> list[CellWrite]:
+    """Write the build verdict (G4) and the findings table onto Summary.
+
+    Literal writes only: no renderer formula references the Summary sheet,
+    so the appended block needs no recalculation. Returns the writes it
+    appended so the caller can read them back from the serialized bytes.
+    The Summary is user-facing: a finding's model item reads as its label
+    and sheet location, and item ids inside its message read as labels.
+    ``subject_items`` maps a finding subject that is not a model item (a
+    forecast driver or critical-factor key) to the item it renders at
+    (``build_findings.finding_subject_items``), so it reads the same way. A
+    warning a declination cleared reads "Warning (cleared)" with the
+    declination's reason and citation beside it.
+    """
+
+    sheet_name = _summary_sheet_name(plan)
+    if sheet_name is None:
+        raise ValueError("build render plan has no Summary sheet")
+    appended: List[CellWrite] = []
+
+    def write(cell: str, value: Any) -> None:
+        appended.append(CellWrite(sheet=sheet_name, cell=cell, value=value))
+
+    write("F4", "Status")
+    write("G4", _VERDICT_DISPLAY[verdict])
+    occupied_rows = [
+        int("".join(character for character in write.cell if character.isdigit()))
+        for write in plan.writes
+        if write.sheet == sheet_name
+    ]
+    row = max(occupied_rows, default=0) + 2
+    write(f"A{row}", "Findings")
+    headers = (
+        "Severity",
+        "Code",
+        "Item",
+        "Periods",
+        "Message",
+        "Declination reason",
+        "Citation",
+    )
+    header_range = f"A{row}:{_index_to_col(len(headers))}{row}"
+    plan.formats.append(
+        CellFormat(
+            sheet=sheet_name,
+            range=header_range,
+            bold=True,
+            bottom_border_color=formatter.section_header_border_color,
+        )
+    )
+    row += 1
+    for offset, header in enumerate(headers):
+        write(f"{_index_to_col(1 + offset)}{row}", header)
+    plan.formats.append(
+        CellFormat(
+            sheet=sheet_name,
+            range=f"A{row}:{_index_to_col(len(headers))}{row}",
+            bold=True,
+            bottom_border_color=formatter.section_header_border_color,
+        )
+    )
+    row += 1
+    if not findings:
+        write(f"A{row}", "None")
+        write(f"E{row}", "No finding was reported")
+    locations = _item_locations(model)
+    for subject, item_id in subject_items.items():
+        location = locations.get(item_id)
+        if location is not None:
+            locations.setdefault(subject, location)
+    for finding in findings:
+        declination = finding.declination
+        severity = _SEVERITY_DISPLAY[finding.severity]
+        write(
+            f"A{row}",
+            f"{severity} (cleared)" if finding_is_cleared(finding) else severity,
+        )
+        write(f"B{row}", finding.code)
+        if finding.item_id:
+            write(f"C{row}", _display_text(_finding_item_display(finding.item_id, locations)))
+        if finding.periods:
+            write(f"D{row}", ", ".join(f"FY{period}" for period in finding.periods))
+        write(f"E{row}", _display_text(_finding_message_display(finding.message, locations)))
+        if declination is not None:
+            write(f"F{row}", _display_text(declination.reason))
+            if declination.citation:
+                write(f"G{row}", _display_text(declination.citation))
+        row += 1
+    plan.writes.extend(appended)
+    return appended
+
+
+# A dotted identifier token; it ends on a word character, so a sentence's
+# closing period is not read as part of an id.
+_IDENTIFIER_TOKEN = re.compile(r"[A-Za-z_][\w.]*\w")
+
+
+def _finding_item_display(
+    item_id: str,
+    item_locations: Dict[str, tuple[str, LineItem]],
+) -> str:
+    location = item_locations.get(item_id)
+    if location is None:
+        return item_id
+    sheet_name, item = location
+    return f"{item.label} ({_summary_source_label(sheet_name, item)})"
+
+
+def _finding_message_display(
+    message: str,
+    item_locations: Dict[str, tuple[str, LineItem]],
+) -> str:
+    def label(match: re.Match[str]) -> str:
+        location = item_locations.get(match.group(0))
+        return match.group(0) if location is None else location[1].label
+
+    return _IDENTIFIER_TOKEN.sub(label, message)
+
+
+def append_model_version_comparison(
+    *,
+    plan: RenderPlan,
+    comparison: Any,
+    formatter: ModelFormatter,
+) -> None:
+    """Append a presentation-only predecessor comparison to Summary."""
+
+    summary_write = next(
+        (
+            write
+            for write in plan.writes
+            if write.cell == "A1"
+            and isinstance(write.value, str)
+            and write.value.endswith(" Financial Model Summary")
+        ),
+        None,
+    )
+    if summary_write is None:
+        return
+    sheet_name = summary_write.sheet
+    occupied_rows = [
+        int("".join(character for character in write.cell if character.isdigit()))
+        for write in plan.writes
+        if write.sheet == sheet_name
+    ]
+    row = max(occupied_rows, default=0) + 2
+
+    def write(column: str, value: Any) -> None:
+        if value is None or value == "":
+            return
+        plan.writes.append(
+            CellWrite(sheet=sheet_name, cell=f"{column}{row}", value=value)
+        )
+
+    def section(last_column: str = "D") -> None:
+        plan.formats.append(
+            CellFormat(
+                sheet=sheet_name,
+                range=f"A{row}:{last_column}{row}",
+                bold=True,
+                bottom_border_color=formatter.section_header_border_color,
+            )
+        )
+
+    write("A", "Changes vs Previous Version")
+    section("D")
+    row += 1
+    write("A", "Previous version")
+    write("B", f"Version {comparison.identity.predecessor.version}")
+    row += 1
+    write("A", "Current version")
+    write("B", f"Version {comparison.identity.successor.version}")
+    row += 1
+    write("A", "Status")
+    write(
+        "B",
+        f"{_status_display(comparison.status.predecessor_status)} → "
+        f"{_status_display(comparison.status.successor_status)}",
+    )
+    write(
+        "C",
+        f"Blocking findings: {comparison.status.predecessor_blocker_count} → "
+        f"{comparison.status.successor_blocker_count}",
+    )
+
+    if comparison.assumption_deltas:
+        row += 2
+        write("A", "Changed assumptions")
+        section("C")
+        row += 1
+        write("A", "Assumption")
+        write("B", "Previous")
+        write("C", "Current")
+        section("C")
+        for delta in comparison.assumption_deltas:
+            row += 1
+            write("A", delta.label)
+            write("B", delta.old_value)
+            write("C", delta.new_value)
+
+    row += 2
+    write("A", "Value changes")
+    write("B", len(comparison.semantic_value_deltas))
+    value_counts: dict[str, int] = {}
+    for delta in comparison.semantic_value_deltas:
+        value_counts[delta.label] = value_counts.get(delta.label, 0) + 1
+    for label, count in sorted(
+        value_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )[:10]:
+        row += 1
+        write("A", label)
+        write("B", count)
+
+    row += 1
+    write("A", "Provenance or lineage changes")
+    write("B", comparison.provenance_summary.changed_cell_count)
+
+
 def _item_locations(model: FinancialModel) -> Dict[str, tuple[str, LineItem]]:
     locations: Dict[str, tuple[str, LineItem]] = {}
     for sheet_name, sheet in model.sheets.items():
@@ -474,7 +763,7 @@ def _summary_health_rows(
         for sheet in model.sheets.values()
         for section in sheet.sections
         for item in section.line_items
-        if "[" in item.label and "]" in item.label
+        if _is_visible_template_residue(item.label)
     )
     return (
         ("Rendered detail sheets", len(model.sheets)),
@@ -490,7 +779,7 @@ def _format_cell_count(range_text: str) -> int:
     return (_col_to_index(end_col) - _col_to_index(start_col) + 1) * (end_row - start_row + 1)
 
 
-def _unique_sheet_name(base_name: str, existing_sheets: Dict[str, Sheet]) -> str:
+def _unique_sheet_name(base_name: str, existing_sheets: Container[str]) -> str:
     if base_name not in existing_sheets:
         return base_name
     suffix = 2

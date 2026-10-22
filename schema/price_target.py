@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from ._insights_shared import _FROZEN_CONTRACT, Confidence
-from .model_ref import ModelVersionRef
-
-
+SourceId = Annotated[
+    str, StringConstraints(strip_whitespace=True, pattern=r"^src_[1-9]\d*$")
+]
 def _rank_is_dense_from_one(ranks: list[int], *, field_name: str) -> None:
     if ranks != list(range(1, len(ranks) + 1)):
         raise ValueError(f"{field_name}.rank must be dense [1..{len(ranks)}]; got {ranks}")
@@ -49,6 +49,8 @@ class CurrentPriceSnapshot(BaseModel):
 
 
 class ValuationHorizon(BaseModel):
+    claim_id: str | None = Field(default=None, min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
     basis: Literal["fy1", "ntm", "calendar_12m", "explicit"]
     fiscal_period: str | None = Field(default=None, min_length=1)
     fiscal_year_end: str | None = Field(default=None, min_length=1)
@@ -72,7 +74,8 @@ class ValuationHorizon(BaseModel):
 
 class PriceTarget(BaseModel):
     price_target_id: str = Field(min_length=1)
-    model_ref: ModelVersionRef
+    model_id: str = Field(min_length=1)
+    model_version: int = Field(ge=1)
     as_of: str = Field(min_length=1)
     ranges: PriceTargetRanges
     confidence: Confidence
@@ -83,7 +86,17 @@ class PriceTarget(BaseModel):
     current_price_snapshot: CurrentPriceSnapshot | None = None
     valuation_horizon: ValuationHorizon | None = None
     implied_return_pct: float
-    schema_version: Literal["1.0"] = "1.0"
+    # The predecessor PriceTarget a model-writer successor carried unchanged
+    # onto its own version. A carry is the prior conclusion, not an acceptance
+    # on this version's compiled values; that version's accepted postcompile
+    # replaces it. Omitted from serialization when absent, so authored rows and
+    # every digest over them keep their bytes.
+    carried_from_price_target_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+    )
+    schema_version: Literal["3.0"] = "3.0"
 
     @field_validator("driver_sensitivities")
     @classmethod

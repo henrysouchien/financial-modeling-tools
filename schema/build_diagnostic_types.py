@@ -2,10 +2,38 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
+from dataclasses import InitVar, asdict, dataclass, field
 from typing import Any, Literal
 
 from .build_diagnostic_values import SEVERITY_ORDER, _collect_severities
+from .provider_port.registry import (
+    EDGAR_PROVIDER_ID,
+    FMP_PROVIDER_ID,
+    LEGACY_PROVIDER_IDS,
+    ProviderId,
+    ProviderRegistry,
+    normalize_provider_id,
+    require_registered_provider_id,
+)
+
+
+def require_coverage_provider_id(
+    value: object,
+    *,
+    provider_registry: ProviderRegistry | None,
+    entry_point: str,
+) -> ProviderId:
+    """Validate diagnostic keys while retaining canonical empty built-in buckets."""
+
+    provider_id = normalize_provider_id(value)
+    return require_registered_provider_id(
+        provider_id,
+        provider_registry=(
+            None if provider_id in LEGACY_PROVIDER_IDS else provider_registry
+        ),
+        entry_point=entry_point,
+    )
 
 
 @dataclass(frozen=True)
@@ -49,7 +77,12 @@ class CFReconciliationCheck:
     net_change_reconciliation: dict[str, Any] = field(
         default_factory=lambda: {"by_year": {}}
     )
-    duplicate_concept_rows: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_role_rows: list[dict[str, Any]] = field(default_factory=list)
+    #: Face cash from operations against the modeled components, with other
+    #: working capital at its derived leaf identity. Observed, never a block.
+    operating_cash_reconciliation: dict[str, Any] = field(
+        default_factory=lambda: {"by_year": {}}
+    )
 
 
 @dataclass
@@ -79,26 +112,83 @@ class RevenueConsolidationCheck:
 
 @dataclass
 class CoverageSummary:
-    total_edgar_sourced: int = 0
+    total_required_roles: int = 0
     populated: int = 0
-    populated_breakdown: dict[str, int] = field(
+    populated_breakdown: dict[ProviderId, int] = field(
         default_factory=lambda: {
-            "edgar_primary": 0,
-            "edgar_fallback": 0,
-            "fmp_primary": 0,
-            "fmp_fallback": 0,
+            EDGAR_PROVIDER_ID: 0,
+            FMP_PROVIDER_ID: 0,
         }
     )
     missing: list[dict[str, Any]] = field(default_factory=list)
     intentionally_blank: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     synthetic_zero: list[dict[str, Any]] = field(default_factory=list)
+    provider_registry: InitVar[object] = None
+
+    def __post_init__(self, provider_registry: object) -> None:
+        registry = (
+            provider_registry
+            if isinstance(provider_registry, ProviderRegistry)
+            else None
+        )
+        # Preserve request-scoped extension context without adding it to the
+        # dataclass payload emitted by ``asdict``.
+        self._provider_registry = registry
+        self.populated_breakdown = {
+            require_coverage_provider_id(
+                provider_id,
+                provider_registry=registry,
+                entry_point="coverage-summary provider",
+            ): int(count)
+            for provider_id, count in self.populated_breakdown.items()
+        }
 
 
-@dataclass
-class FallbackSummary:
-    fallback_engaged_cells: int = 0
-    concepts_with_fallback: list[dict[str, Any]] = field(default_factory=list)
+def validate_coverage_summary_provider_keys(
+    summary: CoverageSummary | Mapping[str, Any],
+    *,
+    provider_registry: ProviderRegistry | None = None,
+) -> None:
+    """Revalidate provider-keyed coverage immediately before consumption."""
+
+    breakdown = (
+        summary.get("populated_breakdown")
+        if isinstance(summary, Mapping)
+        else summary.populated_breakdown
+    )
+    if not isinstance(breakdown, Mapping):
+        return
+    active_registry = provider_registry
+    if active_registry is None:
+        active_registry = getattr(summary, "_provider_registry", None)
+    for provider_id in breakdown:
+        require_coverage_provider_id(
+            provider_id,
+            provider_registry=active_registry,
+            entry_point="coverage-summary provider",
+        )
+
+
+def validate_diagnostic_provider_keys(
+    report: object,
+    *,
+    provider_registry: ProviderRegistry | None = None,
+) -> None:
+    """Validate every provider-keyed diagnostic map before it is consumed."""
+
+    coverage = (
+        report.get("coverage_summary")
+        if isinstance(report, Mapping)
+        else getattr(report, "coverage_summary", None)
+    )
+    if coverage is None or not isinstance(coverage, (CoverageSummary, Mapping)):
+        return
+    validate_coverage_summary_provider_keys(
+        coverage,
+        provider_registry=provider_registry,
+    )
+
 
 
 @dataclass
@@ -114,35 +204,14 @@ class HistoricalPathCoverageCheck:
 @dataclass
 class CrossSourceValidationCheck:
     enabled: bool = False
-    by_concept: dict[str, dict[str, Any]] = field(default_factory=dict)
+    by_role: dict[str, dict[str, Any]] = field(default_factory=dict)
     summary: dict[str, int] = field(
         default_factory=lambda: {
-            "concepts_checked": 0,
-            "concepts_with_gap": 0,
-            "concepts_with_material_gap": 0,
+            "roles_checked": 0,
+            "roles_with_gap": 0,
+            "roles_with_material_gap": 0,
             "cells_compared": 0,
             "cells_incomparable": 0,
-        }
-    )
-
-
-@dataclass
-class SourceArbitrationCheck:
-    enabled: bool = False
-    mode: str = "off"
-    by_concept: dict[str, dict[str, Any]] = field(default_factory=dict)
-    final_source_by_concept_year: dict[str, dict[str, str]] = field(
-        default_factory=dict
-    )
-    summary: dict[str, Any] = field(
-        default_factory=lambda: {
-            "concepts_checked": 0,
-            "cells_decided": 0,
-            "cells_would_apply": 0,
-            "cells_applied": 0,
-            "cells_fail_closed": 0,
-            "cells_skipped_superseded": 0,
-            "actions": {},
         }
     )
 
@@ -159,14 +228,10 @@ class DiagnosticReport:
     is_subtotal_integrity: ISSubtotalCheck
     cf_reconciliation: CFReconciliationCheck
     coverage_summary: CoverageSummary
-    fallback_summary: FallbackSummary
     synthetic_zero_propagation: SyntheticZeroCheck
     historical_path_coverage: HistoricalPathCoverageCheck
     cross_source_validation: CrossSourceValidationCheck = field(
         default_factory=CrossSourceValidationCheck
-    )
-    source_arbitration: SourceArbitrationCheck = field(
-        default_factory=SourceArbitrationCheck
     )
     revenue_consolidation: RevenueConsolidationCheck = field(
         default_factory=RevenueConsolidationCheck
@@ -175,12 +240,18 @@ class DiagnosticReport:
     def headline_severity(
         self,
     ) -> Literal["ok", "gap", "material_gap", "inconsistency"]:
+        validate_diagnostic_provider_keys(self)
         payload = asdict(self)
-        highest = "ok"
+        highest_order = SEVERITY_ORDER["ok"]
         for severity in _collect_severities(payload):
-            if SEVERITY_ORDER[severity] > SEVERITY_ORDER[highest]:
-                highest = severity
-        return highest
+            highest_order = max(highest_order, SEVERITY_ORDER[severity])
+        severities_by_order: tuple[
+            Literal["ok"],
+            Literal["gap"],
+            Literal["material_gap"],
+            Literal["inconsistency"],
+        ] = ("ok", "gap", "material_gap", "inconsistency")
+        return severities_by_order[highest_order]
 
 
 __all__ = [
@@ -191,10 +262,11 @@ __all__ = [
     "CFReconciliationCheck",
     "RevenueConsolidationCheck",
     "CoverageSummary",
-    "FallbackSummary",
+    "validate_coverage_summary_provider_keys",
+    "validate_diagnostic_provider_keys",
     "SyntheticZeroCheck",
     "HistoricalPathCoverageCheck",
     "CrossSourceValidationCheck",
-    "SourceArbitrationCheck",
     "DiagnosticReport",
+    "require_coverage_provider_id",
 ]

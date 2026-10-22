@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field, model_validator
 
-from .thesis_shared_slice import _ContractModel
+from industry_slice_core._contract import _ContractModel
 
 
 FootnoteIndex = Annotated[int, Field(ge=1)]
@@ -30,6 +30,7 @@ class LpLetter(_ContractModel):
     firm_name: str = Field(..., min_length=1)
     letter_date: str = Field(..., min_length=1)
     recipient_salutation: str = Field(..., min_length=1)
+    investor_takeaway: LetterSection = Field(...)
     performance_attribution: LetterSection = Field(...)
     position_commentary: LetterSection = Field(...)
     drawdown_framing: LetterSection = Field(...)
@@ -51,6 +52,7 @@ class LpLetter(_ContractModel):
             {
                 index
                 for section in (
+                    self.investor_takeaway,
                     self.performance_attribution,
                     self.position_commentary,
                     self.drawdown_framing,

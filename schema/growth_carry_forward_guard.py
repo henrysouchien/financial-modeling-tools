@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+import logging
 import math
 from typing import Any
 
+from .handle import ComputedValues
 from .model_readiness_common import _is_present
 from .models import FinancialModel, FormulaSpec, LineItem, ValueProvenance
 from .segment_formula_helpers import _is_carry_forward_formula
@@ -35,7 +38,7 @@ class GrowthCarryForwardFinding:
 def growth_carry_forward_findings(
     model: FinancialModel,
     *,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
     guard_config: Any | None = None,
 ) -> list[GrowthCarryForwardFinding]:
@@ -105,8 +108,20 @@ def _guard_bound(guard_config: Any | None) -> float:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
+        logging.warning(
+            "Ignoring malformed growth_carry_forward_max override %r; using default %s",
+            value,
+            GROWTH_CARRY_FORWARD_MAX,
+        )
         return GROWTH_CARRY_FORWARD_MAX
-    return numeric if math.isfinite(numeric) and numeric >= 0.0 else GROWTH_CARRY_FORWARD_MAX
+    if math.isfinite(numeric) and numeric >= 0.0:
+        return numeric
+    logging.warning(
+        "Ignoring out-of-range growth_carry_forward_max override %r; using default %s",
+        value,
+        GROWTH_CARRY_FORWARD_MAX,
+    )
+    return GROWTH_CARRY_FORWARD_MAX
 
 
 def _guard_min_unowned_periods(guard_config: Any | None) -> int:
@@ -118,8 +133,20 @@ def _guard_min_unowned_periods(guard_config: Any | None) -> int:
     try:
         numeric = int(value)
     except (TypeError, ValueError):
+        logging.warning(
+            "Ignoring malformed growth_carry_forward_min_periods override %r; using default %s",
+            value,
+            MIN_UNOWNED_PERIODS,
+        )
         return MIN_UNOWNED_PERIODS
-    return numeric if numeric > 0 else MIN_UNOWNED_PERIODS
+    if numeric > 0:
+        return numeric
+    logging.warning(
+        "Ignoring out-of-range growth_carry_forward_min_periods override %r; using default %s",
+        value,
+        MIN_UNOWNED_PERIODS,
+    )
+    return MIN_UNOWNED_PERIODS
 
 
 def _segment_revenue_growth_driver_item_ids(model: FinancialModel) -> list[tuple[str, str]]:
@@ -169,7 +196,7 @@ def _scenario_row_carry_forward_finding(
     driver_item: LineItem,
     effective_growth: LineItem,
     effective_growth_item_id: str,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
     bound: float,
     min_unowned_periods: int,
@@ -228,9 +255,9 @@ def _scenario_anchor_ids(driver_item: LineItem, effective_growth: LineItem) -> l
 
 
 def _scenario_base_row_item_id(model: FinancialModel, anchor_id: str) -> str | None:
-    from .build_scenarios import _find_scenario_value_row
+    from .scenario_rows import find_scenario_value_row
 
-    return _find_scenario_value_row(model, anchor_id, "base")
+    return find_scenario_value_row(model, anchor_id, "base")
 
 
 def _scenario_row_owned_periods(row: LineItem, projection_periods: list[int]) -> set[int]:
@@ -262,7 +289,7 @@ def _scenario_row_owned_periods(row: LineItem, projection_periods: list[int]) ->
 
 
 def _scenario_row_carried_rate(
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     *,
     effective_growth_item_id: str,
     scenario_row_item_id: str,
@@ -284,7 +311,7 @@ def _is_synthetic_override(spec: FormulaSpec) -> bool:
     return getattr(spec, "note", None) == "synthetic"
 
 
-def _carried_rate(values: dict[int, Any], unowned_periods: list[int]) -> float | None:
+def _carried_rate(values: Mapping[int, float | None], unowned_periods: list[int]) -> float | None:
     rates: list[float] = []
     for period in unowned_periods:
         value = values.get(int(period))
@@ -296,8 +323,8 @@ def _carried_rate(values: dict[int, Any], unowned_periods: list[int]) -> float |
     return max(rates, key=lambda value: abs(value))
 
 
-def _normalize_values(values: dict[str, dict[int, float]] | None) -> dict[str, dict[int, float]]:
-    normalized: dict[str, dict[int, float]] = {}
+def _normalize_values(values: ComputedValues | None) -> dict[str, dict[int, float | None]]:
+    normalized: dict[str, dict[int, float | None]] = {}
     for item_id, item_values in (values or {}).items():
         normalized[str(item_id)] = {
             int(period): value

@@ -6,15 +6,14 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from api.memory.ticker_utils import TICKER_RE, normalize_ticker
-
-from .enum_canonicalizers import (
+from industry_slice_core.enum_canonicalizers import (
     canonicalize_direction,
     canonicalize_strategy,
     canonicalize_timeframe,
 )
 from .process_template import StrategyCategoryId
 from .research_labels import canonicalize_optional_research_label
+from .ticker_contract import is_entity_ticker, normalize_ticker
 
 if TYPE_CHECKING:
     from .handoff import IdeaProvenance
@@ -27,7 +26,7 @@ class _IdeaContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, populate_by_name=True, frozen=True)
 
 
-def _require_non_empty(value: object, *, field_name: str) -> str:
+def _require_non_empty(value: object, *, field_name: str | None) -> str:
     normalized = str(value or "").strip()
     if not normalized:
         raise ValueError(f"{field_name} must be non-empty")
@@ -90,8 +89,11 @@ class InvestmentIdea(_IdeaContractModel):
     @classmethod
     def _normalize_ticker(cls, value: object) -> str:
         cleaned = normalize_ticker(str(value or ""))
-        if not TICKER_RE.match(cleaned):
-            raise ValueError(f"invalid ticker after normalization: {value!r} -> {cleaned!r}")
+        if not is_entity_ticker(cleaned):
+            raise ValueError(
+                f"invalid ticker after normalization: {value!r} -> {cleaned!r}; "
+                "ENTITY ticker must match ^[A-Z0-9]{1,6}$ and contain at least one letter"
+            )
         return cleaned
 
     @field_validator("thesis", "source", "idea_id", mode="before")

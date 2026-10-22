@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import concurrent.futures
 import logging
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Collection, Dict, List, Optional, Sequence
 
 from .models import (
     FinancialModel,
@@ -13,26 +13,10 @@ from .models import (
     LineItemRef,
 )
 from .model_build_context import SegmentRevenueObservation
+from . import segment_fact_helpers
 from .segment_fact_helpers import (
     REVENUE_TAGS_PRIORITY as REVENUE_TAGS_PRIORITY,
     SEGMENT_AXES_PRIORITY as SEGMENT_AXES_PRIORITY,
-    _REVENUE_TAGS as _REVENUE_TAGS,
-    _annotate_revenue_comparability as _annotate_revenue_comparability,
-    _clean_optional_string as _clean_optional_string,
-    _consolidated_values as _consolidated_values,
-    _largest_consolidated_values as _largest_consolidated_values,
-    _dedupe_member_facts as _dedupe_member_facts,
-    _extract_fact_rows as _extract_fact_rows,
-    _fact_dimensions as _fact_dimensions,
-    _fact_value as _fact_value,
-    _filter_revenue_facts as _filter_revenue_facts,
-    _materiality_share as _materiality_share,
-    _normalize_qname as _normalize_qname,
-    _normalize_scale as _normalize_scale,
-    _observation_from_fact as _observation_from_fact,
-    _pretty_member_label as _pretty_member_label,
-    _segment_label as _segment_label,
-    _single_segment_dimension as _single_segment_dimension,
 )
 from .segment_formula_helpers import (
     _COLUMN_OFFSET_MODE_PERIOD_RELATIVE as _COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
@@ -64,7 +48,6 @@ from .segment_model_helpers import (
 )
 from .segment_history_helpers import (
     populate_segment_historicals as populate_segment_historicals,
-    prune_segment_formula_periods as prune_segment_formula_periods,
 )
 from .segment_override_helpers import (
     apply_segment_overrides as apply_segment_overrides,
@@ -89,8 +72,6 @@ from .segment_template_constants import (
     _ASSUMPTIONS_SEGMENT_IDS as _ASSUMPTIONS_SEGMENT_IDS,
     _ASSUMPTIONS_SEGMENT_START_ROW as _ASSUMPTIONS_SEGMENT_START_ROW,
     _ASSUMPTIONS_TOTAL_REVENUE_ROW as _ASSUMPTIONS_TOTAL_REVENUE_ROW,
-    _FM_SECTION_SHIFT_ROWS as _FM_SECTION_SHIFT_ROWS,
-    _FM_SECTION_START_ROWS as _FM_SECTION_START_ROWS,
     _FM_SEGMENT_IDS as _FM_SEGMENT_IDS,
     _REBUILD_LATER_IDS as _REBUILD_LATER_IDS,
     _SCENARIO_TABLE_NEW_GROWTH_ID as _SCENARIO_TABLE_NEW_GROWTH_ID,
@@ -100,6 +81,13 @@ from .segment_template_constants import (
 
 
 EdgarFinancialsFetcher = Callable[[str, int, int, bool], Dict]
+
+#: ``/api/financials`` payload statuses whose bytes cache warming retains.
+#: The status vocabulary is emitted by the ``edgar_updater`` ``/api/financials``
+#: producer; this constant beside the fetcher contract
+#: (:data:`EdgarFinancialsFetcher`) is its single in-repo owner. "partial"
+#: filings usually still carry the balance-sheet face consumers need.
+EDGAR_FINANCIALS_RETAINED_STATUSES = frozenset({"success", "partial"})
 
 
 def discover_all_axes(
@@ -111,11 +99,18 @@ def discover_all_axes(
     """Auto-discover revenue segments from EDGAR dimensional financial facts."""
 
     historical_years = list(range(most_recent_fy - n_historical + 1, most_recent_fy + 1))
-    all_consolidated: List[Dict] = []
-    all_dimensional: List[Dict] = []
+    all_consolidated: List[segment_fact_helpers._RevenueFact] = []
+    all_dimensional: List[segment_fact_helpers._RevenueFact] = []
     payloads_by_year: Dict[int, dict] = {}
 
-    def _fetch_year(year: int) -> tuple[int, dict, List[Dict], List[Dict]]:
+    def _fetch_year(
+        year: int,
+    ) -> tuple[
+        int,
+        dict,
+        List[segment_fact_helpers._RevenueFact],
+        List[segment_fact_helpers._RevenueFact],
+    ]:
         try:
             payload = fetcher(ticker, year, 4, True) or {}
         except Exception as exc:  # pragma: no cover - exercised by callers
@@ -129,14 +124,14 @@ def discover_all_axes(
             message = payload.get("message") or payload.get("error") or "unknown error"
             raise RuntimeError(f"EDGAR financials fetch failed for {ticker} {year}: {message}")
 
-        facts = _extract_fact_rows(payload)
+        facts = segment_fact_helpers._extract_fact_rows(payload)
         annotated = []
         for fact in facts:
             copied = dict(fact)
             copied["_segment_year"] = int(year)
             annotated.append(copied)
 
-        consolidated, dimensional = _filter_revenue_facts(annotated)
+        consolidated, dimensional = segment_fact_helpers._filter_revenue_facts(annotated)
         return int(year), payload, consolidated, dimensional
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -151,8 +146,8 @@ def discover_all_axes(
             all_consolidated.extend(consolidated)
             all_dimensional.extend(dimensional)
 
-    decomposition_values = _consolidated_values(all_consolidated)
-    consolidated_values = _largest_consolidated_values(all_consolidated)
+    decomposition_values = segment_fact_helpers._consolidated_values(all_consolidated)
+    consolidated_values = segment_fact_helpers._largest_consolidated_values(all_consolidated)
     if not all_dimensional or not decomposition_values:
         return MultiAxisResult(
             ticker=ticker,
@@ -244,7 +239,14 @@ def discover_segments_with_payloads(
 
 
 def expand_segments(model: FinancialModel, profile: SegmentProfile) -> ExpandResult:
-    """Replace the template's hardcoded PCTY segment block with canonical segments."""
+    """Replace the template's placeholder segment block with canonical segments.
+
+    The block this replaces is the generic template's own placeholder revenue
+    scaffold (``volume_driver_1``, ``price_driver_1``, ...), not any issuer's.
+    The prior wording named the reference issuer here, which invited the exact
+    misreading the fourth amendment's §3.3 erratum corrects: the live template
+    is ``schema/templates/sia_generic.json`` and carries zero issuer content.
+    """
 
     if not profile.segments:
         raise ValueError("expand_segments requires at least one segment")
@@ -269,9 +271,7 @@ def expand_segments(model: FinancialModel, profile: SegmentProfile) -> ExpandRes
 
     fm_delta = max(0, len(profile.segments) - fm_rows["freed"])
     if fm_delta:
-        _shift_rows(_iter_sheet_items(model, "Financial_model"), _FM_SECTION_SHIFT_ROWS["growth_rates"], fm_delta)
-        _shift_rows(_iter_sheet_items(model, "Financial_model"), _FM_SECTION_SHIFT_ROWS["margins"], fm_delta)
-        _shift_rows(_iter_sheet_items(model, "Financial_model"), _FM_SECTION_SHIFT_ROWS["income_statement"], fm_delta)
+        _shift_rows_below_fm_segment_blocks(model, fm_rows, fm_delta)
 
     fm_base_rows = {
         "income_statement": fm_rows["income_statement"],
@@ -335,22 +335,25 @@ def expand_segments(model: FinancialModel, profile: SegmentProfile) -> ExpandRes
 
 
 def _try_axis_decomposition(
-    dimensional_facts: List[Dict],
+    dimensional_facts: List[segment_fact_helpers._RevenueFact],
     consolidated_values: Dict[int, float],
     axis: str,
     tolerance: float = 0.05,
 ) -> Optional[List[SegmentInfo]]:
     axis_facts = []
     for fact in dimensional_facts:
-        dimension = _single_segment_dimension(fact)
-        if dimension is None or _normalize_qname(dimension["axis"]) != axis:
+        dimension = segment_fact_helpers._single_segment_dimension(fact.data)
+        if (
+            dimension is None
+            or segment_fact_helpers._normalize_qname(dimension["axis"]) != axis
+        ):
             continue
         axis_facts.append(fact)
 
     if not axis_facts:
         return None
 
-    deduped = _dedupe_member_facts(axis_facts, REVENUE_TAGS_PRIORITY)
+    deduped = segment_fact_helpers._dedupe_member_facts(axis_facts, REVENUE_TAGS_PRIORITY)
     if not deduped:
         return None
 
@@ -361,24 +364,30 @@ def _try_axis_decomposition(
     labels_by_member: Dict[str, str] = {}
 
     for fact in deduped.values():
-        dimension = _single_segment_dimension(fact)
+        dimension = segment_fact_helpers._single_segment_dimension(fact.data)
         if dimension is None:
             continue
 
         member = str(dimension["member"])
-        member_suffix = _normalize_qname(member)
+        member_suffix = segment_fact_helpers._normalize_qname(member)
         if member_suffix in EXCLUDED_MEMBER_SUFFIXES:
             continue
 
-        year = int(fact["_segment_year"])
-        value = _normalize_scale(_fact_value(fact), fact.get("scale"))
+        year = int(fact.data["_segment_year"])
+        value = segment_fact_helpers._normalize_scale(
+            fact.value, fact.data.get("scale")
+        )
         revenue_by_member[member][year] = value
-        labels_by_member.setdefault(member, _segment_label(dimension))
-        observations_by_member[member][year] = _observation_from_fact(
-            fact,
-            dimension=dimension,
-            year=year,
-            value=value,
+        labels_by_member.setdefault(
+            member, segment_fact_helpers._segment_label(dimension)
+        )
+        observations_by_member[member][year] = (
+            segment_fact_helpers._observation_from_fact(
+                fact.data,
+                dimension=dimension,
+                year=year,
+                value=value,
+            )
         )
         members_by_year[year].add(member)
 
@@ -416,7 +425,7 @@ def _try_axis_decomposition(
                 add_other_member_value(member, int(year), value)
             continue
 
-        share = _materiality_share(values, consolidated_values)
+        share = segment_fact_helpers._materiality_share(values, consolidated_values)
         if share < MATERIALITY_THRESHOLD:
             for year, value in values.items():
                 add_other_member_value(member, int(year), value)
@@ -424,9 +433,11 @@ def _try_axis_decomposition(
 
         named_segments.append(
             SegmentInfo(
-                name=labels_by_member.get(member, _normalize_qname(member)),
+                name=labels_by_member.get(
+                    member, segment_fact_helpers._normalize_qname(member)
+                ),
                 edgar_member=member,
-                revenue_observations=_annotate_revenue_comparability(
+                revenue_observations=segment_fact_helpers._annotate_revenue_comparability(
                     observations_by_member.get(member, {})
                 ),
             )
@@ -485,7 +496,7 @@ def _try_axis_decomposition(
 
 def _detect_rollup_members(
     revenue_by_member: Dict[str, Dict[int, float]],
-    current_members: Sequence[str],
+    current_members: Collection[str],
     rollup_tolerance: float = 0.01,
 ) -> set[str]:
     """Identify current-year members that are rollups of other current-year members."""
@@ -559,7 +570,7 @@ def _detect_rollup_members(
 
 def _rollup_exclusion_preserves_total(
     revenue_by_member: Dict[str, Dict[int, float]],
-    current_members: Sequence[str],
+    current_members: Collection[str],
     rollup_members: set[str],
     consolidated_values: Dict[int, float],
     *,
@@ -598,6 +609,14 @@ def _remove_existing_segment_items(model: FinancialModel) -> tuple[Dict[str, int
     margins_section = _get_section(model, "Financial_model", "margins")
     growth_rates_section = _get_section(model, "Financial_model", "growth_rates")
 
+    # The placeholder block's first row and height are read off the loaded
+    # template, never restated: every template row insertion moves them.
+    fm_segment_starts = {
+        section.id: min(int(item.row) for item in section.line_items if item.id in _FM_SEGMENT_IDS)
+        for section in (income_statement_section, margins_section, growth_rates_section)
+    }
+    fm_segment_freed = sum(1 for item in income_statement_section.line_items if item.id in _FM_SEGMENT_IDS)
+
     assumptions_section.line_items = [
         item for item in assumptions_section.line_items if item.id not in _ASSUMPTIONS_SEGMENT_IDS
     ]
@@ -621,13 +640,19 @@ def _remove_existing_segment_items(model: FinancialModel) -> tuple[Dict[str, int
 
     return (
         {"start": _ASSUMPTIONS_SEGMENT_START_ROW, "freed": 18},
-        {
-            "income_statement": _FM_SECTION_START_ROWS["income_statement"],
-            "margins": _FM_SECTION_START_ROWS["margins"],
-            "growth_rates": _FM_SECTION_START_ROWS["growth_rates"],
-            "freed": 2,
-        },
+        {**fm_segment_starts, "freed": fm_segment_freed},
     )
+
+
+def _shift_rows_below_fm_segment_blocks(model: FinancialModel, fm_rows: Dict[str, int], delta: int) -> None:
+    """Open ``delta`` rows under each Financial_model segment block, last section first."""
+
+    for section_id in ("growth_rates", "margins", "income_statement"):
+        _shift_rows(
+            _iter_sheet_items(model, "Financial_model"),
+            fm_rows[section_id] + fm_rows["freed"],
+            delta,
+        )
 
 
 def _build_canonical_segment(
@@ -758,7 +783,7 @@ def _build_canonical_segment(
             "row": fm_rows["income_statement"],
             "historical": _ref_formula("tpl.fm.income_statement.total_revenue") if fallback_single else None,
             "projected": _ref_formula(revenue_id),
-            "data_concept_id": None,
+            "required_role": None,
             "formula_periods": list(all_periods if fallback_single else projection_periods),
             "overrides": None,
             "values": None,
@@ -845,6 +870,7 @@ def _update_total_revenue_formulas(model: FinancialModel, n_segments: int) -> No
 
 __all__ = [
     "EdgarFinancialsFetcher",
+    "EDGAR_FINANCIALS_RETAINED_STATUSES",
     "ExpandResult",
     "EXCLUDED_MEMBER_SUFFIXES",
     "MATERIALITY_THRESHOLD",
@@ -860,5 +886,4 @@ __all__ = [
     "discover_segments_with_payloads",
     "expand_segments",
     "populate_segment_historicals",
-    "prune_segment_formula_periods",
 ]

@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from .dashboard_payload import ReadinessPosture
-from .thesis_shared_slice import _ContractModel
+from industry_slice_core._contract import _ContractModel
 
 
 class DashboardArtifact(_ContractModel):
@@ -24,6 +24,9 @@ class DashboardArtifact(_ContractModel):
     origin_kind: Literal["product", "harness", "import"] | None = None
     visibility: Literal["default", "sandbox", "archived"] | None = None
     origin_ref: dict[str, Any] | None = None
+    # The payload check's quality findings (citation, freshness, readiness), kept
+    # on the written artifact so the analyst reads them with it.
+    warnings: list[str] = Field(default_factory=list)
     contract_name: Literal["DashboardArtifact"] = "DashboardArtifact"
 
 

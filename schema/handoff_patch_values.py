@@ -25,15 +25,20 @@ from .thesis_shared_slice import (
     _ContractModel,
     ScalarValue,
 )
+from .period_value_series import AssumptionValue
 
 
 class AddAssumptionValue(BaseModel):
     assumption_id: str = Field(min_length=1)
     driver: str = Field(min_length=1)
-    value: float
+    value: AssumptionValue
     unit: DriverUnit
     rationale: str = Field(min_length=1)
     source_refs: list[SourceId] = Field(default_factory=list)
+    source_refs_by_period: dict[int, list[SourceId]] = Field(default_factory=dict)
+    extension_basis_by_period: dict[int, str] = Field(default_factory=dict)
+    confidence_by_period: dict[int, Confidence] = Field(default_factory=dict)
+    source_notes_by_period: dict[int, str] = Field(default_factory=dict)
     driver_category: DriverCategory | None = None
     confidence: Confidence | None = None
 
@@ -117,6 +122,7 @@ class UpdateClaimValue(BaseModel):
 
 
 class UpdateConsensusViewValue(BaseModel):
+    claim_id: str | None = Field(default=None, min_length=1)
     narrative: str | None = None
     basis: Literal["gaap", "non_gaap"] | None = None
     citations: list[SourceId] | None = None
@@ -132,6 +138,8 @@ class UpdateEpsFcfValue(BaseModel):
     deep-merged.
     """
 
+    claim_id: str | None = Field(default=None, min_length=1)
+    source_refs: list[SourceId] | None = None
     projection: ScalarValue | None = None
     delta_vs_consensus: ScalarValue | None = None
     terminal_year: int | None = Field(default=None, ge=1900, le=2200)

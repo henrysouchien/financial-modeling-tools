@@ -387,8 +387,15 @@ class DecisionLogEntry(_RecommendationsModel):
 
 
 class RiskReviewContext(RecommendationsBundle):
+    # risk_score/risk_category come from get_risk_score (the score's only
+    # producer; get_risk_analysis carries compliance and no score). Null is a
+    # reported absence: the report document's header says the run did not read
+    # it rather than omitting the line (WP-2 §2.2 §1).
     risk_score: int | None = None
     risk_category: str | None = None
+    # The as-of line the pack header owes every number it shows (WP-2 §0.1),
+    # taken from the reads themselves; only the run sees them.
+    data_as_of: str | None = None
     compliance_status: str | None = None  # nullable: may be unknown when verdict is RISK_REVIEW_INSUFFICIENT_DATA
     violations: list[ViolationDetail] = Field(default_factory=list)
     methodology_lens: list[MethodologyLensRow] = Field(default_factory=list)

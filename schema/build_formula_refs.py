@@ -136,7 +136,29 @@ def _extract_ref_ids(obj) -> set[str]:
     return ids
 
 
+#: The formulas a spec keeps as opaque JSON so a later pass can restore what it replaced.
+SAVED_FORMULA_KEYS = ("original_formula", "original_override", "lowered_formula")
+
+
+def saved_formula_slots(params: dict) -> list[tuple[dict, tuple[str, ...]]]:
+    """``(container, keys)`` for each saved-formula string held in a spec's ``params``.
+
+    The one list of where a spec hides a formula it can restore: a pass that
+    removes or inserts a reference in the live spec rewrites these too, or the
+    restore brings the old shape back.
+    """
+
+    slots: list[tuple[dict, tuple[str, ...]]] = [
+        (params, ("_deferred_tax_asset_inclusion_projection",)),
+    ]
+    metadata = params.get("_not_separately_presented")
+    if isinstance(metadata, dict):
+        slots.append((metadata, SAVED_FORMULA_KEYS))
+    return slots
+
+
 __all__ = [
+    "SAVED_FORMULA_KEYS",
     "_all_refs_same_period",
     "_available_periods",
     "_collect_ref_offsets",
@@ -145,4 +167,5 @@ __all__ = [
     "_formula_period_is_valid",
     "_safe_int",
     "_spec_for_period_validation",
+    "saved_formula_slots",
 ]

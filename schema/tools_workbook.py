@@ -4,23 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import sys
 from typing import Any
 
 from .workbook_presentation import workbook_presentation_fingerprint
 
 
-_PARENT_MODULE = "schema.tools"
 _PARSED_WORKBOOK_MODEL_SOURCES = {"disk_cache", "parsed_workbook"}
-
-
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
 
 
 def _workbook_inventory(
@@ -32,7 +21,7 @@ def _workbook_inventory(
     """Return actual workbook sheet inventory when the workbook file is readable."""
 
     readback_sheet_names = [str(sheet.get("name")) for sheet in sheets_summary]
-    non_model_sheet_names = _compat("_non_model_workbook_sheet_names", _non_model_workbook_sheet_names)(
+    non_model_sheet_names = _non_model_workbook_sheet_names(
         readback_sheet_names,
         model_source,
     )
@@ -55,7 +44,7 @@ def _workbook_inventory(
         return result
 
     try:
-        fingerprint = _compat("workbook_presentation_fingerprint", workbook_presentation_fingerprint)(
+        fingerprint = workbook_presentation_fingerprint(
             file_path,
             max_cells_per_sheet=1,
         )
@@ -91,28 +80,14 @@ def _workbook_inventory(
 
 
 def _non_model_workbook_sheet_names(sheet_names: list[str], model_source: str) -> list[str]:
-    parsed_sources = _compat("_PARSED_WORKBOOK_MODEL_SOURCES", _PARSED_WORKBOOK_MODEL_SOURCES)
-    if model_source not in parsed_sources:
+    if model_source not in _PARSED_WORKBOOK_MODEL_SOURCES:
         return []
-    is_known_non_model_workbook_sheet = _compat(
-        "_is_known_non_model_workbook_sheet",
-        _is_known_non_model_workbook_sheet,
-    )
-    return [name for name in sheet_names if is_known_non_model_workbook_sheet(name)]
+    return [name for name in sheet_names if _is_known_non_model_workbook_sheet(name)]
 
 
 def _is_known_non_model_workbook_sheet(name: str) -> bool:
     normalized = name.strip().casefold()
     return normalized == "_researchcontext" or re.fullmatch(r"summary(?:_\d+)?", normalized) is not None
-
-
-_ORIGINALS = {
-    "_PARSED_WORKBOOK_MODEL_SOURCES": _PARSED_WORKBOOK_MODEL_SOURCES,
-    "_is_known_non_model_workbook_sheet": _is_known_non_model_workbook_sheet,
-    "_non_model_workbook_sheet_names": _non_model_workbook_sheet_names,
-    "_workbook_inventory": _workbook_inventory,
-    "workbook_presentation_fingerprint": workbook_presentation_fingerprint,
-}
 
 
 __all__ = [

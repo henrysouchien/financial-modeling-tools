@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Dict, List, Optional, Sequence
 
@@ -22,6 +23,11 @@ SEGMENT_AXES_PRIORITY = [
 
 _REVENUE_TAGS = set(REVENUE_TAGS_PRIORITY)
 
+@dataclass(frozen=True)
+class _RevenueFact:
+    data: Dict
+    value: float
+
 
 def _normalize_qname(qname: str) -> str:
     if not qname:
@@ -33,12 +39,14 @@ def _normalize_qname(qname: str) -> str:
 
 
 def _normalize_scale(value: float, scale: Optional[str]) -> float:
-    return normalize_edgar_value(value, scale, concept_id="")
+    return normalize_edgar_value(value, scale, series_key="")
 
 
-def _filter_revenue_facts(facts: List[Dict]) -> tuple[List[Dict], List[Dict]]:
-    consolidated: List[Dict] = []
-    dimensional: List[Dict] = []
+def _filter_revenue_facts(
+    facts: List[Dict],
+) -> tuple[List[_RevenueFact], List[_RevenueFact]]:
+    consolidated: List[_RevenueFact] = []
+    dimensional: List[_RevenueFact] = []
 
     for fact in facts:
         tag = _normalize_qname(str(fact.get("tag") or fact.get("metric_tag") or ""))
@@ -47,11 +55,12 @@ def _filter_revenue_facts(facts: List[Dict]) -> tuple[List[Dict], List[Dict]]:
         value = _fact_value(fact)
         if value is None:
             continue
+        filtered = _RevenueFact(data=fact, value=value)
         axis_key = str(fact.get("axis_key") or "__NONE__")
         if axis_key == "__NONE__":
-            consolidated.append(fact)
+            consolidated.append(filtered)
         else:
-            dimensional.append(fact)
+            dimensional.append(filtered)
 
     return consolidated, dimensional
 
@@ -78,58 +87,65 @@ def _extract_fact_rows(payload: Dict) -> List[Dict]:
 
 
 def _dedupe_member_facts(
-    facts: List[Dict],
+    facts: List[_RevenueFact],
     tag_priority: List[str],
-) -> Dict[tuple[str, int], Dict]:
+) -> Dict[tuple[str, int], _RevenueFact]:
     priority_index = {tag: index for index, tag in enumerate(tag_priority)}
-    deduped: Dict[tuple[str, int], Dict] = {}
+    deduped: Dict[tuple[str, int], _RevenueFact] = {}
 
     for fact in facts:
-        dimension = _single_segment_dimension(fact)
+        dimension = _single_segment_dimension(fact.data)
         if dimension is None:
             continue
 
         member = str(dimension["member"])
-        year = int(fact["_segment_year"])
+        year = int(fact.data["_segment_year"])
         key = (member, year)
         existing = deduped.get(key)
-        current_priority = priority_index.get(_normalize_qname(str(fact.get("tag") or "")), len(tag_priority))
+        current_priority = priority_index.get(
+            _normalize_qname(str(fact.data.get("tag") or "")), len(tag_priority)
+        )
         if existing is None:
             deduped[key] = fact
             continue
 
-        existing_priority = priority_index.get(_normalize_qname(str(existing.get("tag") or "")), len(tag_priority))
+        existing_priority = priority_index.get(
+            _normalize_qname(str(existing.data.get("tag") or "")), len(tag_priority)
+        )
         if current_priority < existing_priority:
             deduped[key] = fact
 
     return deduped
 
 
-def _consolidated_values(facts: Sequence[Dict]) -> Dict[int, float]:
+def _consolidated_values(facts: Sequence[_RevenueFact]) -> Dict[int, float]:
     priority_index = {tag: index for index, tag in enumerate(REVENUE_TAGS_PRIORITY)}
-    best_by_year: Dict[int, Dict] = {}
+    best_by_year: Dict[int, _RevenueFact] = {}
 
     for fact in facts:
-        year = int(fact["_segment_year"])
+        year = int(fact.data["_segment_year"])
         existing = best_by_year.get(year)
         if existing is None:
             best_by_year[year] = fact
             continue
-        current_priority = priority_index.get(_normalize_qname(str(fact.get("tag") or "")), len(REVENUE_TAGS_PRIORITY))
-        existing_priority = priority_index.get(_normalize_qname(str(existing.get("tag") or "")), len(REVENUE_TAGS_PRIORITY))
+        current_priority = priority_index.get(
+            _normalize_qname(str(fact.data.get("tag") or "")),
+            len(REVENUE_TAGS_PRIORITY),
+        )
+        existing_priority = priority_index.get(
+            _normalize_qname(str(existing.data.get("tag") or "")),
+            len(REVENUE_TAGS_PRIORITY),
+        )
         if current_priority < existing_priority:
             best_by_year[year] = fact
 
-    values: Dict[int, float] = {}
-    for year, fact in best_by_year.items():
-        value = _fact_value(fact)
-        if value is None:
-            continue
-        values[int(year)] = _normalize_scale(value, fact.get("scale"))
-    return dict(sorted(values.items()))
+    return {
+        int(year): _normalize_scale(fact.value, fact.data.get("scale"))
+        for year, fact in sorted(best_by_year.items())
+    }
 
 
-def _largest_consolidated_values(facts: Sequence[Dict]) -> Dict[int, float]:
+def _largest_consolidated_values(facts: Sequence[_RevenueFact]) -> Dict[int, float]:
     """Return the broadest consolidated revenue fact available per year.
 
     Segment axes can legitimately reconcile to contract revenue while a separate
@@ -142,12 +158,9 @@ def _largest_consolidated_values(facts: Sequence[Dict]) -> Dict[int, float]:
     best_by_year: Dict[int, tuple[float, int]] = {}
 
     for fact in facts:
-        raw_value = _fact_value(fact)
-        if raw_value is None:
-            continue
-        year = int(fact["_segment_year"])
-        normalized_value = _normalize_scale(raw_value, fact.get("scale"))
-        tag = _normalize_qname(str(fact.get("tag") or ""))
+        normalized_value = _normalize_scale(fact.value, fact.data.get("scale"))
+        year = int(fact.data["_segment_year"])
+        tag = _normalize_qname(str(fact.data.get("tag") or ""))
         priority = priority_index.get(tag, len(REVENUE_TAGS_PRIORITY))
         existing = best_by_year.get(year)
         if existing is None or abs(normalized_value) > abs(existing[0]) or (
@@ -315,7 +328,7 @@ def _pretty_member_label(member: str) -> str:
     return label.strip() or member
 
 
-def _fact_value(fact: Dict):
+def _fact_value(fact: Dict) -> float | None:
     value = fact.get("current_period_value")
     if value is None:
         value = fact.get("visual_current_value")
@@ -325,6 +338,7 @@ def _fact_value(fact: Dict):
 
 
 __all__ = [
+    "_RevenueFact",
     "REVENUE_TAGS_PRIORITY",
     "SEGMENT_AXES_PRIORITY",
     "_REVENUE_TAGS",

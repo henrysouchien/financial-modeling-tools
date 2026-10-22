@@ -1,32 +1,24 @@
-"""Projected non-GAAP add-back seed helpers for schema build orchestration.
-
-``FMS_REPAIR_SBC_ZERO_ANCHOR`` is a one-shot CLI remediation switch. Its value must
-name the model ticker (case-insensitively); boolean-style values do not authorize a
-repair. Set it only for a dedicated rebuild of that ticker, for example::
-
-    FMS_REPAIR_SBC_ZERO_ANCHOR=PCTY AUTONOMOUS_USER_ID=... python3 -m agent.autonomous \\
-        --profile research_producer --skill build-model --ticker PCTY ...
-
-Gateway and other long-lived-process repair is operationally unsupported. The ticker
-fence limits the technical scope, and a successful repair self-extinguishes by replacing
-template carries with module-authored fallback constants.
-"""
+"""Projected non-GAAP add-back seed helpers for schema build orchestration."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from copy import deepcopy
 import math
-import os
-import sys
-from typing import Any
 
+from typing import Any, Literal
+
+from industry_slice_core.industry_types import Unit
+
+from .build_value_writers import _write_default_unless_authored
 from .dependency_graph import DependencyGraph
+from .handle import ComputedValues
 from .models import (
     FinancialModel,
+    FormulaDerivation,
     FormulaSpec,
     FormulaType,
     ItemType,
+    LineItem,
     ValueCell,
     ValueProvenance,
     ValueSeries,
@@ -39,6 +31,16 @@ _PROJECTED_DEPRECIATION_ID = "tpl.a.depreciation_amortization.depreciation"
 _PROJECTED_DA_RATE_ID = "tpl.a.depreciation_amortization.depreciation_as_of_beginning_property_and_equipment"
 _PROJECTED_DA_BASE_ID = "tpl.a.depreciation_amortization.beg_property_and_equipment"
 _PROJECTED_SBC_TOTAL_ID = "tpl.a.stock_based_compensation.stock_based_compensation"
+_PROJECTED_SBC_ALLOCATED_TOTAL_ID = "tpl.a.stock_based_compensation.total"
+# House revenue ratios held on their own input rows (W1), never as formula
+# literals: written ``default`` unless an authored row holds the rate.
+_PROJECTED_SBC_REVENUE_RATE_ID = (
+    "tpl.a.stock_based_compensation.stock_based_compensation_pct_revenue"
+)
+_PROJECTED_DEPRECIATION_RATE_ID = "tpl.a.depreciation_amortization.depreciation_pct_revenue"
+_PROJECTED_DA_REVENUE_RATE_ID = (
+    "tpl.a.depreciation_amortization.depreciation_and_amortization_pct_revenue"
+)
 _PROJECTED_SBC_RATE_IDS = (
     "tpl.a.stock_based_compensation.cost_of_revenues_pct_line_item",
     "tpl.a.stock_based_compensation.sales_and_marketing_pct_line_item",
@@ -68,11 +70,14 @@ _PROJECTED_ACQUIRED_INTANGIBLE_EXPENSE_ID = (
 _INTANGIBLE_ASSETS_NET_ID = "tpl.a.intangibles_goodwill.intangible_assets_net"
 _INTANGIBLE_ADDITIONS_ID = "tpl.a.intangibles_goodwill.add_acquisitions_of_businesses"
 
+_NonGaapFallbackStrategy = Literal[
+    "revenue_ratio",
+    "sbc_allocation",
+    "acquired_intangible_roll_forward",
+]
 
-def _parent_attr(name: str, fallback):
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    return getattr(parent, name, fallback) if parent is not None else fallback
+
+
 
 
 def _coerce_optional_float(value: Any) -> float | None:
@@ -87,9 +92,9 @@ def _coerce_optional_float(value: Any) -> float | None:
     return coerced
 
 
-def _computed_model_values(model: FinancialModel) -> dict[str, dict[int, float]]:
-    dependency_graph_cls = _parent_attr("DependencyGraph", DependencyGraph)
-    item_type = _parent_attr("ItemType", ItemType)
+def _computed_model_values(model: FinancialModel) -> ComputedValues:
+    dependency_graph_cls = DependencyGraph
+    item_type = ItemType
     graph = dependency_graph_cls()
     graph.build(model)
     derived_ids = {
@@ -101,22 +106,24 @@ def _computed_model_values(model: FinancialModel) -> dict[str, dict[int, float]]
 
 
 def _computed_value(
-    computed_values: dict[str, dict[int, float]],
+    computed_values: ComputedValues,
     item_id: str,
     period: int,
 ) -> float | None:
-    coerce_optional_float = _parent_attr("_coerce_optional_float", _coerce_optional_float)
+    coerce_optional_float = _coerce_optional_float
     value = computed_values.get(item_id, {}).get(int(period))
     return coerce_optional_float(value)
 
 
-def _latest_ratio_from_computed_values(
-    computed_values: dict[str, dict[int, float]],
+def _latest_ratio_basis_from_computed_values(
+    computed_values: ComputedValues,
     numerator_id: str,
     denominator_id: str,
     periods: Iterable[int],
-) -> float | None:
-    computed_value = _parent_attr("_computed_value", _computed_value)
+) -> tuple[int, float] | None:
+    """Return the latest period with a positive finite ratio, and that ratio."""
+
+    computed_value = _computed_value
     for period in sorted({int(period) for period in periods}, reverse=True):
         numerator = computed_value(computed_values, numerator_id, period)
         denominator = computed_value(computed_values, denominator_id, period)
@@ -124,19 +131,33 @@ def _latest_ratio_from_computed_values(
             continue
         ratio = numerator / denominator
         if math.isfinite(ratio) and ratio > 0:
-            return ratio
+            return period, ratio
     return None
 
 
-def _latest_intangible_runoff_ratio_from_computed_values(
-    computed_values: dict[str, dict[int, float]],
+def _latest_ratio_from_computed_values(
+    computed_values: ComputedValues,
+    numerator_id: str,
+    denominator_id: str,
+    periods: Iterable[int],
+) -> float | None:
+    basis = _latest_ratio_basis_from_computed_values(
+        computed_values, numerator_id, denominator_id, periods
+    )
+    return None if basis is None else basis[1]
+
+
+def _latest_intangible_runoff_basis_from_computed_values(
+    computed_values: ComputedValues,
     intangible_assets_net_id: str,
     revenue_item_id: str,
     periods: Iterable[int],
     *,
     cap_ratio: float | None = None,
-) -> float | None:
-    computed_value = _parent_attr("_computed_value", _computed_value)
+) -> tuple[int, int, float] | None:
+    """Return the latest (opening period, period, runoff/revenue ratio)."""
+
+    computed_value = _computed_value
     ordered_periods = sorted({int(period) for period in periods})
     for previous_period, period in reversed(list(zip(ordered_periods, ordered_periods[1:]))):
         previous_intangibles = computed_value(computed_values, intangible_assets_net_id, previous_period)
@@ -157,16 +178,38 @@ def _latest_intangible_runoff_ratio_from_computed_values(
         if cap_ratio is not None and cap_ratio > 0:
             ratio = min(ratio, cap_ratio)
         if math.isfinite(ratio) and ratio > 0:
-            return ratio
+            return previous_period, period, ratio
     return None
 
 
+def _ratio_expr(numerator_id: str, denominator_id: str, period: int) -> dict[str, Any]:
+    """One reported period's ratio, operands held at their absolute period."""
+
+    return {
+        "op": "/",
+        "left": {"id": numerator_id, "period": period},
+        "right": {"id": denominator_id, "period": period},
+    }
+
+
+def _placed(expr: Any, positions: dict[int, int], position: int) -> Any:
+    """Place absolute-period operands as refs offset from ``position``."""
+
+    if isinstance(expr, dict):
+        if "period" in expr:
+            return {"id": expr["id"], "t": positions[expr["period"]] - position}
+        return {key: _placed(value, positions, position) for key, value in expr.items()}
+    if isinstance(expr, list):
+        return [_placed(value, positions, position) for value in expr]
+    return expr
+
+
 def _missing_projection_periods(
-    computed_values: dict[str, dict[int, float]],
+    computed_values: ComputedValues,
     item_id: str,
     projection_periods: Iterable[int],
 ) -> list[int]:
-    computed_value = _parent_attr("_computed_value", _computed_value)
+    computed_value = _computed_value
     return [
         int(period)
         for period in projection_periods
@@ -181,17 +224,24 @@ def _set_projection_input_values(
     *,
     note: str,
 ) -> bool:
+    """Write a house value onto a projection driver row, kind ``default``.
+
+    The caller supplies only periods no authored row holds; each lands as
+    ``ValueCell(provenance=default, note=note)`` beside its constant override,
+    so ``judgment_absent_default_used`` reports the row.
+    """
+
     if not values_by_period:
         return False
     try:
         item_obj = model.get_item(item_id)
     except KeyError:
         return False
-    value_series_cls = _parent_attr("ValueSeries", ValueSeries)
-    value_cell_cls = _parent_attr("ValueCell", ValueCell)
-    value_provenance = _parent_attr("ValueProvenance", ValueProvenance)
-    formula_spec_cls = _parent_attr("FormulaSpec", FormulaSpec)
-    formula_type = _parent_attr("FormulaType", FormulaType)
+    value_series_cls = ValueSeries
+    value_cell_cls = ValueCell
+    value_provenance = ValueProvenance
+    formula_spec_cls = FormulaSpec
+    formula_type = FormulaType
     if item_obj.values is None:
         item_obj.values = value_series_cls()
     if item_obj.overrides is None:
@@ -205,7 +255,7 @@ def _set_projection_input_values(
         item_obj.values.values[int(period)] = value_cell_cls(
             period=int(period),
             value=float(value),
-            provenance=value_provenance.derived,
+            provenance=value_provenance.default,
             note=note,
         )
         item_obj.overrides[int(period)] = formula_spec_cls(
@@ -219,6 +269,58 @@ def _set_projection_input_values(
 _FALLBACK_NOTE_PREFIX = "build fallback:"
 
 
+def _fallback_derivation(
+    strategy: _NonGaapFallbackStrategy,
+    dependencies: Iterable[str],
+) -> FormulaDerivation:
+    derivation_cls = FormulaDerivation
+    return derivation_cls(
+        owner="build_non_gaap_addbacks",
+        strategy=strategy,
+        dependencies=tuple(dict.fromkeys(str(item_id) for item_id in dependencies)),
+    )
+
+
+def _is_owned_fallback(spec: FormulaSpec | None) -> bool:
+    """Return whether a formula belongs to this module, including legacy payloads."""
+
+    if spec is None:
+        return False
+    derivation = getattr(spec, "derivation", None)
+    if getattr(derivation, "owner", None) == "build_non_gaap_addbacks":
+        return True
+    return str(getattr(spec, "note", "") or "").startswith(_FALLBACK_NOTE_PREFIX)
+
+
+def _set_projection_formula_values(
+    model: FinancialModel,
+    item_id: str,
+    values_by_period: dict[int, float],
+    *,
+    formulas_by_period: dict[int, FormulaSpec],
+) -> bool:
+    """Install live formulas without a second, potentially stale numeric owner."""
+
+    writable_periods = sorted(set(values_by_period) & set(formulas_by_period))
+    if not writable_periods:
+        return False
+    try:
+        item_obj = model.get_item(item_id)
+    except KeyError:
+        return False
+    if item_obj.overrides is None:
+        item_obj.overrides = {}
+    if item_obj.formula_periods is not None:
+        item_obj.formula_periods = sorted(
+            {int(period) for period in item_obj.formula_periods} | set(writable_periods)
+        )
+    for period in writable_periods:
+        if item_obj.values is not None:
+            item_obj.values.values.pop(int(period), None)
+        item_obj.overrides[int(period)] = formulas_by_period[period]
+    return True
+
+
 def _set_projection_revenue_driver_values(
     model: FinancialModel,
     item_id: str,
@@ -226,15 +328,18 @@ def _set_projection_revenue_driver_values(
     *,
     revenue_item_id: str,
     ratio: float,
+    rate_item_id: str,
+    rate_label: str,
     note: str,
 ) -> bool:
-    """Seed a derived row with a live ``revenue * ratio`` driver override.
+    """Seed a derived row with a live ``revenue * rate`` driver override.
 
     Writes a snapshot value cell (the build-time ratio*revenue product) plus a
-    per-period driver override that references the revenue row, so the value tracks
-    revenue on every recompute instead of freezing as a constant. ``item_id`` must be a
-    derived row; the generated code emits compute functions for derived rows, so no
-    codegen change is needed.
+    per-period driver override that references the revenue row and the rate
+    row ``rate_item_id``, so the value tracks revenue on every recompute. The
+    house ratio is a typed parameter, not a formula literal: it lands
+    ``default`` on the rate row (``revenue_ratio``) unless an authored row
+    holds that rate. ``item_id`` must be a derived row.
     """
 
     if not values_by_period:
@@ -243,11 +348,21 @@ def _set_projection_revenue_driver_values(
         item_obj = model.get_item(item_id)
     except KeyError:
         return False
-    value_series_cls = _parent_attr("ValueSeries", ValueSeries)
-    value_cell_cls = _parent_attr("ValueCell", ValueCell)
-    value_provenance = _parent_attr("ValueProvenance", ValueProvenance)
-    formula_spec_cls = _parent_attr("FormulaSpec", FormulaSpec)
-    formula_type = _parent_attr("FormulaType", FormulaType)
+    if not _bind_default_rate_row(
+        model,
+        rate_item_id=rate_item_id,
+        anchor_item_id=item_id,
+        label=rate_label,
+        ratio=ratio,
+        periods=values_by_period,
+        strategy="revenue_ratio",
+    ):
+        return False
+    value_series_cls = ValueSeries
+    value_cell_cls = ValueCell
+    value_provenance = ValueProvenance
+    formula_spec_cls = FormulaSpec
+    formula_type = FormulaType
     if item_obj.values is None:
         item_obj.values = value_series_cls()
     if item_obj.overrides is None:
@@ -267,9 +382,132 @@ def _set_projection_revenue_driver_values(
         item_obj.overrides[int(period)] = formula_spec_cls(
             type=formula_type.driver,
             subtype="base_x_rate",
-            params={"base": {"id": revenue_item_id}, "rate": float(ratio)},
+            params={"base": {"id": revenue_item_id}, "rate": {"id": rate_item_id}},
             note=note,
+            derivation=_fallback_derivation(
+                "revenue_ratio", [revenue_item_id, rate_item_id]
+            ),
         )
+    return True
+
+
+def _bind_default_rate_row(
+    model: FinancialModel,
+    *,
+    rate_item_id: str,
+    anchor_item_id: str,
+    label: str,
+    ratio: float,
+    periods: Iterable[int],
+    strategy: _NonGaapFallbackStrategy,
+) -> bool:
+    """Hold a house ratio on its own input row, written ``default``.
+
+    The row is inserted directly below ``anchor_item_id`` unless it already
+    exists; a period an authored row lowered keeps its ``input`` rate.
+    """
+
+    from .build_semantic_rows import _insert_line_item_after
+
+    try:
+        rate = model.get_item(rate_item_id)
+    except KeyError:
+        try:
+            model.get_item(anchor_item_id)
+        except KeyError:
+            return False
+        rate = _insert_line_item_after(
+            model,
+            anchor_item_id=anchor_item_id,
+            new_item=LineItem(
+                id=rate_item_id,
+                label=label,
+                row=0,
+                item_type=ItemType.input,
+                unit=Unit.percentage,
+                model_scale="units",
+            ),
+        )
+    written = _write_default_unless_authored(
+        rate,
+        periods,
+        ratio,
+        owner="build_non_gaap_addbacks",
+        strategy=strategy,
+    )
+    rate.formula_periods = sorted(set(rate.formula_periods or ()) | set(written))
+    return True
+
+
+def _project_unallocated_sbc_aggregate(
+    model: FinancialModel,
+    periods: Iterable[int],
+    *,
+    ratio: float,
+    revenue_item_id: str,
+    sbc_total_id: str,
+    unallocated_ids: Iterable[str],
+) -> bool:
+    """Project aggregate SBC at its revenue rate, its line split unallocated.
+
+    D24: the issuer disclosed no SBC line split and no authored ``sbc_pct``
+    row set one, so the component lanes, their rates and their sum carry no
+    value in ``periods``; the aggregate is revenue times the rate on
+    ``_PROJECTED_SBC_REVENUE_RATE_ID``.
+    """
+
+    requested = sorted({int(period) for period in periods})
+    try:
+        sbc_total = model.get_item(sbc_total_id)
+    except KeyError:
+        return False
+    if not _bind_default_rate_row(
+        model,
+        rate_item_id=_PROJECTED_SBC_REVENUE_RATE_ID,
+        anchor_item_id=sbc_total_id,
+        label=" Stock-based compensation as % of revenue",
+        ratio=ratio,
+        periods=requested,
+        strategy="sbc_allocation",
+    ):
+        return False
+    if sbc_total.overrides is None:
+        sbc_total.overrides = {}
+    for period in requested:
+        sbc_total.overrides[period] = FormulaSpec(
+            type=FormulaType.driver,
+            subtype="base_x_rate",
+            params={
+                "base": {"id": revenue_item_id},
+                "rate": {"id": _PROJECTED_SBC_REVENUE_RATE_ID},
+            },
+            note="aggregate SBC at its revenue rate; line split unallocated (D24)",
+            derivation=_fallback_derivation(
+                "sbc_allocation", [revenue_item_id, _PROJECTED_SBC_REVENUE_RATE_ID]
+            ),
+        )
+    if sbc_total.formula_periods is not None:
+        sbc_total.formula_periods = sorted(set(sbc_total.formula_periods) | set(requested))
+    all_periods = [
+        *(int(period) for period in model.time_structure.historical_periods),
+        *(int(period) for period in model.time_structure.projection_periods),
+    ]
+    for item_id in unallocated_ids:
+        try:
+            item = model.get_item(item_id)
+        except KeyError:
+            continue
+        current = all_periods if item.formula_periods is None else item.formula_periods
+        item.formula_periods = sorted(
+            {int(period) for period in current} - set(requested)
+        )
+        # A carry override (the template's first-projection rate carry)
+        # would otherwise still render the line in these periods.
+        for period in requested:
+            if item.overrides is not None:
+                item.overrides.pop(period, None)
+            if item.values is not None:
+                item.values.values.pop(period, None)
     return True
 
 
@@ -285,7 +523,7 @@ def _stale_fallback_periods(
     Agent-authored repairs (other notes) and human overrides (no note) never match.
     """
 
-    formula_type = _parent_attr("FormulaType", FormulaType)
+    formula_type = FormulaType
     try:
         item_obj = model.get_item(item_id)
     except KeyError:
@@ -297,9 +535,7 @@ def _stale_fallback_periods(
         spec = item_obj.overrides.get(period)
         if spec is None:
             continue
-        if spec.type == formula_type.constant and str(getattr(spec, "note", "") or "").startswith(
-            _FALLBACK_NOTE_PREFIX
-        ):
+        if spec.type == formula_type.constant and _is_owned_fallback(spec):
             stale.append(period)
     return sorted(stale)
 
@@ -329,183 +565,11 @@ def _drop_protected_periods(
             # Own fallback overrides (this module's, "build fallback:" note — constant OR
             # the new revenue driver) are refreshable; anything else is agent/human and
             # must be preserved.
-            is_own_fallback = str(getattr(spec, "note", "") or "").startswith(_FALLBACK_NOTE_PREFIX)
+            is_own_fallback = _is_owned_fallback(spec)
             if not is_own_fallback:
                 continue  # protected: agent/human override — do not overwrite
         filtered[int(period)] = value
     return filtered
-
-
-_BOOLEANISH_ENV_VALUES = frozenset(
-    {"0", "1", "false", "no", "off", "on", "true", "yes"}
-)
-_ABSENT = object()
-
-
-def _zero_anchor_repair_authorized(model: FinancialModel) -> bool:
-    """Return whether this invocation is ticker-authorized for SBC zero repair."""
-
-    raw_value = os.environ.get("FMS_REPAIR_SBC_ZERO_ANCHOR")
-    if raw_value is None:
-        return False
-    authorized_ticker = raw_value.strip()
-    if not authorized_ticker or authorized_ticker.casefold() in _BOOLEANISH_ENV_VALUES:
-        return False
-    try:
-        model_ticker = model.company.ticker
-    except (AttributeError, TypeError):
-        return False
-    if not isinstance(model_ticker, str) or not model_ticker.strip():
-        return False
-    return authorized_ticker.casefold() == model_ticker.strip().casefold()
-
-
-def _formula_param(params: Any, name: str, default: Any = None) -> Any:
-    if isinstance(params, dict):
-        return params.get(name, default)
-    try:
-        return getattr(params, name, default)
-    except (AttributeError, TypeError):
-        return default
-
-
-def _template_self_carry_signature(spec: Any, item_id: str) -> tuple[Any, ...] | None:
-    """Normalize an exact, note-less template self-carry to its behavior tuple."""
-
-    if spec is None:
-        return None
-    try:
-        formula_type = spec.type
-        subtype = spec.subtype
-        note = spec.note
-        params = spec.params
-    except (AttributeError, TypeError):
-        return None
-    if formula_type != FormulaType.ref or subtype not in {"carry_forward", "cell_ref"}:
-        return None
-    if str(note or "").strip():
-        return None
-    if _formula_param(params, "adjustment") is not None:
-        return None
-    if bool(_formula_param(params, "negate", False)):
-        return None
-    source = _formula_param(params, "source")
-    source_id = _formula_param(source, "id")
-    source_t = _formula_param(source, "t")
-    source_period_anchor = _formula_param(source, "period_anchor", "first")
-    if source_id != item_id or source_t != -1:
-        return None
-    return (FormulaType.ref, "template_self_carry", source_id, source_t, source_period_anchor)
-
-
-def _is_period_template_self_carry(item: Any, period: int) -> bool:
-    try:
-        projected = item.projected
-        overrides = item.overrides
-        item_id = item.id
-    except (AttributeError, TypeError):
-        return False
-    if not isinstance(overrides, dict):
-        return False
-    projected_signature = _template_self_carry_signature(projected, item_id)
-    override_signature = _template_self_carry_signature(overrides.get(int(period)), item_id)
-    return projected_signature is not None and override_signature == projected_signature
-
-
-def _vetted_sbc_zero_anchor_runs(
-    model: FinancialModel,
-    computed_values: dict[str, dict[int, float]],
-    historical_periods: Iterable[int],
-    projection_periods: Iterable[int],
-    sbc_revenue_ratio: float | None,
-    *,
-    rate_ids: Iterable[str],
-    component_ids: Iterable[str],
-) -> dict[str, list[int]]:
-    """Return each jointly vetted SBC rate row's contiguous template-carry prefix."""
-
-    ordered_rates = tuple(rate_ids)
-    ordered_components = tuple(component_ids)
-    ordered_projection_periods = sorted({int(period) for period in projection_periods})
-    ordered_historical_periods = sorted({int(period) for period in historical_periods})
-    if (
-        sbc_revenue_ratio is None
-        or len(ordered_rates) != 4
-        or len(ordered_components) != 4
-        or not ordered_projection_periods
-        or not ordered_historical_periods
-    ):
-        return {}
-
-    p0 = ordered_projection_periods[0]
-    prior_anchor = ordered_historical_periods[-1]
-    rate_items: dict[str, Any] = {}
-    component_items: list[Any] = []
-    try:
-        for rate_id in ordered_rates:
-            rate_items[rate_id] = model.get_item(rate_id)
-        component_items = [model.get_item(component_id) for component_id in ordered_components]
-    except KeyError:
-        return {}
-
-    if not all(_is_period_template_self_carry(item, p0) for item in rate_items.values()):
-        return {}
-    for rate_id in ordered_rates:
-        current_rate = _coerce_optional_float(computed_values.get(rate_id, {}).get(p0))
-        prior_rate = _coerce_optional_float(computed_values.get(rate_id, {}).get(prior_anchor))
-        if (current_rate is not None and current_rate > 0) or (
-            prior_rate is not None and prior_rate > 0
-        ):
-            return {}
-
-    for component_item in component_items:
-        values = getattr(component_item, "values", None)
-        cells = getattr(values, "values", None) if values is not None else None
-        if isinstance(cells, dict) and any(int(period) < p0 for period in cells):
-            return {}
-
-    vetted_runs: dict[str, list[int]] = {}
-    for rate_id, item in rate_items.items():
-        run: list[int] = []
-        for period in ordered_projection_periods:
-            if not _is_period_template_self_carry(item, period):
-                break
-            run.append(period)
-        vetted_runs[rate_id] = run
-    return vetted_runs
-
-
-def _snapshot_sbc_rate_items(
-    model: FinancialModel,
-    rate_ids: Iterable[str],
-) -> dict[str, object]:
-    snapshots: dict[str, object] = {}
-    for rate_id in rate_ids:
-        try:
-            item = model.get_item(rate_id)
-        except KeyError:
-            snapshots[rate_id] = _ABSENT
-            continue
-        snapshots[rate_id] = (
-            deepcopy(item.values),
-            deepcopy(item.overrides),
-            deepcopy(item.formula_periods),
-        )
-    return snapshots
-
-
-def _restore_sbc_rate_items(model: FinancialModel, snapshots: dict[str, object]) -> None:
-    for rate_id, snapshot in snapshots.items():
-        if snapshot is _ABSENT:
-            continue
-        try:
-            item = model.get_item(rate_id)
-        except KeyError:
-            continue
-        values, overrides, formula_periods = snapshot
-        item.values = deepcopy(values)
-        item.overrides = deepcopy(overrides)
-        item.formula_periods = deepcopy(formula_periods)
 
 
 def _clear_fallback_overrides(
@@ -527,11 +591,11 @@ def _clear_fallback_overrides(
 
 
 def _latest_positive_balance_from_computed_values(
-    computed_values: dict[str, dict[int, float]],
+    computed_values: ComputedValues,
     item_id: str,
     periods: Iterable[int],
 ) -> float | None:
-    computed_value = _parent_attr("_computed_value", _computed_value)
+    computed_value = _computed_value
     for period in sorted({int(period) for period in periods}, reverse=True):
         value = computed_value(computed_values, item_id, period)
         if value is not None and value > 0:
@@ -540,7 +604,7 @@ def _latest_positive_balance_from_computed_values(
 
 
 def _project_acquired_intangible_amortization_values(
-    computed_values: dict[str, dict[int, float]],
+    computed_values: ComputedValues,
     projection_periods: Iterable[int],
     *,
     revenue_item_id: str,
@@ -548,7 +612,7 @@ def _project_acquired_intangible_amortization_values(
     amortization_revenue_ratio: float,
     beginning_balance: float | None,
 ) -> dict[int, float]:
-    computed_value = _parent_attr("_computed_value", _computed_value)
+    computed_value = _computed_value
     values_by_period: dict[int, float] = {}
     remaining_balance = beginning_balance
     for period in sorted({int(period) for period in projection_periods}):
@@ -560,7 +624,9 @@ def _project_acquired_intangible_amortization_values(
             continue
         value = raw_value
         if remaining_balance is not None:
-            additions = computed_value(computed_values, intangible_additions_id, period) or 0.0
+            additions = computed_value(computed_values, intangible_additions_id, period)
+            if additions is None:
+                continue
             if additions > 0:
                 remaining_balance += additions
             value = min(value, max(remaining_balance, 0.0))
@@ -575,73 +641,39 @@ def _seed_projected_non_gaap_addbacks(model: FinancialModel) -> dict[str, Any]:
 
     if not model._index:
         model.build_index()
-    zero_anchor_repair_authorized = _zero_anchor_repair_authorized(model)
     historical_periods = [int(period) for period in model.time_structure.historical_periods]
     projection_periods = [int(period) for period in model.time_structure.projection_periods]
     if not historical_periods or not projection_periods:
         return {"seeded": []}
 
-    computed_model_values = _parent_attr("_computed_model_values", _computed_model_values)
-    missing_projection_periods = _parent_attr("_missing_projection_periods", _missing_projection_periods)
-    latest_ratio_from_computed_values = _parent_attr(
-        "_latest_ratio_from_computed_values",
-        _latest_ratio_from_computed_values,
-    )
-    computed_value = _parent_attr("_computed_value", _computed_value)
-    set_projection_input_values = _parent_attr(
-        "_set_projection_input_values",
-        _set_projection_input_values,
-    )
+    computed_model_values = _computed_model_values
+    missing_projection_periods = _missing_projection_periods
+    latest_ratio_from_computed_values = _latest_ratio_from_computed_values
+    computed_value = _computed_value
+    set_projection_formula_values = _set_projection_formula_values
+    formula_spec_cls = FormulaSpec
+    formula_type = FormulaType
 
-    revenue_item_id = _parent_attr("_REVENUE_ITEM_ID", _REVENUE_ITEM_ID)
-    projected_depreciation_id = _parent_attr("_PROJECTED_DEPRECIATION_ID", _PROJECTED_DEPRECIATION_ID)
-    projected_da_total_id = _parent_attr("_PROJECTED_DA_TOTAL_ID", _PROJECTED_DA_TOTAL_ID)
-    projected_da_rate_id = _parent_attr("_PROJECTED_DA_RATE_ID", _PROJECTED_DA_RATE_ID)
-    projected_da_base_id = _parent_attr("_PROJECTED_DA_BASE_ID", _PROJECTED_DA_BASE_ID)
-    projected_sbc_total_id = _parent_attr("_PROJECTED_SBC_TOTAL_ID", _PROJECTED_SBC_TOTAL_ID)
-    projected_sbc_rate_ids = _parent_attr("_PROJECTED_SBC_RATE_IDS", _PROJECTED_SBC_RATE_IDS)
-    projected_sbc_component_ids = _parent_attr(
-        "_PROJECTED_SBC_COMPONENT_IDS",
-        _PROJECTED_SBC_COMPONENT_IDS,
-    )
-    projected_sbc_base_ids = _parent_attr("_PROJECTED_SBC_BASE_IDS", _PROJECTED_SBC_BASE_IDS)
-    fm_acquired_intangible_amortization_id = _parent_attr(
-        "_FM_ACQUIRED_INTANGIBLE_AMORTIZATION_ID",
-        _FM_ACQUIRED_INTANGIBLE_AMORTIZATION_ID,
-    )
-    tax_acquired_intangible_amortization_id = _parent_attr(
-        "_TAX_ACQUIRED_INTANGIBLE_AMORTIZATION_ID",
-        _TAX_ACQUIRED_INTANGIBLE_AMORTIZATION_ID,
-    )
-    projected_acquired_intangible_amortization_id = _parent_attr(
-        "_PROJECTED_ACQUIRED_INTANGIBLE_AMORTIZATION_ID",
-        _PROJECTED_ACQUIRED_INTANGIBLE_AMORTIZATION_ID,
-    )
-    projected_acquired_intangible_expense_id = _parent_attr(
-        "_PROJECTED_ACQUIRED_INTANGIBLE_EXPENSE_ID",
-        _PROJECTED_ACQUIRED_INTANGIBLE_EXPENSE_ID,
-    )
-    intangible_assets_net_id = _parent_attr("_INTANGIBLE_ASSETS_NET_ID", _INTANGIBLE_ASSETS_NET_ID)
-    intangible_additions_id = _parent_attr("_INTANGIBLE_ADDITIONS_ID", _INTANGIBLE_ADDITIONS_ID)
-    latest_intangible_runoff_ratio_from_computed_values = _parent_attr(
-        "_latest_intangible_runoff_ratio_from_computed_values",
-        _latest_intangible_runoff_ratio_from_computed_values,
-    )
-    latest_positive_balance_from_computed_values = _parent_attr(
-        "_latest_positive_balance_from_computed_values",
-        _latest_positive_balance_from_computed_values,
-    )
-    project_acquired_intangible_amortization_values = _parent_attr(
-        "_project_acquired_intangible_amortization_values",
-        _project_acquired_intangible_amortization_values,
-    )
-    set_projection_revenue_driver_values = _parent_attr(
-        "_set_projection_revenue_driver_values",
-        _set_projection_revenue_driver_values,
-    )
-    stale_fallback_periods = _parent_attr("_stale_fallback_periods", _stale_fallback_periods)
-    clear_fallback_overrides = _parent_attr("_clear_fallback_overrides", _clear_fallback_overrides)
-    drop_protected_periods = _parent_attr("_drop_protected_periods", _drop_protected_periods)
+    revenue_item_id = _REVENUE_ITEM_ID
+    projected_depreciation_id = _PROJECTED_DEPRECIATION_ID
+    projected_da_total_id = _PROJECTED_DA_TOTAL_ID
+    projected_da_rate_id = _PROJECTED_DA_RATE_ID
+    projected_da_base_id = _PROJECTED_DA_BASE_ID
+    projected_sbc_total_id = _PROJECTED_SBC_TOTAL_ID
+    projected_sbc_rate_ids = _PROJECTED_SBC_RATE_IDS
+    projected_sbc_component_ids = _PROJECTED_SBC_COMPONENT_IDS
+    fm_acquired_intangible_amortization_id = _FM_ACQUIRED_INTANGIBLE_AMORTIZATION_ID
+    tax_acquired_intangible_amortization_id = _TAX_ACQUIRED_INTANGIBLE_AMORTIZATION_ID
+    projected_acquired_intangible_amortization_id = _PROJECTED_ACQUIRED_INTANGIBLE_AMORTIZATION_ID
+    projected_acquired_intangible_expense_id = _PROJECTED_ACQUIRED_INTANGIBLE_EXPENSE_ID
+    intangible_assets_net_id = _INTANGIBLE_ASSETS_NET_ID
+    intangible_additions_id = _INTANGIBLE_ADDITIONS_ID
+    latest_positive_balance_from_computed_values = _latest_positive_balance_from_computed_values
+    project_acquired_intangible_amortization_values = _project_acquired_intangible_amortization_values
+    set_projection_revenue_driver_values = _set_projection_revenue_driver_values
+    stale_fallback_periods = _stale_fallback_periods
+    clear_fallback_overrides = _clear_fallback_overrides
+    drop_protected_periods = _drop_protected_periods
 
     # Refresh-on-rebuild + legacy heal: clear this module's own stale fallback constants
     # (build-fallback-noted constant overrides) on every fallback TARGET row so the
@@ -660,149 +692,56 @@ def _seed_projected_non_gaap_addbacks(model: FinancialModel) -> dict[str, Any]:
         set(stale_fallback_periods(model, projected_acquired_intangible_amortization_id, projection_periods))
         | set(stale_fallback_periods(model, projected_acquired_intangible_expense_id, projection_periods))
     )
-    stale_sbc_periods_by_rate = {
-        rate_id: stale_fallback_periods(model, rate_id, projection_periods)
-        for rate_id in projected_sbc_rate_ids
-    }
-    sbc_rate_snapshots = _snapshot_sbc_rate_items(model, projected_sbc_rate_ids)
-    for target_id in non_sbc_fallback_target_ids:
+    for target_id in [*non_sbc_fallback_target_ids, *projected_sbc_rate_ids]:
         stale_periods = stale_fallback_periods(model, target_id, projection_periods)
         if stale_periods:
             clear_fallback_overrides(model, target_id, stale_periods)
 
     seeded: list[str] = []
     skipped: list[dict[str, Any]] = []
-    committed_sbc_ids: list[str] = []
-    sbc_skip: dict[str, Any] | None = None
 
-    # SBC rate clearing and writing is one transaction. Only the four rate rows are
-    # restored on failure; non-SBC mutations deliberately remain outside its scope.
-    try:
-        for rate_id in projected_sbc_rate_ids:
-            stale_periods = stale_sbc_periods_by_rate.get(rate_id, [])
-            if stale_periods:
-                clear_fallback_overrides(model, rate_id, stale_periods)
-
-        computed_values = computed_model_values(model)
+    computed_values = computed_model_values(model)
+    # D24: SBC is allocated across lines only as the issuer discloses it or an
+    # authored ``sbc_pct`` row sets the component rates; it is never spread
+    # evenly. A projection period with neither leaves the lines unallocated and
+    # projects the aggregate alone, at the latest historical SBC/revenue rate
+    # held on its own row (``default``; ``sbc_allocation``).
+    unallocated_sbc_periods = sorted(
+        {
+            period
+            for component_id in projected_sbc_component_ids
+            for period in missing_projection_periods(
+                computed_values, component_id, projection_periods
+            )
+        }
+    )
+    if unallocated_sbc_periods:
         sbc_revenue_ratio = latest_ratio_from_computed_values(
             computed_values,
             projected_sbc_total_id,
             revenue_item_id,
             historical_periods,
         )
-        vetted_runs = (
-            _vetted_sbc_zero_anchor_runs(
-                model,
-                computed_values,
-                historical_periods,
-                projection_periods,
-                sbc_revenue_ratio,
-                rate_ids=projected_sbc_rate_ids,
-                component_ids=projected_sbc_component_ids,
-            )
-            if zero_anchor_repair_authorized
-            else {}
-        )
-        missing_sbc_periods_by_component = {
-            component_id: missing_projection_periods(
-                computed_values,
-                component_id,
-                projection_periods,
-            )
-            for component_id in projected_sbc_component_ids
-        }
-        reseed_by_rate = {
-            rate_id: sorted(
-                set(missing_sbc_periods_by_component.get(component_id, []))
-                | set(stale_sbc_periods_by_rate.get(rate_id, []))
-                | set(vetted_runs.get(rate_id, []))
-            )
-            for rate_id, component_id in zip(
-                projected_sbc_rate_ids,
-                projected_sbc_component_ids,
-            )
-        }
-
-        if any(reseed_by_rate.values()):
-            common_values_by_period: dict[int, float] = {}
-            if sbc_revenue_ratio is not None:
-                for period in projection_periods:
-                    revenue = computed_value(computed_values, revenue_item_id, period)
-                    if revenue is None:
-                        continue
-                    denominator = sum(
-                        value
-                        for item_id in projected_sbc_base_ids
-                        if (value := computed_value(computed_values, item_id, period)) is not None
-                    )
-                    if denominator <= 0:
-                        continue
-                    value = (sbc_revenue_ratio * revenue) / denominator
-                    if math.isfinite(value) and value > 0:
-                        common_values_by_period[int(period)] = value
-
-            intended_writes: list[tuple[str, dict[int, float]]] = []
-            for item_id, base_id in zip(projected_sbc_rate_ids, projected_sbc_base_ids):
-                values_by_period = {
-                    period: common_values_by_period[period]
-                    for period in reseed_by_rate.get(item_id, [])
-                    if period in common_values_by_period
-                    and (base := computed_value(computed_values, base_id, period)) is not None
-                    and base > 0
-                }
-
-                # The unchanged protection helper must see vetted template scaffolding as
-                # absent, but the overrides are restored before the writer is invoked.
-                popped_overrides: dict[int, FormulaSpec] = {}
-                try:
-                    try:
-                        item = model.get_item(item_id)
-                    except KeyError:
-                        item = None
-                    if item is not None and item.overrides is not None:
-                        for period in set(vetted_runs.get(item_id, [])) & set(values_by_period):
-                            spec = item.overrides.pop(int(period), None)
-                            if spec is not None:
-                                popped_overrides[int(period)] = spec
-                    values_by_period = drop_protected_periods(model, item_id, values_by_period)
-                finally:
-                    if item is not None and popped_overrides:
-                        if item.overrides is None:
-                            item.overrides = {}
-                        item.overrides.update(popped_overrides)
-                intended_writes.append((item_id, values_by_period))
-
-            staged_sbc_ids: list[str] = []
-            writer_failed = False
-            for item_id, values_by_period in intended_writes:
-                if not values_by_period:
-                    continue
-                if not set_projection_input_values(
-                    model,
-                    item_id,
-                    values_by_period,
-                    note=(
-                        "build fallback: latest historical SBC/revenue ratio allocated "
-                        "across operating line items"
-                    ),
-                ):
-                    writer_failed = True
-                    break
-                staged_sbc_ids.append(item_id)
-
-            if writer_failed:
-                _restore_sbc_rate_items(model, sbc_rate_snapshots)
-                sbc_skip = {"item_id": projected_sbc_total_id, "reason": "sbc_block_rollback"}
-            elif staged_sbc_ids:
-                committed_sbc_ids = staged_sbc_ids
-            else:
-                sbc_skip = {
+        if sbc_revenue_ratio is not None and _project_unallocated_sbc_aggregate(
+            model,
+            unallocated_sbc_periods,
+            ratio=sbc_revenue_ratio,
+            revenue_item_id=revenue_item_id,
+            sbc_total_id=projected_sbc_total_id,
+            unallocated_ids=(
+                *projected_sbc_rate_ids,
+                *projected_sbc_component_ids,
+                _PROJECTED_SBC_ALLOCATED_TOTAL_ID,
+            ),
+        ):
+            seeded.append(projected_sbc_total_id)
+        else:
+            skipped.append(
+                {
                     "item_id": projected_sbc_total_id,
                     "reason": "insufficient_history_or_projection_base",
                 }
-    except Exception:
-        _restore_sbc_rate_items(model, sbc_rate_snapshots)
-        raise
+            )
 
     missing_da_periods = missing_projection_periods(
         computed_values,
@@ -839,6 +778,8 @@ def _seed_projected_non_gaap_addbacks(model: FinancialModel) -> dict[str, Any]:
             values_by_period,
             revenue_item_id=revenue_item_id,
             ratio=depreciation_revenue_ratio,
+            rate_item_id=_PROJECTED_DEPRECIATION_RATE_ID,
+            rate_label="  Depreciation as % of revenue",
             note="build fallback: latest historical depreciation/revenue ratio applied to projected revenue",
         ):
             seeded.append(projected_depreciation_id)
@@ -867,15 +808,13 @@ def _seed_projected_non_gaap_addbacks(model: FinancialModel) -> dict[str, Any]:
                 values_by_period,
                 revenue_item_id=revenue_item_id,
                 ratio=da_revenue_ratio,
+                rate_item_id=_PROJECTED_DA_REVENUE_RATE_ID,
+                rate_label="  Depreciation and amortization as % of revenue",
                 note="build fallback: latest historical total D&A/revenue ratio applied to projected revenue",
             ):
                 seeded.append(projected_da_total_id)
             else:
                 skipped.append({"item_id": projected_depreciation_id, "reason": "insufficient_history_or_projection_base"})
-
-    seeded.extend(committed_sbc_ids)
-    if sbc_skip is not None:
-        skipped.append(sbc_skip)
 
     has_acquired_intangible_bridge = (
         fm_acquired_intangible_amortization_id in model._index
@@ -899,41 +838,85 @@ def _seed_projected_non_gaap_addbacks(model: FinancialModel) -> dict[str, Any]:
         else []
     )
     if has_acquired_intangible_bridge and missing_acquired_intangible_periods:
-        direct_acquired_intangible_ratio = latest_ratio_from_computed_values(
-            computed_values,
+        # Each selection keeps the expression its ratio was computed from, with
+        # operands held at their absolute reported periods until placed.
+        acquired_intangible_basis: tuple[float, dict[str, Any]] | None = None
+        source_note = "latest historical acquired-intangible amortization/revenue ratio applied to projected revenue"
+        for numerator_id in (
             fm_acquired_intangible_amortization_id,
-            revenue_item_id,
-            historical_periods,
-        )
-        if direct_acquired_intangible_ratio is None:
-            direct_acquired_intangible_ratio = latest_ratio_from_computed_values(
+            tax_acquired_intangible_amortization_id,
+        ):
+            direct_basis = _latest_ratio_basis_from_computed_values(
                 computed_values,
-                tax_acquired_intangible_amortization_id,
+                numerator_id,
                 revenue_item_id,
                 historical_periods,
             )
-        da_revenue_cap = latest_ratio_from_computed_values(
+            if direct_basis is not None:
+                basis_period, ratio = direct_basis
+                acquired_intangible_basis = (
+                    ratio,
+                    _ratio_expr(numerator_id, revenue_item_id, basis_period),
+                )
+                break
+        da_revenue_cap_basis = _latest_ratio_basis_from_computed_values(
             computed_values,
             projected_da_total_id,
             revenue_item_id,
             historical_periods,
         )
-        acquired_intangible_ratio = direct_acquired_intangible_ratio
-        source_note = "latest historical acquired-intangible amortization/revenue ratio applied to projected revenue"
-        if acquired_intangible_ratio is None:
-            acquired_intangible_ratio = latest_intangible_runoff_ratio_from_computed_values(
+        da_revenue_cap = None if da_revenue_cap_basis is None else da_revenue_cap_basis[1]
+        if acquired_intangible_basis is None:
+            runoff_basis = _latest_intangible_runoff_basis_from_computed_values(
                 computed_values,
                 intangible_assets_net_id,
                 revenue_item_id,
                 historical_periods,
                 cap_ratio=da_revenue_cap,
             )
+            if runoff_basis is not None:
+                opening_period, runoff_period, ratio = runoff_basis
+                runoff_expr: dict[str, Any] = {
+                    "op": "/",
+                    "left": {
+                        "op": "-",
+                        "left": {"id": intangible_assets_net_id, "period": opening_period},
+                        "right": {"id": intangible_assets_net_id, "period": runoff_period},
+                    },
+                    "right": {"id": revenue_item_id, "period": runoff_period},
+                }
+                if da_revenue_cap_basis is not None and da_revenue_cap_basis[1] > 0:
+                    runoff_expr = {
+                        "op": "MIN",
+                        "args": [
+                            runoff_expr,
+                            _ratio_expr(
+                                projected_da_total_id,
+                                revenue_item_id,
+                                da_revenue_cap_basis[0],
+                            ),
+                        ],
+                    }
+                acquired_intangible_basis = (ratio, runoff_expr)
             source_note = "latest historical net-intangible runoff/revenue ratio applied to projected revenue"
+        acquired_intangible_ratio = (
+            None if acquired_intangible_basis is None else acquired_intangible_basis[0]
+        )
 
         beginning_balance = latest_positive_balance_from_computed_values(
             computed_values,
             intangible_assets_net_id,
             historical_periods,
+        )
+        beginning_balance_period = next(
+            (
+                int(period)
+                for period in sorted({int(period) for period in historical_periods}, reverse=True)
+                if (balance := computed_value(computed_values, intangible_assets_net_id, int(period)))
+                is not None
+                and balance > 0
+            ),
+            None,
         )
         values_by_period: dict[int, float] = {}
         if acquired_intangible_ratio is not None:
@@ -955,22 +938,115 @@ def _seed_projected_non_gaap_addbacks(model: FinancialModel) -> dict[str, Any]:
         amortization_values = drop_protected_periods(
             model, projected_acquired_intangible_amortization_id, values_by_period
         )
-        if set_projection_input_values(
+        intangible_derivation = _fallback_derivation(
+            "acquired_intangible_roll_forward",
+            [revenue_item_id, intangible_assets_net_id, intangible_additions_id],
+        )
+        ordered_periods = [
+            *sorted({int(period) for period in historical_periods}),
+            *sorted({int(period) for period in projection_periods}),
+        ]
+        period_positions = {period: index for index, period in enumerate(ordered_periods)}
+
+        def intangible_formulas_for(target_id: str) -> dict[int, FormulaSpec]:
+            if acquired_intangible_basis is None or beginning_balance_period is None:
+                return {}
+            ratio_value, ratio_expr = acquired_intangible_basis
+            formulas: dict[int, FormulaSpec] = {}
+            projection_start = len(sorted({int(period) for period in historical_periods}))
+            for period in values_by_period:
+                position = period_positions.get(int(period))
+                anchor_position = period_positions.get(beginning_balance_period)
+                if position is None or anchor_position is None:
+                    continue
+                projection_offset = position - projection_start
+                additions = [
+                    {
+                        "op": "IFERROR",
+                        "expr": {"id": intangible_additions_id, "t": offset},
+                        "fallback": 0.0,
+                    }
+                    for offset in range(-projection_offset, 1)
+                ]
+                prior_amortization = [
+                    {
+                        "op": "NEG",
+                        "arg": {
+                            "op": "IFERROR",
+                            "expr": {"id": target_id, "t": offset},
+                            "fallback": 0.0,
+                        },
+                    }
+                    for offset in range(-projection_offset, 0)
+                ]
+                available_balance = {
+                    "op": "+",
+                    "args": [
+                        {
+                            "id": intangible_assets_net_id,
+                            "t": anchor_position - position,
+                        },
+                        *additions,
+                        *prior_amortization,
+                    ],
+                }
+                formulas[int(period)] = formula_spec_cls(
+                    type=formula_type.arithmetic,
+                    subtype="capped_acquired_intangible_amortization",
+                    params={
+                        "expr": {
+                            "op": "MIN",
+                            "args": [
+                                {
+                                    "op": "*",
+                                    "args": [
+                                        float(ratio_value),
+                                        {"id": revenue_item_id},
+                                    ],
+                                },
+                                {"op": "MAX", "args": [0.0, available_balance]},
+                            ],
+                        },
+                        # The ratio literal stays; its reported-year operands
+                        # ride beside it, as a constant keeps its expression.
+                        "lineage": {
+                            "value": float(ratio_value),
+                            "expr": _placed(ratio_expr, period_positions, position),
+                        },
+                    },
+                    note=note,
+                    derivation=intangible_derivation,
+                )
+            return formulas
+
+        amortization_formulas = intangible_formulas_for(
+            projected_acquired_intangible_amortization_id
+        )
+        if set_projection_formula_values(
             model,
             projected_acquired_intangible_amortization_id,
             amortization_values,
-            note=note,
+            formulas_by_period={
+                period: amortization_formulas[period]
+                for period in amortization_values
+                if period in amortization_formulas
+            },
         ):
             seeded.append(projected_acquired_intangible_amortization_id)
             seeded_acquired_intangible = True
         expense_values = drop_protected_periods(
             model, projected_acquired_intangible_expense_id, values_by_period
         )
-        if set_projection_input_values(
+        expense_formulas = intangible_formulas_for(projected_acquired_intangible_expense_id)
+        if set_projection_formula_values(
             model,
             projected_acquired_intangible_expense_id,
             expense_values,
-            note=note,
+            formulas_by_period={
+                period: expense_formulas[period]
+                for period in expense_values
+                if period in expense_formulas
+            },
         ):
             seeded.append(projected_acquired_intangible_expense_id)
             seeded_acquired_intangible = True
@@ -1006,13 +1082,13 @@ __all__ = [
     "_coerce_optional_float",
     "_computed_model_values",
     "_computed_value",
-    "_latest_intangible_runoff_ratio_from_computed_values",
     "_latest_positive_balance_from_computed_values",
     "_latest_ratio_from_computed_values",
     "_missing_projection_periods",
     "_project_acquired_intangible_amortization_values",
     "_seed_projected_non_gaap_addbacks",
     "_set_projection_input_values",
+    "_set_projection_formula_values",
     "_set_projection_revenue_driver_values",
     "_stale_fallback_periods",
 ]

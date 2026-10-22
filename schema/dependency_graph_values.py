@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+
+if TYPE_CHECKING:
+    from .dependency_graph import DependencyGraphResults
 
 from .dependency_graph_helpers import (
     _col_to_index,
@@ -20,13 +23,16 @@ from .models import (
     shift_period,
 )
 from .refs import line_item_ref_from_obj
+from .renderer_columns import (
+    _fixed_cell_anchor_period as _model_fixed_cell_anchor_period,
+)
 
 
 def _seed_inputs(
     self: Any,
     period: int,
     inputs: Dict[str, Dict[int, float]],
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
     recompute: Optional[Set[str]] = None,
 ) -> None:
     """Seed inputs and existing value series into the results matrix."""
@@ -117,7 +123,7 @@ def _value_of(
     self: Any,
     obj: Any,
     period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
     time_index: Dict[int, int],
     time_order: List[int],
 ) -> Optional[float]:
@@ -155,6 +161,12 @@ def _value_of(
             target_period = self._bootstrap_period(period, obj.t)
             if target_period is None:
                 return None
+            current_cell = getattr(self, "_current_eval_cell", None)
+            if current_cell is not None:
+                existing_reads = self.last_eval_reads.get(current_cell, ())
+                target_key = (obj.id, int(target_period))
+                if target_key not in existing_reads:
+                    self.last_eval_reads[current_cell] = (*existing_reads, target_key)
             return self._input_value_fallback(obj.id, target_period)
         if target_idx >= len(time_order):
             return None
@@ -174,9 +186,15 @@ def _read_with_fallback(
     self: Any,
     item_id: str,
     target_period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
 ) -> Optional[float]:
     """Read a value from current results, scoped seed results, then input cache."""
+    current_cell = getattr(self, "_current_eval_cell", None)
+    if current_cell is not None:
+        existing_reads = self.last_eval_reads.get(current_cell, ())
+        target_key = (item_id, int(target_period))
+        if target_key not in existing_reads:
+            self.last_eval_reads[current_cell] = (*existing_reads, target_key)
     val = results.get(item_id, {}).get(target_period)
     if (
         val is None
@@ -200,13 +218,10 @@ def _read_with_fallback(
 
 
 def _fixed_cell_anchor_period(self: Any, item: LineItem) -> Optional[int]:
-    if item.formula_periods:
-        return int(item.formula_periods[0])
-    projection_periods = self._projection_periods()
-    if projection_periods:
-        return int(projection_periods[0])
-    periods = self._time_order()
-    return int(periods[0]) if periods else None
+    """Delegate to the single owner in :mod:`schema.renderer_columns`."""
+    if not self.model:
+        return int(item.formula_periods[0]) if item.formula_periods else None
+    return _model_fixed_cell_anchor_period(self.model, item)
 
 
 def _row_item_id(self: Any, sheet_name: str, row: int) -> Optional[str]:
@@ -374,7 +389,7 @@ def _cached_value_for_period(
     self: Any,
     item_id: str,
     period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
 ) -> Optional[float]:
     existing = results.get(item_id, {}).get(period)
     if not self.model:
@@ -411,6 +426,8 @@ def _cached_computed_value_for_period(
         ValueProvenance.imported_other,
         ValueProvenance.imported_edgar,
         ValueProvenance.imported_fmp,
+        ValueProvenance.imported_vendor,
+        ValueProvenance.historical_foundation,
     ):
         return value_cell.value
     return None

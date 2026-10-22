@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .models import FormulaSpec, FormulaType, LineItemRef
-
-
-_PARENT_MODULE = "schema.reader"
-
-
-def _compat(name: str, fallback: Any) -> Any:
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is not None and hasattr(parent, name):
-        return getattr(parent, name)
-    return fallback
 
 
 def _is_expanded_shared_raw(spec: FormulaSpec) -> bool:
@@ -32,16 +21,14 @@ def _choose_formula(
     if not candidate_years:
         return None, {}
 
-    is_expanded_shared_raw = _compat("_is_expanded_shared_raw", _is_expanded_shared_raw)
-    vote_years = [year for year in candidate_years if not is_expanded_shared_raw(formulas_by_year[year])]
+    vote_years = [year for year in candidate_years if not _is_expanded_shared_raw(formulas_by_year[year])]
     if not vote_years:
         return None, {year: formulas_by_year[year] for year in candidate_years}
 
-    param_shape = _compat("_param_shape", _param_shape)
     signature_counts: Dict[Tuple[FormulaType, Optional[str], object], List[int]] = {}
     for year in vote_years:
         spec = formulas_by_year[year]
-        signature = (spec.type, spec.subtype, param_shape(spec.params))
+        signature = (spec.type, spec.subtype, _param_shape(spec.params))
         signature_counts.setdefault(signature, []).append(year)
 
     best_signature = None
@@ -66,7 +53,7 @@ def _choose_formula(
         if year not in vote_years:
             overrides[year] = spec
             continue
-        signature = (spec.type, spec.subtype, param_shape(spec.params))
+        signature = (spec.type, spec.subtype, _param_shape(spec.params))
         if signature != best_signature:
             overrides[year] = spec
 
@@ -75,8 +62,6 @@ def _choose_formula(
 
 def _param_shape(value: Any) -> Any:
     """Normalize formula params into a hashable shape."""
-    param_shape = _compat("_param_shape", _param_shape)
-    shape_sort_key = _compat("_shape_sort_key", _shape_sort_key)
     if isinstance(value, LineItemRef):
         return ("ref", value.id, value.t, value.resolved)
     if isinstance(value, bool):
@@ -92,22 +77,22 @@ def _param_shape(value: Any) -> Any:
             op = value.get("op")
             args = list(value.get("args", []))
             if op in {"+", "*", "SUM", "AVG"}:
-                args = sorted(args, key=lambda arg: shape_sort_key(param_shape(arg)))
+                args = sorted(args, key=lambda arg: _shape_sort_key(_param_shape(arg)))
             normalized = dict(value)
             normalized["args"] = args
-            return ("dict", tuple((key, param_shape(normalized[key])) for key in sorted(normalized)))
+            return ("dict", tuple((key, _param_shape(normalized[key])) for key in sorted(normalized)))
         if value.get("function") in {"SUM", "AVERAGE"} and isinstance(value.get("items"), list):
             items = list(value.get("items", []))
-            items = sorted(items, key=lambda item: shape_sort_key(param_shape(item)))
+            items = sorted(items, key=lambda item: _shape_sort_key(_param_shape(item)))
             normalized = dict(value)
             normalized["items"] = items
-            return ("dict", tuple((key, param_shape(normalized[key])) for key in sorted(normalized)))
-        return ("dict", tuple((key, param_shape(value[key])) for key in sorted(value)))
+            return ("dict", tuple((key, _param_shape(normalized[key])) for key in sorted(normalized)))
+        return ("dict", tuple((key, _param_shape(value[key])) for key in sorted(value)))
     if isinstance(value, set):
-        items = sorted(value, key=lambda item: shape_sort_key(param_shape(item)))
-        return ("list", tuple(param_shape(item) for item in items))
+        items = sorted(value, key=lambda item: _shape_sort_key(_param_shape(item)))
+        return ("list", tuple(_param_shape(item) for item in items))
     if isinstance(value, (list, tuple)):
-        return ("list", tuple(param_shape(item) for item in value))
+        return ("list", tuple(_param_shape(item) for item in value))
     return ("type", type(value).__name__)
 
 
@@ -119,14 +104,13 @@ def _collect_refs(value: Any, refs: List[LineItemRef]) -> None:
     if isinstance(value, LineItemRef):
         refs.append(value)
         return
-    collect_refs = _compat("_collect_refs", _collect_refs)
     if isinstance(value, dict):
         for v in value.values():
-            collect_refs(v, refs)
+            _collect_refs(v, refs)
         return
     if isinstance(value, (list, tuple, set)):
         for v in value:
-            collect_refs(v, refs)
+            _collect_refs(v, refs)
 
 
 def _is_self_referencing(spec: Optional[FormulaSpec], line_item_id: str) -> bool:
@@ -134,7 +118,7 @@ def _is_self_referencing(spec: Optional[FormulaSpec], line_item_id: str) -> bool
     if not spec:
         return False
     refs: List[LineItemRef] = []
-    _compat("_collect_refs", _collect_refs)(spec.params, refs)
+    _collect_refs(spec.params, refs)
     if not refs:
         return False
     return any(ref.id == line_item_id and ref.t == 0 for ref in refs)
@@ -245,7 +229,7 @@ def _dedup_additive_refs(spec: FormulaSpec) -> FormulaSpec:
             operator = operands[0]
             if operator == "+":
                 seen: Set[Tuple[str, int]] = set()
-                new_operands = [operator]
+                new_operands: List[object] = [operator]
                 for operand in operands[1:]:
                     if isinstance(operand, LineItemRef):
                         key = (operand.id, operand.t)

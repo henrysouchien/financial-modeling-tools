@@ -1,4 +1,9 @@
-"""Pure helper functions for dependency graph evaluation."""
+"""Pure helper functions for dependency graph evaluation.
+
+Also the single owner of Excel column-letter conversion (``_col_to_index`` /
+``_index_to_col`` / ``_offset_column``); ``reader_cells`` and
+``renderer_payload`` re-export these rather than keeping their own copies.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +15,13 @@ from .models import ValueProvenance
 def _is_input_provenance(provenance: ValueProvenance) -> bool:
     return provenance in (
         ValueProvenance.input,
+        ValueProvenance.default,
+        ValueProvenance.claim,
         ValueProvenance.imported_other,
         ValueProvenance.imported_edgar,
         ValueProvenance.imported_fmp,
+        ValueProvenance.imported_vendor,
+        ValueProvenance.historical_foundation,
     )
 
 

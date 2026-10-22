@@ -2,23 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from difflib import get_close_matches
-import sys
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING
 
 from .models import FinancialModel, LineItem, ItemType
 
-
-_PARENT_MODULE = "schema.tools"
-
-
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
+if TYPE_CHECKING:
+    from .tools import ModelToolError
 
 
 def _model_tool_error(
@@ -27,11 +19,10 @@ def _model_tool_error(
     *,
     details: Dict[str, Any] | None = None,
     recovery: Dict[str, Any] | None = None,
-) -> Exception:
-    error_type = _compat("ModelToolError", None)
-    if error_type is None:
-        from .tools import ModelToolError as error_type
-    return error_type(code, message, details=details, recovery=recovery)
+) -> ModelToolError:
+    from .tools import ModelToolError
+
+    return ModelToolError(code, message, details=details, recovery=recovery)
 
 
 def _formula_type(item: LineItem) -> Optional[str]:
@@ -90,9 +81,7 @@ def _suggest_items(
 
 
 def _describe_item_suggestions(model: FinancialModel, item_ids: List[str]) -> List[Dict[str, Any]]:
-    item_locations = _compat("_item_locations", _item_locations)
-    formula_type = _compat("_formula_type", _formula_type)
-    locations = item_locations(model)
+    locations = _item_locations(model)
     suggestions: List[Dict[str, Any]] = []
     for item_id in item_ids:
         try:
@@ -108,7 +97,7 @@ def _describe_item_suggestions(model: FinancialModel, item_ids: List[str]) -> Li
                 "section": context[1] if context else None,
                 "row": context[2] if context else None,
                 "item_type": item.item_type.value,
-                "formula_type": formula_type(item),
+                "formula_type": _formula_type(item),
             }
         )
     return suggestions
@@ -118,10 +107,8 @@ def _unknown_item_error(
     model: FinancialModel,
     bad_id: str,
     id_role: str = "item_id",
-) -> Exception:
-    suggest_items = _compat("_suggest_items", _suggest_items)
-    describe_item_suggestions = _compat("_describe_item_suggestions", _describe_item_suggestions)
-    suggestions = suggest_items(model._index, bad_id)
+) -> ModelToolError:
+    suggestions = _suggest_items(model._index, bad_id)
     message = f"Unknown {id_role}: {bad_id}"
     if suggestions:
         message += f". Did you mean: {', '.join(suggestions)}?"
@@ -131,7 +118,7 @@ def _unknown_item_error(
         details={
             "id_role": id_role,
             "bad_id": bad_id,
-            "suggestions": describe_item_suggestions(model, suggestions),
+            "suggestions": _describe_item_suggestions(model, suggestions),
         },
         recovery={
             "next_actions": [
@@ -148,14 +135,17 @@ def _format_unknown_id_error(
     bad_id: str,
     id_role: str = "item_id",
 ) -> str:
-    suggestions = _compat("_suggest_items", _suggest_items)(index, bad_id)
+    suggestions = _suggest_items(index, bad_id)
     msg = f"Unknown {id_role}: {bad_id}"
     if suggestions:
         msg += f". Did you mean: {', '.join(suggestions)}?"
     return msg
 
 
-def _sample_values(values: Dict[int, float], periods: List[int]) -> Dict[int, Optional[float]]:
+def _sample_values(
+    values: Mapping[int, float | None],
+    periods: List[int],
+) -> Dict[int, Optional[float]]:
     if not periods:
         return {}
     idxs = sorted({0, len(periods) // 2, len(periods) - 1})
@@ -208,32 +198,14 @@ def _format_context_label(context: Optional[Tuple[str, Optional[str], int]]) -> 
 
 def _ambiguous_labels(items: Iterable[LineItem]) -> Set[str]:
     counts: Dict[str, int] = {}
-    label_key = _compat("_label_key", _label_key)
     for item in items:
-        key = label_key(item.label)
+        key = _label_key(item.label)
         counts[key] = counts.get(key, 0) + 1
     return {key for key, count in counts.items() if count > 1}
 
 
 def _label_key(label: str) -> str:
     return " ".join(label.strip().lower().split())
-
-
-_ORIGINALS = {
-    "ModelToolError": None,
-    "_ambiguous_labels": _ambiguous_labels,
-    "_describe_item_suggestions": _describe_item_suggestions,
-    "_format_context_label": _format_context_label,
-    "_format_find_context": _format_find_context,
-    "_format_unknown_id_error": _format_unknown_id_error,
-    "_formula_type": _formula_type,
-    "_item_locations": _item_locations,
-    "_label_key": _label_key,
-    "_parent_headers": _parent_headers,
-    "_sample_values": _sample_values,
-    "_suggest_items": _suggest_items,
-    "_unknown_item_error": _unknown_item_error,
-}
 
 
 __all__ = [

@@ -4,20 +4,50 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypeGuard
+
+if TYPE_CHECKING:
+    from .dependency_graph import DependencyGraphResults
 
 from .dependency_graph_helpers import _offset_column
-from .models import FormulaSpec, FormulaType, LineItemRef
+from .driver_formula import apply_driver_scale_fn, evaluate_driver_value
+from .models import (
+    COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
+    FormulaSpec,
+    FormulaType,
+    LineItemRef,
+)
 from .refs import line_item_ref_from_obj
 
 logger = logging.getLogger("schema.dependency_graph")
+
+# ``DECLARED_DOMAIN_VALUATION_SUBTYPES`` lives in :mod:`schema.dependency_graph`,
+# where the typed classifier's declared-domain law reads it.
+
+
+def _values_are_numeric(
+    values: List[Optional[float]],
+) -> TypeGuard[List[float]]:
+    """Return whether every existing value is a concrete number."""
+    return all(value is not None for value in values)
+
+
+def _real_power(base: float, exponent: float) -> Optional[float]:
+    """``base ** exponent`` as a real number, ``None`` where it has none: a negative base to a
+    fractional exponent (Python returns a ``complex``), zero to a negative power, an overflow. The
+    graph represents ``None`` as the invalid value, the path a non-finite result already takes."""
+    try:
+        result = base ** exponent
+    except (ValueError, OverflowError, ZeroDivisionError):
+        return None
+    return None if isinstance(result, complex) else result
 
 
 def _eval(
     self: Any,
     line_item_id: str,
     period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
     time_index: Dict[int, int],
     time_order: List[int],
 ) -> Optional[float]:
@@ -26,19 +56,36 @@ def _eval(
     Uses FormulaType-specific handlers and delegates nested expressions
     to _eval_expr.
     """
-    item = self.model.get_item(line_item_id)
+    item = self._loaded_model.get_item(line_item_id)
     spec = self._spec_for_period(item, period)
     if spec is None:
         return None
 
+    prev_eval_cell = getattr(self, "_current_eval_cell", None)
+    self._current_eval_cell = (line_item_id, int(period))
+    try:
+        return _eval_inner(self, line_item_id, period, spec, results, time_index, time_order)
+    finally:
+        self._current_eval_cell = prev_eval_cell
+
+
+def _eval_inner(
+    self: Any,
+    line_item_id: str,
+    period: int,
+    spec: FormulaSpec,
+    results: DependencyGraphResults,
+    time_index: Dict[int, int],
+    time_order: List[int],
+) -> Optional[float]:
     params = spec.params or {}
     spec_type = spec.type
-
     if spec_type == FormulaType.constant:
-        if params.get("value") is None:
+        raw_value = params.get("value")
+        if raw_value is None:
             return None
         try:
-            return float(params.get("value"))
+            return float(raw_value)
         except (TypeError, ValueError):
             return None
 
@@ -62,13 +109,16 @@ def _eval(
             target_obj = params.get("target")
             target_ref = line_item_ref_from_obj(target_obj)
             if target_ref is None:
-                raise ValueError(
-                    f"SUM_RANGE in {line_item_id!r} has malformed 'target' "
-                    f"(expected LineItemRef-coercible; got {type(target_obj).__name__}: "
-                    f"{target_obj!r})"
+                logger.warning(
+                    "SUM_RANGE in %r has a target that is not a line-item "
+                    "ref (%s: %r); the cell is left unresolved",
+                    line_item_id,
+                    type(target_obj).__name__,
+                    target_obj,
                 )
+                return None
             try:
-                target_item = self.model.get_item(target_ref.id)
+                target_item = self._loaded_model.get_item(target_ref.id)
             except KeyError as exc:
                 raise KeyError(f"SUM_RANGE target {target_ref.id!r} not found in model") from exc
 
@@ -78,28 +128,26 @@ def _eval(
             values: List[Optional[float]] = []
             for target_period in self._sum_range_target_periods(target_ref.id):
                 values.append(self._read_with_fallback(target_ref.id, target_period, results))
-            non_none = [v for v in values if v is not None]
-            if not non_none:
+            if not values or not _values_are_numeric(values):
                 return None
-            return sum(non_none)
+            return sum(values)
 
         if params.get("function") in {"SUM", "AVERAGE", "MEDIAN"}:
             items = params.get("items", [])
+            if params.get("function") == "SUM" and not items:
+                return 0.0
             values = [self._eval_expr(i, period, results, time_index, time_order) for i in items]
-            non_none = [v for v in values if v is not None]
-            # If ALL values are None, return None (no data; AVERAGE/MEDIAN ignore this).
-            # Otherwise SUM treats None as 0, matching blank Excel cells.
-            if not non_none:
+            if not values or not _values_are_numeric(values):
                 return None
             if params.get("function") == "AVERAGE":
-                return sum(non_none) / len(non_none)
+                return sum(values) / len(values)
             if params.get("function") == "MEDIAN":
-                sorted_values = sorted(non_none)
+                sorted_values = sorted(values)
                 midpoint = len(sorted_values) // 2
                 if len(sorted_values) % 2:
                     return sorted_values[midpoint]
                 return (sorted_values[midpoint - 1] + sorted_values[midpoint]) / 2
-            return sum(non_none)
+            return sum(values)
 
         operands = params.get("operands")
         if isinstance(operands, list) and operands:
@@ -112,50 +160,38 @@ def _eval(
                 self._eval_expr(i, period, results, time_index, time_order)
                 for i in operands[start_index:]
             ]
-            if not values:
-                return None
-            non_none = [v for v in values if v is not None]
-            if not non_none:
+            if not values or not _values_are_numeric(values):
                 return None
             if operator == "+":
-                return sum(non_none)
-            if any(v is None for v in values):
-                return None
+                return sum(values)
             if operator == "-":
                 return values[0] - sum(values[1:])
             if operator == "*":
                 result = 1.0
-                for v in values:
-                    result *= v
+                for value in values:
+                    result *= value
                 return result
             if operator == "/":
                 result = values[0]
-                for v in values[1:]:
-                    if v == 0:
+                for value in values[1:]:
+                    if value == 0:
                         return None
-                    result /= v
+                    result /= value
                 return result
 
         items = params.get("items")
         if isinstance(items, list):
+            if not items:
+                return None
             values = [self._eval_expr(i, period, results, time_index, time_order) for i in items]
-            if any(v is None for v in values):
+            if not _values_are_numeric(values):
                 return None
             return sum(values)
 
     if spec_type == FormulaType.driver:
         base = self._eval_expr(params.get("base"), period, results, time_index, time_order)
         rate = self._eval_expr(params.get("rate"), period, results, time_index, time_order)
-        if base is None or rate is None:
-            return None
-        result = base * rate
-        scale = params.get("scale")
-        if scale:
-            result /= float(scale)
-        scale_fn = params.get("scale_fn")
-        if isinstance(scale_fn, str):
-            result = self._apply_scale_fn(result, scale_fn)
-        return result
+        return evaluate_driver_value(base, rate, params)
 
     if spec_type == FormulaType.ratio:
         numerator = self._eval_expr(params.get("numerator"), period, results, time_index, time_order)
@@ -191,9 +227,13 @@ def _eval(
         subtractions = params.get("subtractions", [])
         add_values = [self._eval_expr(i, period, results, time_index, time_order) for i in additions]
         sub_values = [self._eval_expr(i, period, results, time_index, time_order) for i in subtractions]
-        if beginning is None:
+        if (
+            beginning is None
+            or not _values_are_numeric(add_values)
+            or not _values_are_numeric(sub_values)
+        ):
             return None
-        return beginning + sum(v or 0 for v in add_values) - sum(v or 0 for v in sub_values)
+        return beginning + sum(add_values) - sum(sub_values)
 
     if spec_type == FormulaType.valuation:
         return self._eval_valuation(spec, period, results, time_index, time_order)
@@ -205,7 +245,7 @@ def _eval_valuation(
     self: Any,
     spec: FormulaSpec,
     period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
     time_index: Dict[int, int],
     time_order: List[int],
 ) -> Optional[float]:
@@ -220,8 +260,8 @@ def _eval_valuation(
         t = self._eval_expr(params.get("period"), period, results, time_index, time_order)
         if cf is None or rate is None or t is None:
             return None
-        denom = (1 + rate) ** t
-        return cf / denom if denom != 0 else None
+        denom = _real_power(1 + rate, t)
+        return cf / denom if denom else None
 
     if subtype == "terminal_value":
         final_cf = self._eval_expr(params.get("final_cf"), period, results, time_index, time_order)
@@ -243,13 +283,31 @@ def _eval_valuation(
         return rf + (beta * erp)
 
     if subtype == "wacc":
-        ke = self._eval_expr(params.get("cost_equity"), period, results, time_index, time_order)
-        we = self._eval_expr(params.get("weight_equity"), period, results, time_index, time_order)
-        kd = self._eval_expr(params.get("cost_debt"), period, results, time_index, time_order)
-        wd = self._eval_expr(params.get("weight_debt"), period, results, time_index, time_order)
-        if ke is None or we is None or kd is None or wd is None:
+        we = self._eval_expr(
+            params.get("weight_equity"), period, results, time_index, time_order
+        )
+        wd = self._eval_expr(
+            params.get("weight_debt"), period, results, time_index, time_order
+        )
+        if we is None or wd is None:
             return None
-        return (ke * we) + (kd * wd)
+        equity_term = 0.0
+        if we != 0.0:
+            ke = self._eval_expr(
+                params.get("cost_equity"), period, results, time_index, time_order
+            )
+            if ke is None:
+                return None
+            equity_term = ke * we
+        debt_term = 0.0
+        if wd != 0.0:
+            kd = self._eval_expr(
+                params.get("cost_debt"), period, results, time_index, time_order
+            )
+            if kd is None:
+                return None
+            debt_term = kd * wd
+        return equity_term + debt_term
 
     if subtype == "multiple":
         mult = self._eval_expr(params.get("multiple"), period, results, time_index, time_order)
@@ -273,8 +331,40 @@ def _eval_valuation(
             return None
         return ev / tw
 
+    if subtype == "break_even_probability":
+        # Market-implied probability of the upside case, D/(U+D), where U is
+        # the gain to the upside price and D the loss to the downside price.
+        # The identity is defined only when the upside is a gain and the
+        # downside a loss; otherwise the break-even probability does not exist.
+        up = self._eval_expr(params.get("upside_delta"), period, results, time_index, time_order)
+        down = self._eval_expr(params.get("downside_delta"), period, results, time_index, time_order)
+        if up is None or down is None or up <= 0 or down >= 0:
+            return None
+        return down / (down - up)
+
     if subtype == "offset_scenario":
         return self._eval_offset_scenario(spec, period, results, time_index, time_order)
+
+    if subtype == "scenario_select":
+        params = spec.params or {}
+        selector_ref = line_item_ref_from_obj(params.get("selector"))
+        if selector_ref is None:
+            return None
+        selector = self._value_of(
+            selector_ref, period, results, time_index, time_order
+        )
+        if selector is None or not math.isfinite(selector):
+            return None
+        selector_int = int(selector)
+        if selector != selector_int or selector_int not in {1, 2, 3}:
+            return None
+        case = {1: "bull", 2: "base", 3: "bear"}[selector_int]
+        selected_ref = line_item_ref_from_obj(params.get(case))
+        if selected_ref is None:
+            return None
+        return self._value_of(
+            selected_ref, period, results, time_index, time_order
+        )
 
     return None
 
@@ -283,15 +373,16 @@ def _eval_offset_scenario(
     self: Any,
     spec: FormulaSpec,
     period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
     time_index: Dict[int, int],
     time_order: List[int],
 ) -> Optional[float]:
-    """Evaluate renderer-compatible OFFSET scenario table lookups.
+    """Evaluate renderer-compatible INDEX scenario table lookups.
 
-    Scenario formulas use a selector value as an Excel row offset from an
-    anchor row. Period-relative formulas select the row at the current time
-    column. Fixed-column formulas select the exact table cell.
+    The renderer lowers the legacy offset_scenario semantic expression to a
+    three-row INDEX range immediately below the anchor. Period-relative
+    formulas select that row in the current time column; fixed-column formulas
+    select it after applying the declared column offset.
     """
 
     if not self.model:
@@ -307,9 +398,11 @@ def _eval_offset_scenario(
     if selector_value is None or not math.isfinite(selector_value):
         return None
     row_offset = int(selector_value)
+    if selector_value != row_offset or row_offset not in {1, 2, 3}:
+        return None
 
     try:
-        anchor_item = self.model.get_item(anchor_ref.id)
+        anchor_item = self._loaded_model.get_item(anchor_ref.id)
     except KeyError:
         return None
 
@@ -319,7 +412,7 @@ def _eval_offset_scenario(
     target_row = int(anchor_item.row) + row_offset
 
     column_offset_mode = params.get("column_offset_mode")
-    if column_offset_mode == "period_relative":
+    if column_offset_mode == COLUMN_OFFSET_MODE_PERIOD_RELATIVE:
         target_id = self._row_item_id(anchor_sheet, target_row)
         if target_id is None:
             return None
@@ -349,7 +442,7 @@ def _eval_offset_scenario(
     if target_id is None:
         return None
 
-    target_item = self.model.get_item(target_id)
+    target_item = self._loaded_model.get_item(target_id)
     target_period = (
         self._fixed_cell_anchor_period(target_item)
         if target_item.column is not None
@@ -364,7 +457,7 @@ def _eval_expr(
     self: Any,
     expr: Any,
     period: int,
-    results: Dict[str, Dict[int, float]],
+    results: DependencyGraphResults,
     time_index: Dict[int, int],
     time_order: List[int],
 ) -> Optional[float]:
@@ -378,26 +471,32 @@ def _eval_expr(
         if coerced is not None:
             return self._value_of(coerced, period, results, time_index, time_order)
         op = expr.get("op")
-        if op in {"+", "*", "SUM", "AVG", "MAX"}:
+        if op == "IF":
             args = expr.get("args", [])
-            values = [self._eval_expr(arg, period, results, time_index, time_order) for arg in args]
-            non_none = [v for v in values if v is not None]
-            if op == "+":
-                return sum(v or 0 for v in values)
-            if op == "SUM":
-                if not non_none:
-                    return None
-                return sum(non_none)
-            if op == "AVG":
-                if not non_none:
-                    return None
-                return sum(non_none) / len(non_none)
-            if op == "MAX":
-                if not non_none:
-                    return None
-                return max(non_none)
-            if any(v is None for v in values):
+            if len(args) != 3:
                 return None
+            condition = self._eval_expr(args[0], period, results, time_index, time_order)
+            if condition is None:
+                return None
+            branch = args[1] if condition != 0 else args[2]
+            return self._eval_expr(branch, period, results, time_index, time_order)
+        if op in {"+", "*", "SUM", "AVG", "MAX", "MIN"}:
+            args = expr.get("args", [])
+            if op in {"+", "SUM"} and not args:
+                return 0.0
+            values = [self._eval_expr(arg, period, results, time_index, time_order) for arg in args]
+            if not values or not _values_are_numeric(values):
+                return None
+            if op == "+":
+                return sum(values)
+            if op == "SUM":
+                return sum(values)
+            if op == "AVG":
+                return sum(values) / len(values)
+            if op == "MAX":
+                return max(values)
+            if op == "MIN":
+                return min(values)
             if op == "*":
                 result = 1.0
                 for value in values:
@@ -405,9 +504,10 @@ def _eval_expr(
                 return result
         if op == "IFERROR":
             value = self._eval_expr(expr.get("expr"), period, results, time_index, time_order)
-            if value is not None:
-                return value
-            return self._eval_expr(expr.get("fallback", 0), period, results, time_index, time_order)
+            # The legacy graph has no authenticated FallbackPolicy.  Treat the
+            # primary expression as required instead of silently authorizing a
+            # numeric fallback from an untyped expression dictionary.
+            return value
         if op in {"-", "/", "^"}:
             left = self._eval_expr(expr.get("left"), period, results, time_index, time_order)
             right = self._eval_expr(expr.get("right"), period, results, time_index, time_order)
@@ -420,10 +520,7 @@ def _eval_expr(
                     return None
                 return left / right
             if op == "^":
-                try:
-                    return left ** right
-                except (ValueError, OverflowError):
-                    return None
+                return _real_power(left, right)
         if op == "NEG":
             inner = self._eval_expr(expr.get("arg"), period, results, time_index, time_order)
             return None if inner is None else -inner
@@ -433,11 +530,4 @@ def _eval_expr(
 
 
 def _apply_scale_fn(self: Any, value: float, scale_fn: str) -> float:
-    scale_fn = scale_fn.strip()
-    if not scale_fn:
-        return value
-    if scale_fn.startswith("/"):
-        return value / float(scale_fn[1:])
-    if scale_fn.startswith("*"):
-        return value * float(scale_fn[1:])
-    return value
+    return apply_driver_scale_fn(value, scale_fn)

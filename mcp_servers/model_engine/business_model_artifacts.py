@@ -10,34 +10,36 @@ from schema.business_model_markdown import parse as parse_business_model_markdow
 from .args import valid_workspace_user_id
 
 
-def business_model_workspace_candidates(path_value: str) -> list[Path]:
+def business_model_workspace_candidates(path_value: str, user_id: str | None = None) -> list[Path]:
   path = Path(path_value).expanduser()
   candidates: list[Path] = [path]
   if path.is_absolute():
     return candidates
 
   user_ids: list[str] = []
-  for env_var in ("AUTONOMOUS_USER_ID", "MEMORY_STARTUP_USER_ID"):
-    user_id = valid_workspace_user_id(os.getenv(env_var))
-    if user_id and user_id not in user_ids:
-      user_ids.append(user_id)
-
-  configured_data_dir = os.getenv("USER_DATA_DIR", "").strip()
-  if configured_data_dir:
-    data_dir = Path(configured_data_dir).expanduser()
-    for user_id in user_ids:
-      candidates.append(data_dir / "users" / user_id / "workspace" / path)
-
+  resolved_user_id = valid_workspace_user_id(user_id)
+  if resolved_user_id and resolved_user_id not in user_ids:
+    user_ids.append(resolved_user_id)
   try:
-    from memory import get_current_user_id, get_workspace_dir
+    from memory import get_current_user_id
 
     current_user_id = valid_workspace_user_id(get_current_user_id())
     if current_user_id and current_user_id not in user_ids:
       user_ids.append(current_user_id)
-    for user_id in user_ids:
-      candidates.append(get_workspace_dir(user_id) / path)
-    if not user_ids:
-      candidates.append(get_workspace_dir() / path)
+  except Exception:
+    pass
+
+  configured_data_dir = os.getenv("USER_DATA_DIR", "").strip()
+  if configured_data_dir:
+    data_dir = Path(configured_data_dir).expanduser()
+    for uid in user_ids:
+      candidates.append(data_dir / "users" / uid / "workspace" / path)
+
+  try:
+    from memory import get_workspace_dir
+
+    for uid in user_ids:
+      candidates.append(get_workspace_dir(uid) / path)
   except Exception:
     pass
 
@@ -52,8 +54,8 @@ def business_model_workspace_candidates(path_value: str) -> list[Path]:
   return deduped
 
 
-def resolve_business_model_path(path_value: str) -> tuple[Path, list[str]]:
-  candidates = business_model_workspace_candidates(path_value)
+def resolve_business_model_path(path_value: str, user_id: str | None = None) -> tuple[Path, list[str]]:
+  candidates = business_model_workspace_candidates(path_value, user_id=user_id)
   searched = [str(candidate) for candidate in candidates]
   for candidate in candidates:
     if candidate.is_file():
@@ -61,8 +63,11 @@ def resolve_business_model_path(path_value: str) -> tuple[Path, list[str]]:
   return candidates[0], searched
 
 
-def load_business_model_from_path(path_value: str) -> tuple[BusinessModel, str, Path, list[str]]:
-  path, searched_paths = resolve_business_model_path(path_value)
+def load_business_model_from_path(
+  path_value: str,
+  user_id: str | None = None,
+) -> tuple[BusinessModel, str, Path, list[str]]:
+  path, searched_paths = resolve_business_model_path(path_value, user_id=user_id)
   if not path.is_file():
     raise FileNotFoundError(
       f"business model artifact not found: {path_value!r}; searched: {searched_paths}"

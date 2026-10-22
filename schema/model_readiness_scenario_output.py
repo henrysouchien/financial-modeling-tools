@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import sys
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .handle import ComputedValues
 from .model_readiness_common import _computed_values, _has_any_value, _missing_periods, _projection_periods
 from .models import FinancialModel
 
@@ -20,7 +20,6 @@ ScenarioOutputReadinessIssueCode = Literal[
     "scenario_output_projection_missing",
     "scenario_output_projection_incomplete",
 ]
-_PARENT_MODULE = "schema.model_readiness"
 _SCENARIO_OUTPUT_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "revenue_m",
@@ -67,13 +66,6 @@ _SCENARIO_OUTPUT_REQUIREMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
 
 
 class ModelScenarioOutputFieldReadiness(BaseModel):
@@ -101,7 +93,7 @@ class ModelScenarioOutputReadinessIssue(BaseModel):
     @model_validator(mode="after")
     def _populate_category(self) -> "ModelScenarioOutputReadinessIssue":
         if self.category is None:
-            self.category = _compat("_scenario_output_issue_category", _scenario_output_issue_category)(self.code)
+            self.category = _scenario_output_issue_category(self.code)
         return self
 
 
@@ -120,29 +112,29 @@ class ModelScenarioOutputReadiness(BaseModel):
 def compute_model_scenario_output_readiness(
     model: FinancialModel,
     *,
-    computed_values: dict[str, dict[int, float]] | None = None,
+    computed_values: ComputedValues | None = None,
     scope: ScenarioOutputReadinessScope = "base_model_outputs",
 ) -> ModelScenarioOutputReadiness:
     """Return readiness for outputs needed by scenario and decision workflows."""
 
     model.build_index()
-    projection_periods = _compat("_projection_periods", _projection_periods)(model)
+    projection_periods = _projection_periods(model)
     if not projection_periods:
-        readiness_model = _compat("ModelScenarioOutputReadiness", ModelScenarioOutputReadiness)
+        readiness_model = ModelScenarioOutputReadiness
         return readiness_model(
             status="unknown",
             scope=scope,
             summary="model has no projection periods",
         )
 
-    computed_values_fn = _compat("_computed_values", _computed_values)
+    computed_values_fn = _computed_values
     values = computed_values if computed_values is not None else computed_values_fn(model)
     issues: list[ModelScenarioOutputReadinessIssue] = []
     fields: dict[str, ModelScenarioOutputFieldReadiness] = {}
-    field_model = _compat("ModelScenarioOutputFieldReadiness", ModelScenarioOutputFieldReadiness)
-    issue_model = _compat("ModelScenarioOutputReadinessIssue", ModelScenarioOutputReadinessIssue)
-    missing_periods_fn = _compat("_missing_periods", _missing_periods)
-    requirements = _compat("_SCENARIO_OUTPUT_REQUIREMENTS", _SCENARIO_OUTPUT_REQUIREMENTS)
+    field_model = ModelScenarioOutputFieldReadiness
+    issue_model = ModelScenarioOutputReadinessIssue
+    missing_periods_fn = _missing_periods
+    requirements = _SCENARIO_OUTPUT_REQUIREMENTS
 
     for field_name, candidate_item_ids in requirements:
         present_item_ids = [item_id for item_id in candidate_item_ids if item_id in model._index]
@@ -164,7 +156,7 @@ def compute_model_scenario_output_readiness(
             )
             continue
 
-        item_id = _compat("_select_scenario_output_item_id", _select_scenario_output_item_id)(
+        item_id = _select_scenario_output_item_id(
             values,
             present_item_ids,
             projection_periods,
@@ -211,7 +203,7 @@ def compute_model_scenario_output_readiness(
     else:
         status = "ready"
 
-    readiness_model = _compat("ModelScenarioOutputReadiness", ModelScenarioOutputReadiness)
+    readiness_model = ModelScenarioOutputReadiness
     return readiness_model(
         status=status,
         scope=scope,
@@ -219,7 +211,7 @@ def compute_model_scenario_output_readiness(
         terminal_period=projection_periods[-1],
         fields=fields,
         issues=issues,
-        summary=_compat("_scenario_output_summary", _scenario_output_summary)(status, issues),
+        summary=_scenario_output_summary(status, issues),
     )
 
 
@@ -232,11 +224,11 @@ def _scenario_output_issue_category(
 
 
 def _select_scenario_output_item_id(
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     item_ids: list[str],
     projection_periods: list[int],
 ) -> str:
-    has_any_value = _compat("_has_any_value", _has_any_value)
+    has_any_value = _has_any_value
     for item_id in item_ids:
         if has_any_value(values.get(item_id, {}), projection_periods):
             return item_id
@@ -256,21 +248,6 @@ def _scenario_output_summary(
     return f"{status}: {blocking} blocking issue(s), {warnings} warning issue(s)"
 
 
-_ORIGINALS = {
-    "ModelScenarioOutputFieldReadiness": ModelScenarioOutputFieldReadiness,
-    "ModelScenarioOutputReadiness": ModelScenarioOutputReadiness,
-    "ModelScenarioOutputReadinessIssue": ModelScenarioOutputReadinessIssue,
-    "ScenarioOutputReadinessIssueCategory": ScenarioOutputReadinessIssueCategory,
-    "_SCENARIO_OUTPUT_REQUIREMENTS": _SCENARIO_OUTPUT_REQUIREMENTS,
-    "_computed_values": _computed_values,
-    "_has_any_value": _has_any_value,
-    "_missing_periods": _missing_periods,
-    "_projection_periods": _projection_periods,
-    "_scenario_output_issue_category": _scenario_output_issue_category,
-    "_scenario_output_summary": _scenario_output_summary,
-    "_select_scenario_output_item_id": _select_scenario_output_item_id,
-    "compute_model_scenario_output_readiness": compute_model_scenario_output_readiness,
-}
 
 
 __all__ = [

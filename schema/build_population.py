@@ -1,796 +1,660 @@
-"""Historical population helpers for schema build orchestration."""
+"""Historical population on the required-role to pinned-column join."""
 
 from __future__ import annotations
 
-import concurrent.futures
-import logging
-import sys
-from typing import TYPE_CHECKING, Any, Dict, Optional
 
-from .build_cash_historicals import (
-    _has_existing_imported_historicals as _has_existing_imported_historicals_fallback,
-    _seed_cash_beginning_of_period as _seed_cash_beginning_of_period_fallback,
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from decimal import Decimal
+from typing import Any, Literal
+
+from .build_model_product_contracts import (
+    HistoricalBasisFact,
+    SourceBundle,
+    historical_fact_id,
+    source_measure,
 )
-from .build_concept_buffers import (
-    _all_edgar_concepts_failed_message as _all_edgar_concepts_failed_message_fallback,
-    _concept_can_fetch_edgar as _concept_can_fetch_edgar_fallback,
-    _fetch_edgar_concept_buffer as _fetch_edgar_concept_buffer_fallback,
-    _fetch_fmp_concept_buffer as _fetch_fmp_concept_buffer_fallback,
-)
-from .build_fmp_quality import (
-    _fmp_quality_warnings_from_observations as _fmp_quality_warnings_from_observations_fallback,
-    _record_fmp_quality_observation as _record_fmp_quality_observation_fallback,
-)
-from .build_fmp_values import (
-    _build_fmp_lookup as _build_fmp_lookup_fallback,
-    _make_fmp_provenance as _make_fmp_provenance_fallback,
-    _raw_fmp_value_for_concept as _raw_fmp_value_for_concept_fallback,
-    _scale_fmp_value as _scale_fmp_value_fallback,
-)
-from .build_model_items import _iter_items as _iter_items_fallback
+from .build_model_product_contracts import SourceEvidence
+from .build_concept_buffers import _build_statement_fact_buffer
+from .build_model_items import _iter_items
 from .build_reported_periods import (
-    _collect_edgar_reported_period_ends as _collect_edgar_reported_period_ends_fallback,
-    _collect_fmp_reported_period_ends_from_lookup as _collect_fmp_reported_period_ends_from_lookup_fallback,
-    _refresh_period_metadata as _refresh_period_metadata_fallback,
+    _collect_reported_period_ends,
+    _refresh_period_metadata,
 )
-from .build_routed_historicals import (
-    _write_routed_historicals as _write_routed_historicals_fallback,
-)
+from .build_findings import make_finding
+from .build_required_lines import RequiredLinePlan
+from .finding_vocabulary import Finding
 from .build_value_writers import (
-    _set_constant_override as _set_constant_override_fallback,
-    _set_imported_value as _set_imported_value_fallback,
+    _set_constant_override,
+    _set_imported_value,
 )
-from .model_build_context import BuildSource, HistoricalSources
-from .models import DataSourceMapping, FinancialModel, ItemType, ValueProvenance
-from .source_routing import (
-    ConceptSourceRoute,
-    resolve_source_for_concept as resolve_source_for_concept_fallback,
-    validate_route_eligibility as validate_route_eligibility_fallback,
+from .models import FinancialModel, LineItem, ValueProvenance
+from .provider_port.contracts import (
+    FilingLineFact,
+    FilingLineRef,
+    ReportedPeriod,
 )
+from value_semantics_core import CONVENTIONS_IR_V1, Quantity
+from .provider_port.registry import EDGAR_PROVIDER_ID, ProviderId
+from .required_role_catalog import RequiredRoleUnknown, load_required_role_catalog
+from schema.provider_port.adapters.edgar.wire.non_gaap_bridge_v2 import bridge_row_key
 
-if TYPE_CHECKING:
-    from .build import (
-        EdgarConceptFetchResult,
-        EdgarFetcher,
-        FmpConceptFetchResult,
-        PopulateStats,
+from .build_types import PopulateStats, ServedByBreakdown, SourceResolutionEntry
+
+
+
+
+
+
+
+
+
+class QuantityConversionGap(ValueError):
+    """A filing quantity cannot populate a declared workbook requirement."""
+
+    code = "quantity_conversion_gap"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"{self.code}: {message}")
+
+
+_SCALE_FACTORS = {
+    row.numeric_scale: Decimal(row.multiplier)
+    for row in CONVENTIONS_IR_V1.scale_factors
+}
+
+
+def _target_quantity_semantics(unit: str) -> tuple[str, str | None]:
+    measure = source_measure(unit)
+    if measure is None:
+        raise QuantityConversionGap(
+            f"requirement unit {unit!r} names no source measure"
+        )
+    return measure.numeric_kind, measure.currency
+
+
+def quantity_native_value(
+    value: Quantity,
+    *,
+    preferred_label_negates_value: bool = False,
+) -> Decimal:
+    """Recover the unscaled native value for economic typing and its provenance."""
+    source_factor = _SCALE_FACTORS.get(value.display.scale)
+    if source_factor is None:
+        raise QuantityConversionGap(f"unsupported source scale {value.display.scale!r}")
+    return Decimal(value.value) * source_factor * (
+        -1 if preferred_label_negates_value else 1
     )
 
 
-_TREASURY_STOCK_CONCEPT_ID = "treasury_stock"
-_TREASURY_STOCK_ITEM_ID = "tpl.a.dividends_shares.treasury_stock"
+def requirement_value_polarity(
+    *,
+    role_polarity: str | None,
+    concept_balances: Mapping[tuple[str, str], str | None] | None = None,
+    concept_key: tuple[str, str] | None = None,
+) -> Literal[1, -1, "unmapped"]:
+    """Map a sealed concept's XBRL balance to the catalog role's polarity."""
+    balance = (
+        concept_balances.get(concept_key)
+        if concept_balances is not None and concept_key is not None
+        else None
+    )
+    concept_polarity = {
+        "credit": "income_positive",
+        "debit": "expense_positive",
+    }.get(balance) if balance is not None else None
+    if concept_polarity is None or role_polarity is None:
+        return "unmapped"
+    return 1 if concept_polarity == role_polarity else -1
 
 
-def _parent_attr(name: str, default: Any) -> Any:
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    if parent is None:
-        return default
-    return getattr(parent, name, default)
+def quantity_to_requirement_value(
+    value: object,
+    *,
+    unit: str,
+    scale: str,
+    statement: str | None = None,
+    preferred_label_negates_value: bool = False,
+    role_polarity: str | None = None,
+    concept_balances: Mapping[tuple[str, str], str | None] | None = None,
+    concept_key: tuple[str, str] | None = None,
+) -> Decimal:
+    """Convert a filing quantity to the role's economic workbook value.
+
+    Income-statement roles map native XBRL signs through the concept's balance
+    and the catalog role's declared polarity. Presentation negation is undone
+    once; an unmapped concept keeps its native sign. Other statements retain
+    the presented sign. Quantity is the numeric authority; provenance native
+    numbers are lineage only. Untyped Decimal values are already economic,
+    requirement-scaled derivations, not reoriented.
+    """
+
+    if not isinstance(value, Quantity):
+        if isinstance(value, Decimal):
+            return value
+        raise QuantityConversionGap(
+            "filing observation reached population without a Quantity"
+        )
+    expected_kind, expected_currency = _target_quantity_semantics(unit)
+    display = value.display
+    if (
+        display.numeric_kind != expected_kind
+        or display.currency != expected_currency
+    ):
+        raise QuantityConversionGap(
+            "incompatible quantity semantics: "
+            f"source={display.numeric_kind}/{display.currency or '-'} "
+            f"target={expected_kind}/{expected_currency or '-'}"
+        )
+    source_scale = display.scale
+    target_scale = "unit" if scale == "units" else scale
+    source_factor = _SCALE_FACTORS.get(source_scale)
+    target_factor = _SCALE_FACTORS.get(target_scale)
+    if source_factor is None or target_factor is None:
+        raise QuantityConversionGap(
+            f"unsupported scale conversion {source_scale!r} -> {scale!r}"
+        )
+    if statement == "income_statement":
+        native_value = quantity_native_value(
+            value,
+            preferred_label_negates_value=preferred_label_negates_value,
+        ) / target_factor
+        polarity = requirement_value_polarity(
+            role_polarity=role_polarity,
+            concept_balances=concept_balances,
+            concept_key=concept_key,
+        )
+        return native_value * (-1 if polarity == -1 else 1)
+    return Decimal(value.value) * source_factor / target_factor
 
 
-def _required_parent_attr(name: str) -> Any:
-    helper = _parent_attr(name, None)
-    if helper is None:
-        raise RuntimeError(f"schema.build helper '{name}' is unavailable")
-    return helper
+def _fact_value(
+    fact: FilingLineFact | HistoricalBasisFact,
+) -> Quantity | Decimal:
+    return fact.value
 
 
-def populate_from_fmp(
-    model: FinancialModel,
-    fmp_data: Optional[Dict],
-    taxonomy: Dict[str, DataSourceMapping],
-) -> PopulateStats:
-    """Populate historical values from pre-fetched FMP statements."""
+def _value_provenance(
+    fact: FilingLineFact | HistoricalBasisFact,
+) -> ValueProvenance:
+    if fact.grade == "filing_native":
+        return ValueProvenance.imported_edgar
+    if fact.grade == "adapter_asserted":
+        return ValueProvenance.imported_vendor
+    return ValueProvenance.imported_other
 
-    build_fmp_lookup = _parent_attr("_build_fmp_lookup", _build_fmp_lookup_fallback)
-    collect_fmp_reported_period_ends_from_lookup = _parent_attr(
-        "_collect_fmp_reported_period_ends_from_lookup",
-        _collect_fmp_reported_period_ends_from_lookup_fallback,
-    )
-    fmp_quality_warnings_from_observations = _parent_attr(
-        "_fmp_quality_warnings_from_observations",
-        _fmp_quality_warnings_from_observations_fallback,
-    )
-    iter_items = _parent_attr("_iter_items", _iter_items_fallback)
-    make_fmp_provenance = _parent_attr("_make_fmp_provenance", _make_fmp_provenance_fallback)
-    populate_stats_type = _required_parent_attr("PopulateStats")
-    populate_treasury_stock_row_from_fmp = _parent_attr(
-        "_populate_treasury_stock_row_from_fmp",
-        _populate_treasury_stock_row_from_fmp,
-    )
-    raw_fmp_value_for_concept = _parent_attr(
-        "_raw_fmp_value_for_concept",
-        _raw_fmp_value_for_concept_fallback,
-    )
-    record_fmp_quality_observation = _parent_attr(
-        "_record_fmp_quality_observation",
-        _record_fmp_quality_observation_fallback,
-    )
-    refresh_period_metadata = _parent_attr(
-        "_refresh_period_metadata",
-        _refresh_period_metadata_fallback,
-    )
-    scale_fmp_value = _parent_attr("_scale_fmp_value", _scale_fmp_value_fallback)
-    seed_cash_beginning_of_period = _parent_attr(
-        "_seed_cash_beginning_of_period",
-        _seed_cash_beginning_of_period_fallback,
-    )
-    set_constant_override = _parent_attr(
-        "_set_constant_override",
-        _set_constant_override_fallback,
-    )
-    set_imported_value = _parent_attr("_set_imported_value", _set_imported_value_fallback)
-    treasury_stock_concept_id = _parent_attr(
-        "_TREASURY_STOCK_CONCEPT_ID",
-        _TREASURY_STOCK_CONCEPT_ID,
-    )
-    treasury_stock_item_id = _parent_attr(
-        "_TREASURY_STOCK_ITEM_ID",
-        _TREASURY_STOCK_ITEM_ID,
-    )
 
-    historical_periods = [int(period) for period in model.time_structure.historical_periods]
-    fmp_lookup = build_fmp_lookup(fmp_data or {})
-    missing_concepts: set[str] = set()
-    items_populated = 0
-    items_skipped = 0
-    periods_populated = 0
-    served_source_by_concept_year: dict[str, dict[int, BuildSource]] = {}
-    fmp_quality_observations: Dict[tuple[str, str, str], Dict[int, float]] = {}
-
-    for item in iter_items(model):
-        concept_id = item.data_concept_id
-        if not concept_id:
+def _required_role_fact_buffer(
+    observations: Sequence[object],
+) -> dict[tuple[str, int], HistoricalBasisFact]:
+    component_signs = {
+        fact_id: sign
+        for fact in observations
+        if isinstance(fact, HistoricalBasisFact) and fact.reconciliation is not None
+        for fact_id, sign in zip(
+            fact.reconciliation.component_fact_ids,
+            fact.reconciliation.component_signs,
+            strict=True,
+        )
+    }
+    buffer: dict[tuple[str, int], HistoricalBasisFact] = {}
+    for fact in observations:
+        if (
+            not isinstance(fact, HistoricalBasisFact)
+            or fact.required_role_correspondence is None
+        ):
             continue
-
-        concept = taxonomy.get(concept_id)
-        if concept is None:
-            items_skipped += 1
+        period_id = fact.period_id
+        if not period_id.startswith("FY") or not period_id[2:].isdigit():
             continue
-
-        item_has_actuals = False
-
-        for year in historical_periods:
-            record = fmp_lookup.get(concept.fmp_endpoint, {}).get(year)
-            raw_value, field_used, _fallback_used = raw_fmp_value_for_concept(
-                concept,
-                record,
+        key = (fact.required_role_correspondence, int(period_id[2:]))
+        if key in buffer:
+            existing = buffer[key]
+            existing_key = bridge_row_key(
+                existing.line.tag.removeprefix("issuer:")
             )
-
-            if raw_value is None:
-                missing_concepts.add(concept_id)
-                if item.historical is not None:
-                    set_constant_override(item, year, 0, synthetic=True)
+            fact_key = bridge_row_key(fact.line.tag.removeprefix("issuer:"))
+            if (
+                existing.line.statement_role == "nongaapreconciliation"
+                and fact.line.statement_role == "nongaapreconciliation"
+                and existing.source_id == fact.source_id
+                and existing_key is not None
+                and existing_key == fact_key
+            ):
+                buffer[key] = existing.model_copy(update={
+                    "value": existing.value + component_signs.get(fact.fact_id, 1) * fact.value,
+                })
                 continue
-
-            value = scale_fmp_value(concept_id, raw_value, concept=concept)
-            fmp_provenance = make_fmp_provenance(concept, field_used)
-            record_fmp_quality_observation(
-                fmp_quality_observations,
-                concept,
-                field_used,
-                year,
-                value,
+            raise ValueError(
+                "multiple selected filing-native facts correspond to "
+                f"{key[0]} / FY{key[1]}"
             )
-            if item.historical is None:
-                set_imported_value(item, year, value, fmp_provenance=fmp_provenance)
-            else:
-                set_constant_override(item, year, value, fmp_provenance=fmp_provenance)
-
-            item_has_actuals = True
-            periods_populated += 1
-            served_source_by_concept_year.setdefault(concept_id, {})[year] = "fmp"
-
-        if item_has_actuals:
-            items_populated += 1
+        if fact.fact_id in component_signs:
+            buffer[key] = fact.model_copy(update={
+                "value": component_signs[fact.fact_id] * fact.value,
+            })
         else:
-            items_skipped += 1
-
-    try:
-        treasury_item = model.get_item(treasury_stock_item_id)
-    except KeyError:
-        treasury_item = None
-    treasury_applicable = (
-        bool(fmp_data)
-        and taxonomy.get(treasury_stock_concept_id) is not None
-        and treasury_item is not None
-        and treasury_item.data_concept_id is None
-    )
-    treasury_years = populate_treasury_stock_row_from_fmp(
-        model,
-        fmp_data=fmp_data,
-        taxonomy=taxonomy,
-        historical_periods=historical_periods,
-    )
-    if treasury_years:
-        items_populated += 1
-        periods_populated += len(treasury_years)
-        served_source_by_concept_year[treasury_stock_concept_id] = {
-            year: "fmp" for year in treasury_years
-        }
-    if treasury_applicable and len(treasury_years) < len(historical_periods):
-        missing_concepts.add(treasury_stock_concept_id)
-        if not treasury_years:
-            items_skipped += 1
-
-    seed_cash_beginning_of_period(model)
-    refresh_period_metadata(
-        model,
-        collect_fmp_reported_period_ends_from_lookup(fmp_lookup, historical_periods),
-    )
-
-    return populate_stats_type(
-        source="fmp",
-        items_populated=items_populated,
-        items_skipped=items_skipped,
-        periods_populated=periods_populated,
-        missing_concepts=sorted(missing_concepts),
-        fmp_quality_warnings=fmp_quality_warnings_from_observations(
-            fmp_quality_observations
-        ),
-        served_source_by_concept_year=served_source_by_concept_year,
-    )
+            buffer[key] = fact
+    return buffer
 
 
-def populate_from_edgar(
+def _targets_by_role(
     model: FinancialModel,
+    plan: RequiredLinePlan,
+    *,
     ticker: str,
-    taxonomy: Dict[str, DataSourceMapping],
-    edgar_fetcher: EdgarFetcher,
-) -> PopulateStats:
-    """Populate historical values from EDGAR metric series data."""
+) -> dict[str, tuple[LineItem, ...]]:
+    """Resolve catalog or reviewed-window ownership onto required roles."""
 
-    all_edgar_concepts_failed_message = _parent_attr(
-        "_all_edgar_concepts_failed_message",
-        _all_edgar_concepts_failed_message_fallback,
-    )
-    collect_edgar_reported_period_ends = _parent_attr(
-        "_collect_edgar_reported_period_ends",
-        _collect_edgar_reported_period_ends_fallback,
-    )
-    edgar_concept_fetch_result = _required_parent_attr("EdgarConceptFetchResult")
-    fetch_edgar_concept_result = _required_parent_attr("_fetch_edgar_concept_result")
-    has_existing_imported_historicals = _parent_attr(
-        "_has_existing_imported_historicals",
-        _has_existing_imported_historicals_fallback,
-    )
-    iter_items = _parent_attr("_iter_items", _iter_items_fallback)
-    populate_stats_type = _required_parent_attr("PopulateStats")
-    refresh_period_metadata = _parent_attr(
-        "_refresh_period_metadata",
-        _refresh_period_metadata_fallback,
-    )
-    seed_cash_beginning_of_period = _parent_attr(
-        "_seed_cash_beginning_of_period",
-        _seed_cash_beginning_of_period_fallback,
-    )
-    set_constant_override = _parent_attr(
-        "_set_constant_override",
-        _set_constant_override_fallback,
-    )
-    set_imported_value = _parent_attr("_set_imported_value", _set_imported_value_fallback)
+    catalog = load_required_role_catalog()
+    stamped: dict[str, list[LineItem]] = {}
+    for item in _iter_items(model):
+        required_role = item.required_role
+        if required_role is not None:
+            stamped.setdefault(required_role, []).append(item)
+
+    targets: dict[str, tuple[LineItem, ...]] = {}
+    for row in plan.rows:
+        stamped_for_role = stamped.get(row.required_role, ())
+        try:
+            catalog.role(row.required_role)
+        except RequiredRoleUnknown:
+            window_target = tuple(
+                item for item in stamped_for_role if item.id == row.model_item
+            )
+            if len(window_target) != 1:
+                raise
+            targets[row.required_role] = window_target
+            continue
+
+        by_id = {item.id: item for item in stamped_for_role}
+        for item_id in catalog.population_item_ids(row.required_role, ticker=ticker):
+            if item_id in model._index:
+                item = model.get_item(item_id)
+                by_id[item.id] = item
+        if by_id:
+            targets[row.required_role] = tuple(by_id.values())
+    return targets
+
+
+def _write_observations(
+    model: FinancialModel,
+    *,
+    ticker: str,
+    observations: Sequence[Any],
+    reported_periods: Sequence[ReportedPeriod],
+    required_line_plan: RequiredLinePlan | None,
+    source: ProviderId | None,
+    evidence_by_line: SourceEvidenceByLine,
+) -> PopulateStats:
 
     historical_periods = [int(period) for period in model.time_structure.historical_periods]
-    if not historical_periods:
-        return populate_stats_type(
-            source="edgar",
+    if required_line_plan is None:
+        return PopulateStats(
+            source=source,
             items_populated=0,
             items_skipped=0,
             periods_populated=0,
-            missing_concepts=[],
+            missing_roles=[],
         )
 
-    most_recent_fy = max(historical_periods)
-    n_historical = len(historical_periods)
-    is_overlay = has_existing_imported_historicals(model, historical_periods)
+    targets = _targets_by_role(model, required_line_plan, ticker=ticker)
+    requested_lines = tuple(
+        line
+        for row in required_line_plan.rows
+        for line in row.pinned_columns
+    )
+    buffer = _build_statement_fact_buffer(
+        observations,
+        requested_lines,
+        historical_periods,
+    )
+    corresponding_facts = _required_role_fact_buffer(observations)
+    set_imported_value = _set_imported_value
+    set_constant_override = _set_constant_override
 
-    missing_concepts: set[str] = set()
-    edgar_errors: set[str] = set()
-    edgar_partial_failures: set[str] = set()
+    missing_roles: set[str] = set()
+    failed_roles: set[str] = set()
     items_populated = 0
     items_skipped = 0
     periods_populated = 0
-    edgar_api_calls = 0
-    served_source_by_concept_year: dict[str, dict[int, BuildSource]] = {}
-    fetched_concepts = 0
-    failed_fetches = 0
-    concept_cache: Dict[str, EdgarConceptFetchResult] = {}
-    exception_failures: set[str] = set()
+    served_source_by_role_year: dict[str, dict[int, ProviderId]] = {}
 
-    concepts_to_fetch: Dict[str, DataSourceMapping] = {}
-    for item in iter_items(model):
-        concept_id = item.data_concept_id
-        if not concept_id or concept_id in concepts_to_fetch:
+    for row in required_line_plan.rows:
+        role_targets = targets.get(row.required_role, ())
+        if not role_targets:
             continue
-
-        concept = taxonomy.get(concept_id)
-        if concept is None:
-            continue
-
-        concepts_to_fetch[concept_id] = concept
-        if concept.preferred_source == "fmp" and (concept.edgar_tags or concept.registry_group_id):
-            logging.warning("Concept '%s' prefers FMP but source='edgar' was requested", concept_id)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(
-                fetch_edgar_concept_result,
-                ticker=ticker,
-                concept_id=concept_id,
-                concept=concept,
-                most_recent_fy=most_recent_fy,
-                n_historical=n_historical,
-                edgar_fetcher=edgar_fetcher,
-            ): concept_id
-            for concept_id, concept in concepts_to_fetch.items()
-        }
-        for future in concurrent.futures.as_completed(futures):
-            concept_id = futures[future]
-            try:
-                concept_cache[concept_id] = future.result()
-            except Exception as exc:
-                logging.warning("EDGAR fetch failed for concept '%s': %s", concept_id, exc)
-                concept_cache[concept_id] = edgar_concept_fetch_result(
-                    values_dict={},
-                    failed_years=set(),
-                    status="missing",
-                    periods_failed=0,
-                    api_calls=0,
-                )
-                exception_failures.add(concept_id)
-
-    for concept_id, concept in concepts_to_fetch.items():
-        fetch_result = concept_cache.get(
-            concept_id,
-            edgar_concept_fetch_result(
-                values_dict={},
-                failed_years=set(),
-                status="missing",
-                periods_failed=0,
-                api_calls=0,
-            ),
-        )
-        if concept.edgar_tags or concept.registry_group_id:
-            edgar_api_calls += fetch_result.api_calls
-            fetched_concepts += 1
-            if fetch_result.status == "failed" or concept_id in exception_failures:
-                failed_fetches += 1
-
-        if fetch_result.status == "failed":
-            edgar_errors.add(concept_id)
-        elif fetch_result.status == "missing":
-            missing_concepts.add(concept_id)
-        elif fetch_result.status == "ok":
-            if fetch_result.periods_failed > 0:
-                edgar_partial_failures.add(concept_id)
-            if len(fetch_result.values_dict) < n_historical:
-                missing_concepts.add(concept_id)
-
-    for item in iter_items(model):
-        concept_id = item.data_concept_id
-        if not concept_id:
-            continue
-
-        concept = taxonomy.get(concept_id)
-        if concept is None:
-            items_skipped += 1
-            continue
-
-        fetch_result = concept_cache.get(
-            concept_id,
-            edgar_concept_fetch_result(
-                values_dict={},
-                failed_years=set(),
-                status="missing",
-                periods_failed=0,
-                api_calls=0,
-            ),
-        )
-        item_has_actuals = False
-
+        populated_target_ids: set[str] = set()
         for year in historical_periods:
-            if year in fetch_result.values_dict:
-                value = fetch_result.values_dict[year]
-                edgar_provenance = fetch_result.provenance_by_year.get(year)
-                if item.historical is None:
-                    set_imported_value(
-                        item,
-                        year,
-                        value,
-                        provenance=ValueProvenance.imported_edgar,
-                        edgar_provenance=edgar_provenance,
-                    )
-                else:
-                    set_constant_override(item, year, value, edgar_provenance=edgar_provenance)
-
-                item_has_actuals = True
-                periods_populated += 1
-                served_source_by_concept_year.setdefault(concept_id, {})[year] = "edgar"
+            line = required_line_plan.pinned_line(row.required_role, year)
+            corresponding_fact = corresponding_facts.get((row.required_role, year))
+            observation = None if line is None else buffer.get(line)
+            fact = (
+                corresponding_fact
+                if corresponding_fact is not None
+                else None if observation is None else observation.fact
+            )
+            if fact is None or (
+                corresponding_fact is None
+                and (observation is None or observation.status != "ok")
+            ):
+                missing_roles.add(row.required_role)
+                if observation is not None and observation.status == "failed":
+                    failed_roles.add(row.required_role)
                 continue
 
-            if (
-                item.historical is not None
-                and not is_overlay
-                and fetch_result.status != "failed"
-                and year not in fetch_result.failed_years
-            ):
-                set_constant_override(item, year, 0, synthetic=True)
+            vendor_provenance = (
+                fact.provenance if isinstance(fact, FilingLineFact) else None
+            )
+            provider = fact.provider
+            try:
+                value = evidenced_requirement_value(
+                    evidence_by_line, fact, unit=row.unit, scale=row.scale,
+                )
+            except QuantityConversionGap as exc:
+                raise QuantityConversionGap(
+                    f"{row.required_role}/FY{year}: {exc}"
+                ) from exc
+            workbook_value = float(value)
+            for item in role_targets:
+                # The selected filing fact is this cell's one value. The graph
+                # seeds from the value cell, which also carries the filing line
+                # (its lineage); a formula-backed target also takes the period
+                # override so the renderer emits the fact, not the template
+                # formula (as `_apply_filing_schedule_disclosures` does).
+                set_imported_value(
+                    item,
+                    year,
+                    workbook_value,
+                    provenance=_value_provenance(fact),
+                    vendor_provenance=vendor_provenance,
+                    line_ref=fact.line,
+                )
+                if item.historical is not None:
+                    set_constant_override(
+                        item,
+                        year,
+                        workbook_value,
+                        vendor_provenance=vendor_provenance,
+                    )
+                populated_target_ids.add(item.id)
+                periods_populated += 1
+            # Owner PopulateStats: registered ids only; absence = no served source.
+            if provider is not None:
+                served_source_by_role_year.setdefault(row.required_role, {})[
+                    year
+                ] = provider
+        items_populated += len(populated_target_ids)
+        items_skipped += len(role_targets) - len(populated_target_ids)
 
-        if item_has_actuals:
-            items_populated += 1
-        else:
-            items_skipped += 1
-
-    if fetched_concepts > 0 and failed_fetches == fetched_concepts:
-        raise RuntimeError(all_edgar_concepts_failed_message(concept_cache.values()))
-
-    seed_cash_beginning_of_period(model)
-    refresh_period_metadata(
+    _refresh_period_metadata(
         model,
-        collect_edgar_reported_period_ends(concept_cache.values(), historical_periods),
+        _collect_reported_period_ends(reported_periods, historical_periods),
     )
 
-    return populate_stats_type(
-        source="edgar",
+    served_by_role = {}
+    source_resolution = []
+    for row in required_line_plan.rows:
+        served_by_year = served_source_by_role_year.get(row.required_role, {})
+        producer_by_year = dict(sorted(served_by_year.items()))
+        source_resolution.append(
+            SourceResolutionEntry(
+                required_role=row.required_role,
+                producer_by_year=producer_by_year,
+            )
+        )
+        if producer_by_year:
+            served_by_role[row.required_role] = ServedByBreakdown(
+                producer_by_year=producer_by_year,
+                years_unserved=sorted(row.expected_years - set(served_by_year)),
+            )
+    return PopulateStats(
+        source=source,
         items_populated=items_populated,
         items_skipped=items_skipped,
         periods_populated=periods_populated,
-        missing_concepts=sorted(missing_concepts),
-        edgar_api_calls=edgar_api_calls,
-        edgar_errors=sorted(edgar_errors),
-        edgar_partial_failures=sorted(edgar_partial_failures),
-        served_source_by_concept_year=served_source_by_concept_year,
+        missing_roles=sorted(missing_roles),
+        edgar_errors=sorted(failed_roles) if source == EDGAR_PROVIDER_ID else [],
+        served_source_by_role_year=served_source_by_role_year,
+        source_resolution=source_resolution,
+        served_by_role=served_by_role,
     )
+
+
+
+
+
+
+#: The SourceBundle's evidence row of each filing line and provider: the one place
+#: the converter's economic orientation (catalog role statement and polarity, the
+#: sealed concept balance) was applied. Population reads it, never re-converts.
+SourceEvidenceByLine = Mapping[tuple[FilingLineRef, str | None], SourceEvidence]
+
+
+def source_evidence_by_line(
+    evidence: Iterable[SourceEvidence],
+) -> SourceEvidenceByLine:
+    return {(row.line, row.provider): row for row in evidence}
+
+
+def evidenced_requirement_value(
+    evidence_by_line: SourceEvidenceByLine,
+    fact: FilingLineFact | HistoricalBasisFact,
+    *,
+    unit: str,
+    scale: str,
+) -> Decimal:
+    """A fact's economic value in the requirement's unit and scale.
+
+    A correspondence fact is already an economic requirement-scaled Decimal. A
+    filing observation takes the value of its SourceBundle evidence row, which
+    ``corpus_facts.statement_source_evidence`` minted through the one converter.
+    """
+
+    if isinstance(fact, HistoricalBasisFact):
+        return fact.value
+    provider = None if fact.provenance is None else fact.provenance.provider
+    row = evidence_by_line.get((fact.line, provider))
+    if row is None:
+        raise QuantityConversionGap(
+            f"no SourceBundle evidence row for filing line {fact.line.tag!r}"
+        )
+    if (row.unit, row.scale) != (unit, scale):
+        raise QuantityConversionGap(
+            f"evidence unit/scale {row.unit}/{row.scale} differs from the "
+            f"requirement's {unit}/{scale}"
+        )
+    return row.value
 
 
 def populate_historicals(
     model: FinancialModel,
-    source: str,
+    source: ProviderId | None,
     ticker: str,
-    taxonomy: Dict[str, DataSourceMapping],
-    most_recent_fy: int,
-    n_historical: int = 5,
-    fmp_data: Optional[Dict] = None,
-    edgar_fetcher: Optional[EdgarFetcher] = None,
-    historical_sources: HistoricalSources | None = None,
-) -> PopulateStats:
-    """Populate template historicals from legacy single-source or routed sources."""
-
-    populate_from_fmp_fn = _parent_attr("populate_from_fmp", populate_from_fmp)
-    populate_from_edgar_fn = _parent_attr("populate_from_edgar", populate_from_edgar)
-    populate_routed = _parent_attr("_populate_routed", _populate_routed)
-
-    if historical_sources is not None:
-        if str(source).lower() != "fmp":
-            logging.debug(
-                "populate_historicals: both source=%s and historical_sources passed; using routed",
-                source,
-            )
-        return populate_routed(
-            model,
-            historical_sources,
-            ticker=ticker,
-            taxonomy=taxonomy,
-            most_recent_fy=most_recent_fy,
-            n_historical=n_historical,
-            fmp_data=fmp_data,
-            edgar_fetcher=edgar_fetcher,
-        )
-
-    del most_recent_fy, n_historical
-    source = str(source).lower()
-
-    if source == "fmp":
-        if fmp_data is None:
-            raise ValueError("fmp_data is required when source='fmp'")
-        return populate_from_fmp_fn(model, fmp_data, taxonomy)
-    if source == "edgar":
-        if edgar_fetcher is None:
-            raise ValueError("edgar_fetcher is required when source='edgar'")
-        return populate_from_edgar_fn(model, ticker, taxonomy, edgar_fetcher)
-    if source == "both":
-        raise ValueError("'both' mode not supported — use 'fmp' or 'edgar'")
-    raise ValueError(f"Unsupported source: {source}")
-
-
-def _populate_routed(
-    model: FinancialModel,
-    historical_sources: HistoricalSources,
     *,
-    ticker: str,
-    taxonomy: Dict[str, DataSourceMapping],
-    most_recent_fy: int,
-    n_historical: int,
-    fmp_data: Optional[Dict],
-    edgar_fetcher: Optional[EdgarFetcher],
+    statement_facts: Sequence[object],
+    reported_periods: Sequence[ReportedPeriod] = (),
+    required_line_plan: RequiredLinePlan | None = None,
+    evidence_by_line: SourceEvidenceByLine,
 ) -> PopulateStats:
-    all_edgar_concepts_failed_message = _parent_attr(
-        "_all_edgar_concepts_failed_message",
-        _all_edgar_concepts_failed_message_fallback,
-    )
-    concept_can_fetch_edgar = _parent_attr(
-        "_concept_can_fetch_edgar",
-        _concept_can_fetch_edgar_fallback,
-    )
-    fetch_edgar_concept_buffer = _parent_attr(
-        "_fetch_edgar_concept_buffer",
-        _fetch_edgar_concept_buffer_fallback,
-    )
-    fetch_fmp_concept_buffer = _parent_attr(
-        "_fetch_fmp_concept_buffer",
-        _fetch_fmp_concept_buffer_fallback,
-    )
-    iter_items = _parent_attr("_iter_items", _iter_items_fallback)
-    resolve_source = _parent_attr(
-        "resolve_source_for_concept",
-        resolve_source_for_concept_fallback,
-    )
-    treasury_stock_concept_id = _parent_attr(
-        "_TREASURY_STOCK_CONCEPT_ID",
-        _TREASURY_STOCK_CONCEPT_ID,
-    )
-    treasury_stock_item_id = _parent_attr(
-        "_TREASURY_STOCK_ITEM_ID",
-        _TREASURY_STOCK_ITEM_ID,
-    )
-    validate_route = _parent_attr(
-        "validate_route_eligibility",
-        validate_route_eligibility_fallback,
-    )
-    write_routed_historicals = _parent_attr(
-        "_write_routed_historicals",
-        _write_routed_historicals_fallback,
+    """Populate provider-neutral filing observations by pinned identity."""
+
+    return _write_observations(
+        model,
+        ticker=ticker,
+        observations=statement_facts,
+        reported_periods=reported_periods,
+        required_line_plan=required_line_plan,
+        source=source,
+        evidence_by_line=evidence_by_line,
     )
 
-    del most_recent_fy, n_historical
-    routes: dict[str, ConceptSourceRoute] = {}
-    explicit_overrides = {override.concept_id for override in historical_sources.overrides}
-    legacy_treasury_route: ConceptSourceRoute | None = None
 
-    for item in iter_items(model):
-        concept_id = item.data_concept_id
-        if not concept_id or concept_id in routes:
-            continue
-        taxonomy_concept = taxonomy.get(concept_id)
-        route = resolve_source(concept_id, historical_sources, taxonomy_concept)
-        validate_route(
-            route,
-            taxonomy_concept,
-            is_explicit_override=concept_id in explicit_overrides,
-        )
-        routes[concept_id] = route
+def _selected_statement_population_inputs(
+    source_bundle: SourceBundle,
+) -> tuple[object, ...]:
+    """Return exact pinned observations plus selected declared correspondences."""
 
-    treasury_concept = taxonomy.get(treasury_stock_concept_id)
-    if treasury_concept is not None and fmp_data is not None:
-        try:
-            treasury_item = model.get_item(treasury_stock_item_id)
-        except KeyError:
-            treasury_item = None
-        if treasury_item is not None and treasury_item.data_concept_id is None:
-            resolved_treasury_route = resolve_source(
-                treasury_stock_concept_id,
-                historical_sources,
-                treasury_concept,
-            )
-            if resolved_treasury_route.primary == "fmp":
-                legacy_treasury_route = resolved_treasury_route.model_copy(
-                    update={"fallback_order": ["fmp"]}
-                )
-                validate_route(
-                    legacy_treasury_route,
-                    treasury_concept,
-                    is_explicit_override=treasury_stock_concept_id in explicit_overrides,
-                )
-                routes[treasury_stock_concept_id] = legacy_treasury_route
-
-    required_sources = {
-        source
-        for route in routes.values()
-        for source in route.fallback_order
+    requirement_by_id = {
+        requirement.requirement_id: requirement
+        for requirement in source_bundle.requirements
+        if requirement.family == "statement"
     }
-
-    fmp_buffer: dict[str, FmpConceptFetchResult] = {}
-    edgar_buffer: dict[str, EdgarConceptFetchResult] = {}
-
-    if "fmp" in required_sources:
-        if fmp_data is None:
-            raise ValueError("fmp_data is required when routed historical_sources can use FMP")
-        fmp_concepts = {
-            concept_id
-            for concept_id, route in routes.items()
-            if "fmp" in route.fallback_order
-        }
-        fmp_buffer = fetch_fmp_concept_buffer(
-            fmp_data,
-            fmp_concepts,
-            taxonomy,
-            [int(period) for period in model.time_structure.historical_periods],
-        )
-
-    if "edgar" in required_sources:
-        if edgar_fetcher is None:
-            raise ValueError("edgar_fetcher is required when routed historical_sources can use EDGAR")
-        edgar_concepts = {
-            concept_id
-            for concept_id, route in routes.items()
-            if "edgar" in route.fallback_order
-        }
-        edgar_buffer = fetch_edgar_concept_buffer(
-            ticker,
-            edgar_concepts,
-            taxonomy,
-            [int(period) for period in model.time_structure.historical_periods],
-            edgar_fetcher,
-        )
-        edgar_fetched_count = len(
-            [
-                concept_id
-                for concept_id in edgar_concepts
-                if concept_can_fetch_edgar(taxonomy.get(concept_id))
-            ]
-        )
-        edgar_failed_count = len(
-            [
-                result
-                for result in edgar_buffer.values()
-                if result.status == "failed"
-            ]
-        )
-        if edgar_fetched_count > 0 and edgar_failed_count == edgar_fetched_count:
-            raise RuntimeError(all_edgar_concepts_failed_message(edgar_buffer.values()))
-
-    return write_routed_historicals(
-        model,
-        routes,
-        fmp_buffer,
-        edgar_buffer,
-        taxonomy,
-        legacy_treasury_route=legacy_treasury_route,
-    )
-
-
-def _extract_first_numeric(
-    fmp_data: Optional[Dict],
-    endpoints: tuple[str, ...],
-    fields: tuple[str, ...],
-) -> Optional[float]:
-    if not fmp_data:
-        return None
-    for endpoint in endpoints:
-        records = fmp_data.get(endpoint)
-        if isinstance(records, dict):
-            iterable = [records]
-        else:
-            iterable = list(records or [])
-        for record in iterable:
-            if not isinstance(record, dict):
-                continue
-            for field_name in fields:
-                raw_value = record.get(field_name)
-                if raw_value is None:
-                    continue
-                try:
-                    return float(raw_value)
-                except (TypeError, ValueError):
-                    continue
-    return None
-
-
-def _populate_treasury_stock_row_from_fmp(
-    model: FinancialModel,
-    *,
-    fmp_data: Optional[Dict],
-    taxonomy: Dict[str, DataSourceMapping],
-    historical_periods: list[int],
-) -> list[int]:
-    """Populate the legacy assumptions Treasury Stock row from FMP when present."""
-
-    fetch_fmp_concept_buffer = _parent_attr(
-        "_fetch_fmp_concept_buffer",
-        _fetch_fmp_concept_buffer_fallback,
-    )
-    populate_treasury_stock_row_from_fmp_result = _parent_attr(
-        "_populate_treasury_stock_row_from_fmp_result",
-        _populate_treasury_stock_row_from_fmp_result,
-    )
-    treasury_stock_concept_id = _parent_attr(
-        "_TREASURY_STOCK_CONCEPT_ID",
-        _TREASURY_STOCK_CONCEPT_ID,
-    )
-
-    concept = taxonomy.get(treasury_stock_concept_id)
-    if (
-        concept is None
-        or not concept.fmp_endpoint
-        or not concept.fmp_field
-        or not fmp_data
-    ):
-        return []
-
-    fmp_buffer = fetch_fmp_concept_buffer(
-        fmp_data,
-        {treasury_stock_concept_id},
-        taxonomy,
-        historical_periods,
-    )
-    return populate_treasury_stock_row_from_fmp_result(
-        model,
-        fmp_result=fmp_buffer.get(treasury_stock_concept_id),
-        taxonomy=taxonomy,
-        historical_periods=historical_periods,
-    )
-
-
-def _populate_treasury_stock_row_from_fmp_result(
-    model: FinancialModel,
-    *,
-    fmp_result: FmpConceptFetchResult | None,
-    taxonomy: Dict[str, DataSourceMapping],
-    historical_periods: list[int],
-) -> list[int]:
-    item_type = _parent_attr("ItemType", ItemType)
-    make_fmp_provenance = _parent_attr("_make_fmp_provenance", _make_fmp_provenance_fallback)
-    set_constant_override = _parent_attr(
-        "_set_constant_override",
-        _set_constant_override_fallback,
-    )
-    set_imported_value = _parent_attr("_set_imported_value", _set_imported_value_fallback)
-    treasury_stock_concept_id = _parent_attr(
-        "_TREASURY_STOCK_CONCEPT_ID",
-        _TREASURY_STOCK_CONCEPT_ID,
-    )
-    treasury_stock_item_id = _parent_attr(
-        "_TREASURY_STOCK_ITEM_ID",
-        _TREASURY_STOCK_ITEM_ID,
-    )
-
-    concept = taxonomy.get(treasury_stock_concept_id)
-    if concept is None or fmp_result is None or fmp_result.missing:
-        return []
-
-    try:
-        item = model.get_item(treasury_stock_item_id)
-    except KeyError:
-        return []
-
-    if item.data_concept_id is not None:
-        return []
-
-    populated_years: list[int] = []
-    original_concept_id = item.data_concept_id
-    original_item_type = item.item_type
-
-    for year in historical_periods:
-        value = fmp_result.values.get(year)
-        if value is None:
+    evidence_by_id = {
+        evidence.evidence_id: evidence for evidence in source_bundle.evidence
+    }
+    fact_by_correspondence = {
+        (
+            fact.required_role_correspondence,
+            fact.period_id,
+            fact.line,
+            str(fact.source_id),
+        ): fact
+        for fact in source_bundle.historical_basis_facts
+        if fact.required_role_correspondence is not None
+    }
+    selected_facts: list[object] = []
+    displaced_lines = set()
+    for coverage in source_bundle.coverage:
+        requirement = requirement_by_id.get(coverage.requirement_id)
+        if requirement is None:
             continue
+        pinned_by_period = {
+            line.period.canonical_label(): line
+            for line in requirement.pinned_columns
+        }
+        for period in coverage.periods:
+            for evidence_id in period.evidence_ids:
+                evidence = evidence_by_id.get(evidence_id)
+                if evidence is None:
+                    continue
+                fact = fact_by_correspondence.get(
+                    (
+                        requirement.required_role,
+                        period.period_id,
+                        evidence.line,
+                        str(evidence.source_id),
+                    )
+                )
+                if fact is None:
+                    if (
+                        period.disposition == "derived"
+                        and evidence.derivation_expression == "closure_corroborated_zero"
+                        and not any(
+                            observation.status == "ok"
+                            and observation.line == evidence.line
+                            for observation in source_bundle.statement_facts
+                        )
+                    ):
+                        fact_id = (
+                            "fact." + evidence.evidence_id[len("evidence."):]
+                            if evidence.evidence_id.startswith("evidence.")
+                            else evidence.evidence_id
+                            if evidence.evidence_id.startswith("fact.")
+                            else historical_fact_id(
+                                evidence.line, period.period_id, "closure_corroborated_zero"
+                            )
+                        )
+                        fact = HistoricalBasisFact(
+                            fact_id=fact_id,
+                            line=evidence.line,
+                            grade=evidence.grade,
+                            period_id=period.period_id,
+                            value=evidence.value,
+                            unit=evidence.unit,
+                            scale=evidence.scale,
+                            sign=evidence.sign,
+                            source_id=evidence.source_id,
+                            provider=evidence.provider,
+                            retrieved_at=evidence.retrieved_at,
+                            available_at=evidence.available_at,
+                            as_of_date=evidence.as_of_date,
+                            locator=evidence.locator,
+                            fiscal_basis=evidence.fiscal_basis,
+                            period_length_months=evidence.period_length_months,
+                            accounting_definition=evidence.accounting_definition,
+                            confidence=evidence.confidence,
+                            source_quality=evidence.source_quality,
+                            required_role_correspondence=requirement.required_role,
+                        )
+                        selected_facts.append(fact)
+                        pinned_line = pinned_by_period.get(period.period_id)
+                        if pinned_line is not None:
+                            displaced_lines.add(pinned_line)
+                    continue
+                selected_facts.append(fact)
+                pinned_line = pinned_by_period.get(period.period_id)
+                if pinned_line is not None:
+                    displaced_lines.add(pinned_line)
+    return (
+        *(
+            observation
+            for observation in source_bundle.statement_facts
+            if observation.line not in displaced_lines
+        ),
+        *selected_facts,
+    )
 
-        if not populated_years:
-            item.data_concept_id = treasury_stock_concept_id
-            item.item_type = item_type.input
-        field_used = fmp_result.field_used_by_year.get(year)
-        fmp_provenance = make_fmp_provenance(concept, field_used)
-        if item.historical is None:
-            set_imported_value(item, year, value, fmp_provenance=fmp_provenance)
-        else:
-            set_constant_override(item, year, value, fmp_provenance=fmp_provenance)
-        populated_years.append(year)
 
-    if not populated_years:
-        item.data_concept_id = original_concept_id
-        item.item_type = original_item_type
-    return populated_years
+class StatementPopulationSourceAmbiguous(ValueError):
+    """The selected statement facts name more than one provider."""
+
+    code = "statement_population_source_ambiguous"
+
+    def __init__(self, providers: Iterable[str]) -> None:
+        super().__init__(
+            f"{self.code}: selected statement facts declare providers "
+            f"{sorted(providers)!r}"
+        )
+
+
+def _statement_population_source(
+    observations: Sequence[object],
+) -> tuple[ProviderId | None, tuple[Finding, ...]]:
+    """Derive the compile source stamp from the selected facts alone.
+
+    One provider is the stamp. None (a pin that selects no statement fact
+    yet) is no provider, recorded as one ``statement_population_source_absent``
+    Finding naming the statement binding that supplies one. The bundle's
+    declared source records are never the answer: they name every provider
+    the corpus read, not the facts the pin selected.
+    """
+
+    providers: set[ProviderId] = set()
+    for observation in observations:
+        fact = getattr(observation, "fact", observation)
+        provider = getattr(fact, "provider", None) if fact is not None else None
+        if provider is None:
+            provider = getattr(observation, "provider", None)
+        if provider is not None:
+            providers.add(provider)
+    if len(providers) > 1:
+        raise StatementPopulationSourceAmbiguous(providers)
+    if providers:
+        return providers.pop(), ()
+    return None, (
+        make_finding(
+            "statement_population_source_absent",
+            message=(
+                "The pin selects no statement fact, so historical population "
+                "has no provider. Read each filing through corpus_state "
+                "(research_file_id, accession) and persist a statement binding "
+                "for its window through fms_persist_correspondence; the facts "
+                "it selects supply the provider."
+            ),
+            observed={
+                "selected_statement_facts": len(observations),
+                "next_call": "corpus_state",
+                "repair_door": "fms_persist_correspondence",
+            },
+        ),
+    )
 
 
 __all__ = [
-    "_TREASURY_STOCK_CONCEPT_ID",
-    "_TREASURY_STOCK_ITEM_ID",
-    "_extract_first_numeric",
-    "_populate_routed",
-    "_populate_treasury_stock_row_from_fmp",
-    "_populate_treasury_stock_row_from_fmp_result",
-    "populate_from_edgar",
-    "populate_from_fmp",
+    "QuantityConversionGap",
+    "StatementPopulationSourceAmbiguous",
     "populate_historicals",
+    "quantity_to_requirement_value",
+    "quantity_native_value",
+    "requirement_value_polarity",
 ]

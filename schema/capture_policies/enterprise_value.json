@@ -1,0 +1,21 @@
+{
+  "schema_version": "enterprise-value-capture-policy.v2",
+  "provenance": "Generic taxonomy rule replacing the per-issuer IG-5 rows under NEVER-ISSUER-SPECIFIC (2026-10-12): each role lists ordered alternative concept groups (a partition of the balance versus its stated total), and the first group an issuer's own filing states is the one read.",
+  "qname_selection": {
+    "corporate_cash": [
+      [
+        "us-gaap:CashAndCashEquivalentsAtCarryingValue"
+      ]
+    ],
+    "long_term_debt": [
+      [
+        "us-gaap:LongTermDebtCurrent",
+        "us-gaap:LongTermDebtNoncurrent"
+      ],
+      [
+        "us-gaap:LongTermDebt"
+      ]
+    ]
+  },
+  "declared_adjustments": []
+}

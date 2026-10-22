@@ -1,0 +1,410 @@
+[
+  {
+    "tag": "us-gaap:Revenues",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.revenue",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CostOfGoodsAndServicesSold",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.cost_of_revenue",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:GrossProfit",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.gross_profit",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:SellingAndMarketingExpense",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.sales_and_marketing",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:GeneralAndAdministrativeExpense",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.general_and_administrative",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:ResearchAndDevelopmentExpense",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.research_and_development",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OperatingExpenses",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.operating_expenses",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OperatingIncomeLoss",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.operating_income",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:RevenueNotFromContractWithCustomer",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.interest_income",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:NonoperatingIncomeExpense",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.other_income_expense",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.pretax_income",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:IncomeTaxExpenseBenefit",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.income_tax",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:NetIncomeLoss",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.net_income",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:EarningsPerShareBasic",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.eps_basic",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:EarningsPerShareDiluted",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.eps_diluted",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.basic_shares",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+    "statement_role": "income_statement",
+    "required_role": "statement.is.diluted_shares",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.cash_and_equivalents",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:AccountsReceivableNetCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.accounts_receivable",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PrepaidExpenseAndOtherAssetsCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.other_current_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:AssetsCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.total_current_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PropertyPlantAndEquipmentNet",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.property_plant_equipment_net",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OperatingLeaseRightOfUseAsset",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.operating_lease_right_of_use_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OperatingLeaseRightOfUseAsset",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.right_of_use_asset",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:Goodwill",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.goodwill",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:FiniteLivedIntangibleAssetsNet",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.intangible_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:DeferredIncomeTaxAssetsNet",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.deferred_tax_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PrepaidExpenseAndOtherAssetsNoncurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.other_non_current_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:Assets",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.total_assets",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:AccountsPayableCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.accounts_payable",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:AccruedLiabilitiesCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.accrued_expenses",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:LiabilitiesCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.total_current_liabilities",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:LongTermDebt",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.long_term_debt",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OperatingLeaseLiabilityNoncurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.lease_liability_noncurrent",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OperatingLeaseLiabilityNoncurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.long_term_lease_liability",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OtherLiabilitiesNoncurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.other_non_current_liabilities",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:DeferredIncomeTaxLiabilitiesNet",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.deferred_tax_liabilities",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:Liabilities",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.total_liabilities",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:StockholdersEquity",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.total_equity",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CommonStockValue",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.common_stock",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:RetainedEarningsAccumulatedDeficit",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.retained_earnings",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:AdditionalPaidInCapital",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.additional_paid_in_capital",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:AccumulatedOtherComprehensiveIncomeLossNetOfTax",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.accumulated_other_comprehensive_income",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CapitalizedComputerSoftwareNet",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.capitalized_software",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CapitalizedContractCostNetCurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.current_deferred_contract_costs",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CapitalizedContractCostNetNoncurrent",
+    "statement_role": "balance_sheet",
+    "required_role": "statement.bs.long_term_deferred_contract_costs",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:DepreciationDepletionAndAmortization",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.depreciation_amortization",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:ShareBasedCompensation",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.stock_based_compensation",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.cash_flow_cash_end_of_period",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.operating_cash_flow",
+    "notes": "Input to the template free-cash-flow line."
+  },
+  {
+    "tag": "us-gaap:NetCashProvidedByUsedInInvestingActivities",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.investing_cash_flow",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:NetCashProvidedByUsedInFinancingActivities",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.financing_cash_flow",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:IncreaseDecreaseInAccountsReceivable",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.change_in_accounts_receivable",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:IncreaseDecreaseInAccountsPayableTrade",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.change_in_accounts_payable",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:DeferredIncomeTaxExpenseBenefit",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.change_in_deferred_income_taxes",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PaymentsToAcquireBusinessesNetOfCashAcquired",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.acquisitions_of_businesses",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PaymentsToAcquireAvailableForSaleSecuritiesDebt",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.purchases_of_investments",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:ProceedsFromSaleAndMaturityOfAvailableForSaleSecurities",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.sales_maturities_of_investments",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:ProceedsFromLinesOfCredit",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.proceeds_from_lines_of_credit",
+    "notes": "Input to the template net long-term-debt-issuance line."
+  },
+  {
+    "tag": "us-gaap:RepaymentsOfLinesOfCredit",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.repayments_of_lines_of_credit",
+    "notes": "Input to the template net long-term-debt-issuance line."
+  },
+  {
+    "tag": "us-gaap:ProceedsFromIssuanceOfSharesUnderIncentiveAndShareBasedCompensationPlans",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.proceeds_from_stock_plans",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:ProceedsFromIssuanceOfSharesUnderIncentiveAndShareBasedCompensationPlans",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.employee_stock_purchase_plan",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:OtherNoncashIncomeExpense",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.cf_other_non_cash_items",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PaymentsForProceedsFromOtherInvestingActivities",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.cf_other_investing_activities",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:ProceedsFromPaymentsForOtherFinancingActivities",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.cf_other_financing_activities",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.capital_expenditures",
+    "notes": "Input to the template free-cash-flow line."
+  },
+  {
+    "tag": "us-gaap:PaymentsForRepurchaseOfCommonStock",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.share_repurchases",
+    "notes": null
+  },
+  {
+    "tag": "us-gaap:PaymentsToDevelopSoftware",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.capitalized_software_additions",
+    "notes": null
+  }
+]

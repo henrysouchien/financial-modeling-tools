@@ -16,6 +16,10 @@ tags:
   - canonical_comps
   - materiality_guardrails
   - operating_comps
+  # Valuation policy lenses
+  - valuation_policy
+  - terminal_value
+  - peer_policy
   # Anti-patterns
   - value_trap
   - commodity_cycle

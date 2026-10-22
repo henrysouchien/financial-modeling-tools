@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any, Dict, List, Literal, Optional
 
 from .analysis import _default_period
@@ -18,8 +17,6 @@ from .tools_sensitivity import (
 )
 from .tools_summary import _find_key_metrics, _formula_type
 
-
-_PARENT_MODULE = "schema.tools"
 
 _POSITIVE_SCENARIO_OUTPUT_TOKENS = (
     "adjusted_eps",
@@ -53,25 +50,14 @@ _NEGATIVE_SCENARIO_OUTPUT_TOKENS = (
 )
 
 
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
-
-
 def _is_positive_scenario_output(comparison: Dict[str, Any]) -> bool:
     haystack = " ".join(
         str(comparison.get(key) or "").lower()
         for key in ("id", "label")
     )
-    negative_tokens = _compat("_NEGATIVE_SCENARIO_OUTPUT_TOKENS", _NEGATIVE_SCENARIO_OUTPUT_TOKENS)
-    positive_tokens = _compat("_POSITIVE_SCENARIO_OUTPUT_TOKENS", _POSITIVE_SCENARIO_OUTPUT_TOKENS)
-    if any(token in haystack for token in negative_tokens):
+    if any(token in haystack for token in _NEGATIVE_SCENARIO_OUTPUT_TOKENS):
         return False
-    return any(token in haystack for token in positive_tokens)
+    return any(token in haystack for token in _POSITIVE_SCENARIO_OUTPUT_TOKENS)
 
 
 def _scenario_case_direction_warnings(
@@ -98,9 +84,8 @@ def _scenario_case_direction_warnings(
                     continue
 
     warnings: List[Dict[str, Any]] = []
-    is_positive_scenario_output = _compat("_is_positive_scenario_output", _is_positive_scenario_output)
     for comparison in comparisons:
-        if not is_positive_scenario_output(comparison):
+        if not _is_positive_scenario_output(comparison):
             continue
         base_values = comparison.get("base_values")
         scenario_values = comparison.get("scenario_values")
@@ -154,40 +139,35 @@ def run_scenario(
     recompute_policy: Literal["projection_safe", "legacy_global"] = "projection_safe",
 ) -> Dict:
     model_obj = bundle.model
-    recompute_policies = _compat("_SENSITIVITY_RECOMPUTE_POLICIES", _SENSITIVITY_RECOMPUTE_POLICIES)
-    if recompute_policy not in recompute_policies:
-        allowed = ", ".join(sorted(recompute_policies))
+    if recompute_policy not in _SENSITIVITY_RECOMPUTE_POLICIES:
+        allowed = ", ".join(sorted(_SENSITIVITY_RECOMPUTE_POLICIES))
         raise ValueError(f"recompute_policy must be one of: {allowed}")
 
-    unknown_item_error = _compat("_unknown_item_error", _unknown_item_error)
     normalized: Dict[str, Dict[int, float]] = {}
     for item_id, values in (overrides or {}).items():
         if item_id not in model_obj._index:
-            raise unknown_item_error(model_obj, item_id, "override item_id")
+            raise _unknown_item_error(model_obj, item_id, "override item_id")
         normalized[item_id] = {int(period): float(value) for period, value in values.items()}
-    scenario_case_selection = _compat(
-        "_scenario_case_selection_for_overrides",
-        _scenario_case_selection_for_overrides,
-    )(model_obj, normalized)
-    normalized = _compat("_apply_scenario_case_selection", _apply_scenario_case_selection)(
+    scenario_case_selection = _scenario_case_selection_for_overrides(model_obj, normalized)
+    normalized = _apply_scenario_case_selection(
         normalized,
         scenario_case_selection,
     )
 
     if compare_items is None:
-        compare_ids = [item.id for item in _compat("_find_key_metrics", _find_key_metrics)(bundle.all_items)]
+        compare_ids = [item.id for item in _find_key_metrics(bundle.all_items)]
     else:
         compare_ids = compare_items
         for item_id in compare_ids:
             if item_id not in model_obj._index:
-                raise unknown_item_error(model_obj, item_id, "compare item_id")
+                raise _unknown_item_error(model_obj, item_id, "compare item_id")
 
-    recompute_ids = _compat("_scenario_recompute_ids", _scenario_recompute_ids)(
+    recompute_ids = _scenario_recompute_ids(
         bundle,
         normalized,
         recompute_policy=recompute_policy,
     )
-    recompute_ids |= _compat("_scenario_case_recompute_ids", _scenario_case_recompute_ids)(
+    recompute_ids |= _scenario_case_recompute_ids(
         bundle,
         scenario_case_selection,
     )
@@ -197,19 +177,17 @@ def run_scenario(
         else None
     )
 
-    scenario_results = _compat("_compute_scenario_results", _compute_scenario_results)(
+    scenario_results = _compute_scenario_results(
         bundle,
         normalized,
         recompute_ids,
         recompute_policy=recompute_policy,
         propagate_roots=propagate_roots,
     )
-    period = _compat("_default_period", _default_period)(model_obj)
-    all_periods = _compat("_all_periods", _all_periods)(model_obj)
+    period = _default_period(model_obj)
+    all_periods = _all_periods(model_obj)
 
     comparisons = []
-    formula_type = _compat("_formula_type", _formula_type)
-    sample_values = _compat("_sample_values", _sample_values)
     for item_id in compare_ids:
         item = model_obj.get_item(item_id)
         base_item_values = bundle.base_results.get(item_id, {})
@@ -227,7 +205,7 @@ def run_scenario(
                 "id": item_id,
                 "label": item.label,
                 "item_type": item.item_type.value,
-                "formula_type": formula_type(item),
+                "formula_type": _formula_type(item),
                 "base": base_val,
                 "scenario": scenario_val,
                 "delta": delta,
@@ -237,8 +215,8 @@ def run_scenario(
                     value_period: scenario_item_values.get(value_period)
                     for value_period in all_periods
                 },
-                "base_sample_values": sample_values(base_item_values, all_periods),
-                "scenario_sample_values": sample_values(scenario_item_values, all_periods),
+                "base_sample_values": _sample_values(base_item_values, all_periods),
+                "scenario_sample_values": _sample_values(scenario_item_values, all_periods),
             }
         )
 
@@ -250,7 +228,7 @@ def run_scenario(
     }
     if scenario_case_selection is not None:
         result["scenario_case_selection"] = scenario_case_selection
-    warnings = _compat("_scenario_case_direction_warnings", _scenario_case_direction_warnings)(
+    warnings = _scenario_case_direction_warnings(
         scenario_case_selection=scenario_case_selection,
         comparisons=comparisons,
     )
@@ -267,26 +245,6 @@ def run_scenario(
             ),
         ]
     return result
-
-
-_ORIGINALS = {
-    "_NEGATIVE_SCENARIO_OUTPUT_TOKENS": _NEGATIVE_SCENARIO_OUTPUT_TOKENS,
-    "_POSITIVE_SCENARIO_OUTPUT_TOKENS": _POSITIVE_SCENARIO_OUTPUT_TOKENS,
-    "_SENSITIVITY_RECOMPUTE_POLICIES": _SENSITIVITY_RECOMPUTE_POLICIES,
-    "_all_periods": _all_periods,
-    "_apply_scenario_case_selection": _apply_scenario_case_selection,
-    "_compute_scenario_results": _compute_scenario_results,
-    "_default_period": _default_period,
-    "_find_key_metrics": _find_key_metrics,
-    "_formula_type": _formula_type,
-    "_is_positive_scenario_output": _is_positive_scenario_output,
-    "_sample_values": _sample_values,
-    "_scenario_case_direction_warnings": _scenario_case_direction_warnings,
-    "_scenario_case_recompute_ids": _scenario_case_recompute_ids,
-    "_scenario_case_selection_for_overrides": _scenario_case_selection_for_overrides,
-    "_scenario_recompute_ids": _scenario_recompute_ids,
-    "_unknown_item_error": _unknown_item_error,
-}
 
 
 __all__ = [

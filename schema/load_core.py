@@ -8,8 +8,10 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from . import serialization
 from .dependency_graph import DependencyGraph
+from .model_bundle_paths import classify_platform_managed_model_bundle_path
 from .models import FinancialModel, ItemType, LineItem
 from .reader import read_model
+from .templates.model_scale import assert_template_semantic_units
 from .valuation_schema_invariant import (
     assert_valuation_template_schema,
     should_enforce_valuation_template_schema,
@@ -20,7 +22,7 @@ from .valuation_schema_invariant import (
 class _ModelBundle:
     model: FinancialModel
     graph: DependencyGraph
-    base_results: Dict[str, Dict[int, float]]
+    base_results: serialization.BaseResults
     all_items: List[LineItem]
     derived_ids: Set[str]
     source: str
@@ -41,8 +43,9 @@ def _build_bundle(
     model: Optional[FinancialModel] = None,
     cutoff: int,
     persist: bool = False,
+    refresh_stale_sidecar: bool = True,
 ) -> _ModelBundle:
-    cached_base_results = None
+    cached_base_results: serialization.BaseResults | None = None
     sidecar_needs_refresh = False
     model_source = "explicit" if model is not None else "unknown"
     if model is None:
@@ -52,6 +55,11 @@ def _build_bundle(
             sidecar_needs_refresh = cached_base_results is None
             model_source = "sidecar_recomputed" if sidecar_needs_refresh else "sidecar"
         else:
+            if classify_platform_managed_model_bundle_path(file_path) is not None:
+                raise serialization.ModelBundleRebuildRequired(
+                    "platform-managed model bundle is missing an exact current schema sidecar; "
+                    "offline rebuild is required and lossy workbook fallback is forbidden"
+                )
             disk_hit = serialization.try_load(file_path, cutoff)
             if disk_hit is not None:
                 model, cached_base_results = disk_hit
@@ -65,6 +73,14 @@ def _build_bundle(
         model = loaded
         parsed_fresh = True
         model_source = "parsed_workbook"
+
+    try:
+        assert_template_semantic_units(
+            model,
+            origin=f"schema.tools.load.{model_source}",
+        )
+    except ValueError as exc:
+        raise serialization.ModelBundleRebuildRequired(str(exc)) from exc
 
     _assert_loaded_valuation_template_schema(
         model,
@@ -82,9 +98,15 @@ def _build_bundle(
     else:
         base_results = graph.compute({}, recompute=derived_ids)
 
-    if parsed_fresh or sidecar_needs_refresh or (persist and model is not None):
+    if (
+        (parsed_fresh and refresh_stale_sidecar)
+        or (sidecar_needs_refresh and refresh_stale_sidecar)
+        or (persist and model is not None)
+    ):
         serialization.save(file_path, cutoff, model, base_results)
-    if sidecar_needs_refresh or (persist and model is not None):
+    if (sidecar_needs_refresh and refresh_stale_sidecar) or (
+        persist and model is not None
+    ):
         if should_enforce_valuation_template_schema(model, workbook_path=file_path):
             assert_valuation_template_schema(
                 model,

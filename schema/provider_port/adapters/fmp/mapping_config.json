@@ -1,0 +1,668 @@
+[
+  {
+    "tag": "us-gaap:AccountsPayableCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "accountPayables",
+    "required_role": "statement.bs.accounts_payable"
+  },
+  {
+    "tag": "us-gaap:AccountsReceivableNetCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "netReceivables",
+    "required_role": "statement.bs.accounts_receivable"
+  },
+  {
+    "tag": "us-gaap:AccruedLiabilitiesCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "accruedExpenses",
+    "required_role": "statement.bs.accrued_expenses"
+  },
+  {
+    "tag": "us-gaap:AccumulatedOtherComprehensiveIncomeLossNetOfTax",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "accumulatedOtherComprehensiveIncomeLoss",
+    "required_role": "statement.bs.accumulated_other_comprehensive_income"
+  },
+  {
+    "tag": "us-gaap:PaymentsToAcquireBusinessesNetOfCashAcquired",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "acquisitionsNet",
+    "required_role": "statement.cf.acquisitions_of_businesses"
+  },
+  {
+    "tag": "us-gaap:AdditionalPaidInCapital",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "additionalPaidInCapital",
+    "required_role": "statement.bs.additional_paid_in_capital"
+  },
+  {
+    "tag": null,
+    "statement_role": null,
+    "binding_kind": "market_observation",
+    "native_endpoint": "profile",
+    "native_field": "beta",
+    "required_role": null
+  },
+  {
+    "tag": "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "capitalExpenditure",
+    "required_role": "statement.cf.capital_expenditures"
+  },
+  {
+    "tag": "us-gaap:CashAndCashEquivalentsAtCarryingValue",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "cashAndCashEquivalents",
+    "required_role": "statement.bs.cash_and_equivalents"
+  },
+  {
+    "tag": "us-gaap:CashCashEquivalentsAndShortTermInvestments",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "cashAndShortTermInvestments",
+    "required_role": "statement.bs.cash_and_short_term_investments"
+  },
+  {
+    "tag": "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "cashAtEndOfPeriod",
+    "required_role": "statement.cf.cash_flow_cash_end_of_period"
+  },
+  {
+    "tag": "us-gaap:ProceedsFromPaymentsForOtherFinancingActivities",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "otherFinancingActivities",
+    "required_role": "statement.cf.cf_other_financing_activities"
+  },
+  {
+    "tag": "us-gaap:PaymentsForProceedsFromOtherInvestingActivities",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "otherInvestingActivities",
+    "required_role": "statement.cf.cf_other_investing_activities"
+  },
+  {
+    "tag": "us-gaap:OtherNoncashIncomeExpense",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "otherNonCashItems",
+    "required_role": "statement.cf.cf_other_non_cash_items"
+  },
+  {
+    "tag": "us-gaap:IncreaseDecreaseInAccountsPayable",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "accountsPayables",
+    "required_role": "statement.cf.change_in_accounts_payable"
+  },
+  {
+    "tag": "us-gaap:IncreaseDecreaseInAccountsReceivable",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "accountsReceivables",
+    "required_role": "statement.cf.change_in_accounts_receivable"
+  },
+  {
+    "tag": "us-gaap:DeferredIncomeTaxExpenseBenefit",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "deferredIncomeTax",
+    "required_role": "statement.cf.change_in_deferred_income_taxes"
+  },
+  {
+    "tag": "us-gaap:IncreaseDecreaseInInventories",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "inventory",
+    "required_role": "statement.cf.change_in_inventory"
+  },
+  {
+    "tag": "us-gaap:IncreaseDecreaseInOtherOperatingCapitalNet",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "otherWorkingCapital",
+    "required_role": "statement.cf.change_in_other_working_capital"
+  },
+  {
+    "tag": "us-gaap:CommonStockValue",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "commonStock",
+    "required_role": "statement.bs.common_stock"
+  },
+  {
+    "tag": "us-gaap:CostOfGoodsAndServicesSold",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "costOfRevenue",
+    "required_role": "statement.is.cost_of_revenue"
+  },
+  {
+    "tag": null,
+    "statement_role": null,
+    "binding_kind": "market_observation",
+    "native_endpoint": "manual",
+    "native_field": "default",
+    "required_role": null
+  },
+  {
+    "tag": "us-gaap:ContractWithCustomerLiabilityCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "deferredRevenue",
+    "required_role": "statement.bs.deferred_revenue"
+  },
+  {
+    "tag": "us-gaap:ContractWithCustomerLiabilityNoncurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "deferredRevenueNonCurrent",
+    "required_role": "statement.bs.deferred_revenue_noncurrent"
+  },
+  {
+    "tag": "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "weightedAverageShsOut",
+    "required_role": "statement.is.basic_shares"
+  },
+  {
+    "tag": "us-gaap:DeferredIncomeTaxAssetsNet",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "taxAssets",
+    "required_role": "statement.bs.deferred_tax_assets"
+  },
+  {
+    "tag": "us-gaap:DeferredIncomeTaxLiabilitiesNet",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "deferredTaxLiabilitiesNonCurrent",
+    "required_role": "statement.bs.deferred_tax_liabilities"
+  },
+  {
+    "tag": "us-gaap:DepreciationDepletionAndAmortization",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "depreciationAndAmortization",
+    "required_role": "statement.cf.depreciation_amortization"
+  },
+  {
+    "tag": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "weightedAverageShsOutDil",
+    "required_role": "statement.is.diluted_shares"
+  },
+  {
+    "tag": "us-gaap:PaymentsOfDividendsCommonStock",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "commonDividendsPaid",
+    "required_role": "statement.cf.dividends_paid"
+  },
+  {
+    "tag": "us-gaap:EarningsBeforeInterestTaxesDepreciationAndAmortization",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "ebitda",
+    "required_role": "statement.is.ebitda"
+  },
+  {
+    "tag": "us-gaap:EffectOfExchangeRateOnCashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "effectOfForexChangesOnCash",
+    "required_role": "statement.cf.effect_of_exchange_rate_on_cash"
+  },
+  {
+    "tag": "us-gaap:EarningsPerShareBasic",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "eps",
+    "required_role": "statement.is.eps_basic"
+  },
+  {
+    "tag": "us-gaap:EarningsPerShareDiluted",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "epsDiluted",
+    "required_role": "statement.is.eps_diluted"
+  },
+  {
+    "tag": null,
+    "statement_role": null,
+    "binding_kind": "market_observation",
+    "native_endpoint": "manual",
+    "native_field": "default",
+    "required_role": null
+  },
+  {
+    "tag": "us-gaap:NetCashProvidedByUsedInFinancingActivities",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "netCashProvidedByFinancingActivities",
+    "required_role": "statement.cf.financing_cash_flow"
+  },
+  {
+    "tag": null,
+    "statement_role": "cash_flow",
+    "binding_kind": "aggregate_derivation",
+    "native_endpoint": "cash_flow",
+    "native_field": "freeCashFlow",
+    "required_role": "statement.cf.free_cash_flow"
+  },
+  {
+    "tag": "us-gaap:GeneralAndAdministrativeExpense",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "generalAndAdministrativeExpenses",
+    "required_role": "statement.is.general_and_administrative"
+  },
+  {
+    "tag": "us-gaap:Goodwill",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "goodwill",
+    "required_role": "statement.bs.goodwill"
+  },
+  {
+    "tag": "us-gaap:GrossProfit",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "grossProfit",
+    "required_role": "statement.is.gross_profit"
+  },
+  {
+    "tag": "us-gaap:IncomeTaxExpenseBenefit",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "incomeTaxExpense",
+    "required_role": "statement.is.income_tax"
+  },
+  {
+    "tag": "us-gaap:IntangibleAssetsNetExcludingGoodwill",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "intangibleAssets",
+    "required_role": "statement.bs.intangible_assets"
+  },
+  {
+    "tag": "us-gaap:InterestExpense",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "interestExpense",
+    "required_role": "statement.is.interest_expense"
+  },
+  {
+    "tag": "us-gaap:InterestIncomeExpenseNonoperatingNet",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "interestIncome",
+    "required_role": "statement.is.interest_income"
+  },
+  {
+    "tag": "us-gaap:InventoryNet",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "inventory",
+    "required_role": "statement.bs.inventory"
+  },
+  {
+    "tag": "us-gaap:NetCashProvidedByUsedInInvestingActivities",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "netCashProvidedByInvestingActivities",
+    "required_role": "statement.cf.investing_cash_flow"
+  },
+  {
+    "tag": "us-gaap:OperatingLeaseLiabilityCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "capitalLeaseObligationsCurrent",
+    "required_role": "statement.bs.current_lease_liability"
+  },
+  {
+    "tag": "us-gaap:FinanceLeaseLiabilityNoncurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "capitalLeaseObligationsNonCurrent",
+    "required_role": "statement.bs.lease_liability_noncurrent"
+  },
+  {
+    "tag": "us-gaap:LongTermDebtNoncurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "longTermDebt",
+    "required_role": "statement.bs.long_term_debt"
+  },
+  {
+    "tag": "us-gaap:NetIncomeLoss",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "netIncome",
+    "required_role": "statement.is.net_income"
+  },
+  {
+    "tag": null,
+    "statement_role": "cash_flow",
+    "binding_kind": "aggregate_derivation",
+    "native_endpoint": "cash_flow",
+    "native_field": "longTermNetDebtIssuance",
+    "required_role": "statement.cf.net_long_term_debt_issuance"
+  },
+  {
+    "tag": "us-gaap:NetCashProvidedByUsedInOperatingActivities",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "operatingCashFlow",
+    "required_role": "statement.cf.operating_cash_flow"
+  },
+  {
+    "tag": "us-gaap:OperatingExpenses",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "operatingExpenses",
+    "required_role": "statement.is.operating_expenses"
+  },
+  {
+    "tag": "us-gaap:OperatingIncomeLoss",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "operatingIncome",
+    "required_role": "statement.is.operating_income"
+  },
+  {
+    "tag": "us-gaap:NonoperatingIncomeExpense",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "totalOtherIncomeExpensesNet",
+    "required_role": "statement.is.other_income_expense"
+  },
+  {
+    "tag": "us-gaap:OtherAssetsNoncurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "otherNonCurrentAssets",
+    "required_role": "statement.bs.other_non_current_assets"
+  },
+  {
+    "tag": "us-gaap:OtherLiabilitiesNoncurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "otherNonCurrentLiabilities",
+    "required_role": "statement.bs.other_non_current_liabilities"
+  },
+  {
+    "tag": "us-gaap:PrepaidExpenseAndOtherAssetsCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "prepaids",
+    "required_role": "statement.bs.prepaid_expenses"
+  },
+  {
+    "tag": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "incomeBeforeTax",
+    "required_role": "statement.is.pretax_income"
+  },
+  {
+    "tag": "us-gaap:ProceedsFromStockPlans",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "commonStockIssuance",
+    "required_role": "statement.cf.proceeds_from_stock_plans"
+  },
+  {
+    "tag": "us-gaap:PropertyPlantAndEquipmentNet",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "propertyPlantEquipmentNet",
+    "required_role": "statement.bs.property_plant_equipment_net"
+  },
+  {
+    "tag": "us-gaap:PaymentsToAcquireInvestments",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "purchasesOfInvestments",
+    "required_role": "statement.cf.purchases_of_investments"
+  },
+  {
+    "tag": "us-gaap:ResearchAndDevelopmentExpense",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "researchAndDevelopmentExpenses",
+    "required_role": "statement.is.research_and_development"
+  },
+  {
+    "tag": "us-gaap:RetainedEarningsAccumulatedDeficit",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "retainedEarnings",
+    "required_role": "statement.bs.retained_earnings"
+  },
+  {
+    "tag": "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "revenue",
+    "required_role": "statement.is.revenue"
+  },
+  {
+    "tag": null,
+    "statement_role": null,
+    "binding_kind": "market_observation",
+    "native_endpoint": "manual",
+    "native_field": "default",
+    "required_role": null
+  },
+  {
+    "tag": "us-gaap:SellingAndMarketingExpense",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "sellingAndMarketingExpenses",
+    "fallback_native_field": "sellingGeneralAndAdministrativeExpenses",
+    "required_role": "statement.is.sales_and_marketing"
+  },
+  {
+    "tag": "us-gaap:ProceedsFromSaleAndMaturityOfMarketableSecurities",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "salesMaturitiesOfInvestments",
+    "required_role": "statement.cf.sales_maturities_of_investments"
+  },
+  {
+    "tag": "us-gaap:SellingGeneralAndAdministrativeExpense",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "sellingGeneralAndAdministrativeExpenses",
+    "required_role": "statement.is.selling_general_and_administrative"
+  },
+  {
+    "tag": "us-gaap:PaymentsForRepurchaseOfCommonStock",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "commonStockRepurchased",
+    "required_role": "statement.cf.share_repurchases"
+  },
+  {
+    "tag": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+    "statement_role": "income_statement",
+    "binding_kind": "filing_line",
+    "native_endpoint": "income_statement",
+    "native_field": "weightedAverageShsOutDil",
+    "required_role": "statement.is.shares_outstanding"
+  },
+  {
+    "tag": "us-gaap:ShortTermBorrowings",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "shortTermDebt",
+    "required_role": "statement.bs.short_term_debt"
+  },
+  {
+    "tag": null,
+    "statement_role": null,
+    "binding_kind": "market_observation",
+    "native_endpoint": "manual",
+    "native_field": "default",
+    "required_role": null
+  },
+  {
+    "tag": "us-gaap:ShareBasedCompensation",
+    "statement_role": "cash_flow",
+    "binding_kind": "filing_line",
+    "native_endpoint": "cash_flow",
+    "native_field": "stockBasedCompensation",
+    "required_role": "statement.cf.stock_based_compensation"
+  },
+  {
+    "tag": null,
+    "statement_role": null,
+    "binding_kind": "market_observation",
+    "native_endpoint": "quote",
+    "native_field": "price",
+    "required_role": null
+  },
+  {
+    "tag": "us-gaap:Assets",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "totalAssets",
+    "required_role": "statement.bs.total_assets"
+  },
+  {
+    "tag": "us-gaap:AssetsCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "totalCurrentAssets",
+    "required_role": "statement.bs.total_current_assets"
+  },
+  {
+    "tag": "us-gaap:LiabilitiesCurrent",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "totalCurrentLiabilities",
+    "required_role": "statement.bs.total_current_liabilities"
+  },
+  {
+    "tag": null,
+    "statement_role": "balance_sheet",
+    "binding_kind": "vendor_convenience",
+    "native_endpoint": "balance_sheet",
+    "native_field": "totalDebt",
+    "required_role": "statement.bs.total_debt"
+  },
+  {
+    "tag": "us-gaap:StockholdersEquity",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "totalStockholdersEquity",
+    "required_role": "statement.bs.total_equity"
+  },
+  {
+    "tag": "us-gaap:Liabilities",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "totalLiabilities",
+    "required_role": "statement.bs.total_liabilities"
+  },
+  {
+    "tag": "us-gaap:TreasuryStockCommonValue",
+    "statement_role": "balance_sheet",
+    "binding_kind": "filing_line",
+    "native_endpoint": "balance_sheet",
+    "native_field": "treasuryStock",
+    "negate": true,
+    "required_role": "statement.bs.treasury_stock"
+  },
+  {
+    "tag": null,
+    "statement_role": "balance_sheet",
+    "binding_kind": "vendor_convenience",
+    "native_endpoint": "key_metrics",
+    "native_field": "workingCapital",
+    "required_role": null
+  }
+]

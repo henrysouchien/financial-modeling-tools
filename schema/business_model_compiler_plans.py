@@ -265,13 +265,12 @@ def _reconcile_segments(
 
 
 def _is_unmanaged_residual_snapshot_segment(snapshot_segment: Any) -> bool:
+    # Residual identity is owned by the snapshot producers (schema/segments.py,
+    # schema/segment_override_helpers.py), which stamp every residual
+    # observation with source == "derived_other" and never assign an EDGAR
+    # member. Rely on that provenance signal; the segment's display name is
+    # not part of the contract.
     if str(getattr(snapshot_segment, "edgar_member", "") or "").strip():
-        return False
-    if _normalize_name(getattr(snapshot_segment, "name", "")) not in {
-        "other",
-        "other segments",
-        "all other",
-    }:
         return False
     observations = list(getattr(snapshot_segment, "revenue_observations", None) or [])
     if not observations:

@@ -1,0 +1,34 @@
+{
+  "schema_version": "model-kind-registry.v1",
+  "provenance": "docs/design/issuer-generic-build-implementation-plan-2026-08-19.md §5.2 / §7 IG-3 (ratified 2026-08-20); rows restate the deploy-affinity constant and the profile-resolution branch they replaced, byte-for-byte in behavior. The SYNX row is §7 IG-7's synthetic minimal model kind: a deliberately fictional issuer authored purely as data, whose profile rides the artifact arm and whose pinned corpus is a checked-in test fixture (tests/fixtures/synthetic_model_kind), not a packaged deploy corpus.",
+  "model_kinds": [
+    {
+      "ticker": "MSCI",
+      "corpus_id": "msci_annual_v1",
+      "packaged_corpus": "msci_annual_v1",
+      "profile_ref": "artifact:msci_annual_v1.json",
+      "deploy_active": true
+    },
+    {
+      "ticker": "SYNX",
+      "corpus_id": "synx_annual_v1",
+      "packaged_corpus": "synx_annual_v1",
+      "profile_ref": "artifact:synx_annual_v1.json",
+      "deploy_active": true
+    },
+    {
+      "ticker": "PCTY",
+      "corpus_id": "pcty_annual_v1",
+      "packaged_corpus": "pcty_annual_v1",
+      "profile_ref": "artifact:pcty_annual_v1.json",
+      "deploy_active": false
+    },
+    {
+      "ticker": "PCTY",
+      "corpus_id": "pcty_annual_v2",
+      "packaged_corpus": "pcty_annual_v2",
+      "profile_ref": "artifact:pcty_annual_v2.json",
+      "deploy_active": true
+    }
+  ]
+}

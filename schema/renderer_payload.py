@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import re
-import sys
 from typing import Any, Dict, Iterable, List, Optional
 
+from .dependency_graph_helpers import (
+    _col_to_index as _col_to_index,
+    _index_to_col as _index_to_col,
+)
 from .renderer_types import CellFormat, CellWrite, RenderPlan, SheetSetup
 
 
-_PARENT_MODULE = "schema.renderer"
 _CELL_RE = re.compile(r"^([A-Z]+)(\d+)$")
 _RANGE_RE = re.compile(r"^([A-Z]+)(\d+):([A-Z]+)(\d+)$")
-
-
-def _compat(name: str, fallback: Any) -> Any:
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is not None and hasattr(parent, name):
-        return getattr(parent, name)
-    return fallback
 
 
 def plan_to_mcp_calls(
@@ -36,10 +31,6 @@ def plan_to_mcp_calls(
         if sheet_name not in setup_by_sheet and sheet_name not in ordered_sheets:
             ordered_sheets.append(sheet_name)
 
-    data_column_bounds = _compat("_data_column_bounds", _data_column_bounds)
-    batch_sheet_writes = _compat("_batch_sheet_writes", _batch_sheet_writes)
-    batch_sheet_formats = _compat("_batch_sheet_formats", _batch_sheet_formats)
-
     calls: List[Dict[str, Any]] = []
     for sheet_name in ordered_sheets:
         if sheet_name not in existing:
@@ -53,15 +44,17 @@ def plan_to_mcp_calls(
 
         calls.append({"tool_name": "switch_sheet", "tool_input": {"sheet_name": sheet_name}})
 
-        first_data_col_index, last_data_col_index = data_column_bounds(setup_by_sheet.get(sheet_name))
-        for payload in batch_sheet_writes(
+        first_data_col_index, last_data_col_index = _data_column_bounds(
+            setup_by_sheet.get(sheet_name)
+        )
+        for payload in _batch_sheet_writes(
             writes_by_sheet.get(sheet_name, []),
             first_data_col_index,
             last_data_col_index,
         ):
             calls.append({"tool_name": "write_cells", "tool_input": payload})
 
-        for payload in batch_sheet_formats(formats_by_sheet.get(sheet_name, [])):
+        for payload in _batch_sheet_formats(formats_by_sheet.get(sheet_name, [])):
             calls.append({"tool_name": "format_cells", "tool_input": payload})
 
     return calls
@@ -102,8 +95,7 @@ def render_plan_to_addin_payload(
                 sheet_payload["freeze_panes"] = setup.freeze_panes
         sheets.append(sheet_payload)
 
-    plan_to_calls = _compat("plan_to_mcp_calls", plan_to_mcp_calls)
-    calls = plan_to_calls(plan, existing_sheets=None)
+    calls = plan_to_mcp_calls(plan, existing_sheets=None)
     writes: List[Dict[str, Any]] = []
     formats: List[Dict[str, Any]] = []
     current_sheet: Optional[str] = None
@@ -137,20 +129,19 @@ def render_plan_to_addin_payload(
 
 
 def _data_column_bounds(setup: Optional[SheetSetup]) -> tuple[int, int]:
-    col_to_index = _compat("_col_to_index", _col_to_index)
     if setup is None:
         return 1, 1
     if setup.first_data_column:
-        first_index = col_to_index(setup.first_data_column)
+        first_index = _col_to_index(setup.first_data_column)
         data_width_indices = [
-            col_to_index(column)
+            _col_to_index(column)
             for column in setup.column_widths
-            if col_to_index(column) >= first_index
+            if _col_to_index(column) >= first_index
         ]
         return first_index, max(data_width_indices, default=first_index)
     if not setup.column_widths:
         return 1, 1
-    indices = sorted(col_to_index(column) for column in setup.column_widths)
+    indices = sorted(_col_to_index(column) for column in setup.column_widths)
     if len(indices) == 1:
         return indices[0], indices[0]
     return indices[1], indices[-1]
@@ -164,9 +155,6 @@ def _batch_sheet_writes(
     payloads: List[Dict[str, Any]] = []
     pending_vertical: List[tuple[int, int, Any]] = []
     pending_row: List[tuple[int, int, Any]] = []
-    split_cell = _compat("_split_cell", _split_cell)
-    col_to_index = _compat("_col_to_index", _col_to_index)
-    index_to_col = _compat("_index_to_col", _index_to_col)
 
     def flush_vertical() -> None:
         nonlocal pending_vertical
@@ -174,7 +162,7 @@ def _batch_sheet_writes(
             return
         start_col, start_row, first_value = pending_vertical[0]
         end_row = pending_vertical[-1][1]
-        cell_col = index_to_col(start_col)
+        cell_col = _index_to_col(start_col)
         if len(pending_vertical) == 1:
             payloads.append(
                 {
@@ -211,22 +199,22 @@ def _batch_sheet_writes(
             if len(run) == 1:
                 payloads.append(
                     {
-                        "range": f"{index_to_col(start_col)}{row}",
+                        "range": f"{_index_to_col(start_col)}{row}",
                         "values": values[0],
                     }
                 )
             else:
                 payloads.append(
                     {
-                        "range": f"{index_to_col(start_col)}{row}:{index_to_col(end_col)}{row}",
+                        "range": f"{_index_to_col(start_col)}{row}:{_index_to_col(end_col)}{row}",
                         "values": [values],
                     }
                 )
         pending_row = []
 
     for write in writes:
-        col_letters, row = split_cell(write.cell)
-        col_idx = col_to_index(col_letters)
+        col_letters, row = _split_cell(write.cell)
+        col_idx = _col_to_index(col_letters)
         is_data = col_idx >= first_data_col_index
         if is_data:
             flush_vertical()
@@ -260,7 +248,6 @@ def _batch_sheet_formats(formats: List[CellFormat]) -> List[Dict[str, Any]]:
     current_end_row = 0
     current_start_col = ""
     current_end_col = ""
-    split_range = _compat("_split_range", _split_range)
 
     def flush() -> None:
         nonlocal current, current_start_row, current_end_row, current_start_col, current_end_col
@@ -290,7 +277,7 @@ def _batch_sheet_formats(formats: List[CellFormat]) -> List[Dict[str, Any]]:
         current = None
 
     for fmt in formats:
-        start_col, start_row, end_col, end_row = split_range(fmt.range)
+        start_col, start_row, end_col, end_row = _split_range(fmt.range)
         if (
             current is not None
             and current.bold == fmt.bold
@@ -330,23 +317,6 @@ def _split_range(range_text: str) -> tuple[str, int, str, int]:
     if match is None:
         raise ValueError(f"Invalid range reference: {range_text}")
     return match.group(1), int(match.group(2)), match.group(3), int(match.group(4))
-
-
-def _col_to_index(col: str) -> int:
-    index = 0
-    for ch in col.upper():
-        if not ch.isalpha():
-            continue
-        index = index * 26 + (ord(ch) - ord("A") + 1)
-    return index
-
-
-def _index_to_col(idx: int) -> str:
-    letters: List[str] = []
-    while idx > 0:
-        idx, rem = divmod(idx - 1, 26)
-        letters.append(chr(rem + ord("A")))
-    return "".join(reversed(letters))
 
 
 __all__ = [

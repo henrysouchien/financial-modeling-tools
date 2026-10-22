@@ -52,6 +52,9 @@ class WikiArticle(BaseModel):
     source_modules: list[int] = Field(default_factory=list)
     related: list[str] = Field(default_factory=list)
     cases: list[str] = Field(default_factory=list)
+    # The company this article is about, when it is about one. Memory ingest
+    # reads it so a recalled curriculum chunk states its entity.
+    ticker: str | None = None
     family: WikiFamily | None = None
     time_horizon: WikiTimeHorizon | None = None
 

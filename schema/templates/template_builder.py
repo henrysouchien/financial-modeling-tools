@@ -1,11 +1,20 @@
-"""Build the checked-in PCTY reference and generic SIA template artifacts."""
+"""Build the checked-in generic SIA template artifact from checked-in inputs.
+
+The build's source model is a checked-in capture of the parsed source
+workbook (``template_source_inputs``), so regeneration runs on any machine
+and the workbook path survives only as provenance inside that artifact.
+The reference-artifact oracle has no production consumer and lives beside its
+tests in ``tests/reference_template_oracle.py``. Source-input ownership is in
+``schema/templates/source_inputs/README.md``; the engine map is
+``schema/README.md``.
+"""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Callable, Dict, List, Mapping, Optional, overload, Sequence, Set
 
 from ..models import (
     BuildStatus,
@@ -25,66 +34,34 @@ from ..models import (
     SheetLayout,
     SheetType,
     StatementSectionRole,
+    StatementSectionRoleKind,
 )
+from ..refs import line_item_ref_from_obj
+from industry_slice_core.industry_types import Unit
 from ..build_diagnostic_sections import BS_SECTIONS
-from ..reader import read_model
+from ..required_role_catalog import load_required_role_catalog
 
 from .template_builder_config import (
-    PCTY_PATH as PCTY_PATH,
-    MODEL_TEMPLATE_PATH as MODEL_TEMPLATE_PATH,
-    PCTY_REFERENCE_TEMPLATE_PATH as PCTY_REFERENCE_TEMPLATE_PATH,
     SIA_GENERIC_TEMPLATE_PATH as SIA_GENERIC_TEMPLATE_PATH,
     KEPT_SHEETS as KEPT_SHEETS,
-    EXPECTED_ITEM_COUNT as EXPECTED_ITEM_COUNT,
     EXPECTED_ITEM_COUNT_GENERIC as EXPECTED_ITEM_COUNT_GENERIC,
     EXPECTED_SECTION_COUNTS as EXPECTED_SECTION_COUNTS,
-    EXPECTED_SHEET_ITEM_COUNTS as EXPECTED_SHEET_ITEM_COUNTS,
     EXPECTED_SHEET_ITEM_COUNTS_GENERIC as EXPECTED_SHEET_ITEM_COUNTS_GENERIC,
     TemplateRole as TemplateRole,
     SectionSpec as SectionSpec,
     TemplateMetadataSpec as TemplateMetadataSpec,
     PlaceholderInserter as PlaceholderInserter,
     TemplateBuildConfig as TemplateBuildConfig,
-    ASSUMPTIONS_SECTIONS as ASSUMPTIONS_SECTIONS,
-    FINANCIAL_MODEL_SECTIONS as FINANCIAL_MODEL_SECTIONS,
-    SECTION_SPECS as SECTION_SPECS,
-    SECTION_SPECS_PCTY as SECTION_SPECS_PCTY,
     ASSUMPTIONS_SECTIONS_GENERIC as ASSUMPTIONS_SECTIONS_GENERIC,
     FINANCIAL_MODEL_SECTIONS_GENERIC as FINANCIAL_MODEL_SECTIONS_GENERIC,
     SECTION_SPECS_GENERIC as SECTION_SPECS_GENERIC,
     SHEET_PREFIX as SHEET_PREFIX,
-    CANONICAL_NAME_OVERRIDES as CANONICAL_NAME_OVERRIDES,
-    CANONICAL_NAME_OVERRIDES_PCTY as CANONICAL_NAME_OVERRIDES_PCTY,
     CANONICAL_NAME_OVERRIDES_GENERIC as CANONICAL_NAME_OVERRIDES_GENERIC,
-    EXPECTED_HEADER_DEPENDENCY_TARGETS as EXPECTED_HEADER_DEPENDENCY_TARGETS,
-    SCENARIO_LINKED_IDS as SCENARIO_LINKED_IDS,
-    SCENARIO_TABLE_IDS as SCENARIO_TABLE_IDS,
-    INPUT_IDS as INPUT_IDS,
-    KEY_DRIVER_IDS as KEY_DRIVER_IDS,
-    OPTIONAL_IDS as OPTIONAL_IDS,
-    TEMPLATE_TOKENS as TEMPLATE_TOKENS,
-    BUILD_NOTES as BUILD_NOTES,
-    HEADER_DEPENDENCY_NOTES as HEADER_DEPENDENCY_NOTES,
-    REPEAT_GROUP_ROLES as REPEAT_GROUP_ROLES,
-    REPEAT_GROUP_IDS as REPEAT_GROUP_IDS,
     CASH_FLOW_ARTIFACT_HISTORICAL_IDS as CASH_FLOW_ARTIFACT_HISTORICAL_IDS,
     IF_APPLICABLE_DEFAULT_ZERO_IDS as IF_APPLICABLE_DEFAULT_ZERO_IDS,
     CASH_FLOW_FULL_PROJECTION_IDS as CASH_FLOW_FULL_PROJECTION_IDS,
     CASH_FLOW_PER_SHARE_PROJECTION_IDS as CASH_FLOW_PER_SHARE_PROJECTION_IDS,
     CASH_FLOW_NET_INCOME_SOURCE_ID as CASH_FLOW_NET_INCOME_SOURCE_ID,
-    DATA_CONCEPT_MAP as DATA_CONCEPT_MAP,
-    EXPECTED_HEADER_DEPENDENCY_TARGETS_PCTY as EXPECTED_HEADER_DEPENDENCY_TARGETS_PCTY,
-    SCENARIO_LINKED_IDS_PCTY as SCENARIO_LINKED_IDS_PCTY,
-    SCENARIO_TABLE_IDS_PCTY as SCENARIO_TABLE_IDS_PCTY,
-    INPUT_IDS_PCTY as INPUT_IDS_PCTY,
-    KEY_DRIVER_IDS_PCTY as KEY_DRIVER_IDS_PCTY,
-    OPTIONAL_IDS_PCTY as OPTIONAL_IDS_PCTY,
-    TEMPLATE_TOKENS_PCTY as TEMPLATE_TOKENS_PCTY,
-    BUILD_NOTES_PCTY as BUILD_NOTES_PCTY,
-    HEADER_DEPENDENCY_NOTES_PCTY as HEADER_DEPENDENCY_NOTES_PCTY,
-    REPEAT_GROUP_ROLES_PCTY as REPEAT_GROUP_ROLES_PCTY,
-    REPEAT_GROUP_IDS_PCTY as REPEAT_GROUP_IDS_PCTY,
-    DATA_CONCEPT_MAP_PCTY as DATA_CONCEPT_MAP_PCTY,
     EXPECTED_HEADER_DEPENDENCY_TARGETS_GENERIC as EXPECTED_HEADER_DEPENDENCY_TARGETS_GENERIC,
     SCENARIO_LINKED_IDS_GENERIC as SCENARIO_LINKED_IDS_GENERIC,
     _SCENARIO_SELECTOR_ID as _SCENARIO_SELECTOR_ID,
@@ -92,6 +69,7 @@ from .template_builder_config import (
     _SCENARIO_LINKED_OFFSET_ANCHORS as _SCENARIO_LINKED_OFFSET_ANCHORS,
     SCENARIO_TABLE_IDS_GENERIC as SCENARIO_TABLE_IDS_GENERIC,
     INPUT_IDS_GENERIC as INPUT_IDS_GENERIC,
+    PROJECTED_ZERO_DEFAULT_TEMPLATE_IDS_GENERIC as PROJECTED_ZERO_DEFAULT_TEMPLATE_IDS_GENERIC,
     KEY_DRIVER_IDS_GENERIC as KEY_DRIVER_IDS_GENERIC,
     OPTIONAL_IDS_GENERIC as OPTIONAL_IDS_GENERIC,
     TEMPLATE_TOKENS_GENERIC as TEMPLATE_TOKENS_GENERIC,
@@ -100,7 +78,12 @@ from .template_builder_config import (
     HEADER_DEPENDENCY_NOTES_GENERIC as HEADER_DEPENDENCY_NOTES_GENERIC,
     REPEAT_GROUP_ROLES_GENERIC as REPEAT_GROUP_ROLES_GENERIC,
     REPEAT_GROUP_IDS_GENERIC as REPEAT_GROUP_IDS_GENERIC,
-    DATA_CONCEPT_MAP_GENERIC as DATA_CONCEPT_MAP_GENERIC,
+)
+
+from .template_source_inputs import (
+    TemplateRegenerationInputMissing as TemplateRegenerationInputMissing,
+    load_template_source_model as load_template_source_model,
+    source_input_path as source_input_path,
 )
 
 from .template_builder_insertions import (
@@ -111,21 +94,53 @@ from .template_builder_insertions import (
     _find_sheet_item as _find_sheet_item,
     _find_section_with_item as _find_section_with_item,
     _apply_label_overrides as _apply_label_overrides,
+    _normalize_generic_accounting_baseline as _normalize_generic_accounting_baseline,
     _insert_sum_ref_after as _insert_sum_ref_after,
     _insert_other_non_current_assets_row as _insert_other_non_current_assets_row,
-    _insert_deferred_revenue_row as _insert_deferred_revenue_row,
     _insert_other_current_liabilities_row as _insert_other_current_liabilities_row,
     _insert_commercial_paper_row as _insert_commercial_paper_row,
     _insert_deferred_revenue_noncurrent_row as _insert_deferred_revenue_noncurrent_row,
-    _insert_inventory_row as _insert_inventory_row,
     _insert_investment_activity_rows as _insert_investment_activity_rows,
+    _insert_house_revenue_ratio_rows as _insert_house_revenue_ratio_rows,
+    _insert_acquisition_goodwill_allocation_row as _insert_acquisition_goodwill_allocation_row,
+    _insert_treasury_stock_face_row as _insert_treasury_stock_face_row,
+    _insert_balance_sheet_face_rows as _insert_balance_sheet_face_rows,
+    _insert_short_term_investments_row as _insert_short_term_investments_row,
+    _insert_per_share_face_rows as _insert_per_share_face_rows,
+    _insert_operating_depreciation_amortization_row as _insert_operating_depreciation_amortization_row,
+    _insert_selling_general_administrative_row as _insert_selling_general_administrative_row,
+    _insert_net_income_attributable_to_nci_rows as _insert_net_income_attributable_to_nci_rows,
+    _insert_restructuring_charges_row as _insert_restructuring_charges_row,
+    _install_sga_driver_base as _install_sga_driver_base,
+    _insert_long_term_asset_3_rows as _insert_long_term_asset_3_rows,
+    _add_share_based_compensation_to_apic_roll_forward as _add_share_based_compensation_to_apic_roll_forward,
+    _generate_statement_totals as _generate_statement_totals,
+    _install_optional_slot_carry_forward as _install_optional_slot_carry_forward,
+    _install_current_debt_bridge as _install_current_debt_bridge,
+    _install_share_count_schedule as _install_share_count_schedule,
+    _install_debt_interest_identities as _install_debt_interest_identities,
+    _install_historical_schedule_identities as _install_historical_schedule_identities,
+    _install_financing_residual_defaults as _install_financing_residual_defaults,
+    _install_non_gaap_other_items_default as _install_non_gaap_other_items_default,
+    _install_non_gaap_tax_effect_identity as _install_non_gaap_tax_effect_identity,
+    _install_projected_zero_defaults as _install_projected_zero_defaults,
+    _generate_cash_flow_movements as _generate_cash_flow_movements,
+    _insert_unlevered_free_cash_flow_row as _insert_unlevered_free_cash_flow_row,
     _clear_cash_flow_artifact_historicals as _clear_cash_flow_artifact_historicals,
     _set_if_applicable_default_zero_historicals as _set_if_applicable_default_zero_historicals,
     _normalize_cash_flow_projection_links as _normalize_cash_flow_projection_links,
     _normalize_valuation_projection_links as _normalize_valuation_projection_links,
+    _normalize_sbc_per_line_rate_historicals as _normalize_sbc_per_line_rate_historicals,
     _normalize_generic_cash_reconciliation as _normalize_generic_cash_reconciliation,
 )
-from .model_scale import apply_template_model_scales as apply_template_model_scales
+from .template_builder_leases import (
+    install_operating_lease_schedule as install_operating_lease_schedule,
+)
+from .template_builder_schedules import _install_canonical_schedules
+from .model_scale import (
+    apply_template_model_scales as apply_template_model_scales,
+    apply_template_semantic_units as apply_template_semantic_units,
+)
 from .model_scale import assert_template_model_scales_declared as assert_template_model_scales_declared
 
 
@@ -173,24 +188,6 @@ def _build_tpl_mapping(
     return id_map
 
 
-def _build_pcty_to_tpl_mapping(model: FinancialModel) -> Dict[str, str]:
-    return _build_tpl_mapping(
-        model,
-        section_specs=SECTION_SPECS_PCTY,
-        name_overrides=CANONICAL_NAME_OVERRIDES_PCTY,
-        expected_item_count=EXPECTED_ITEM_COUNT,
-    )
-
-
-def _build_generic_to_tpl_mapping(model: FinancialModel) -> Dict[str, str]:
-    return _build_tpl_mapping(
-        model,
-        section_specs=SECTION_SPECS_GENERIC,
-        name_overrides=CANONICAL_NAME_OVERRIDES_GENERIC,
-        expected_item_count=EXPECTED_ITEM_COUNT_GENERIC,
-    )
-
-
 def _rewrite_refs(obj, id_map: Dict[str, str]):
     if obj is None:
         return None
@@ -207,6 +204,16 @@ def _rewrite_refs(obj, id_map: Dict[str, str]):
     if isinstance(obj, set):
         return {_rewrite_refs(value, id_map) for value in obj}
     return obj
+
+
+@overload
+def _rewrite_formula_spec(spec: None, id_map: Dict[str, str]) -> None: ...
+
+
+@overload
+def _rewrite_formula_spec(
+    spec: FormulaSpec, id_map: Dict[str, str]
+) -> FormulaSpec: ...
 
 
 def _rewrite_formula_spec(spec: Optional[FormulaSpec], id_map: Dict[str, str]) -> Optional[FormulaSpec]:
@@ -271,6 +278,247 @@ def _merge_notes(*notes: Optional[str]) -> Optional[str]:
     return " ".join(parts)
 
 
+def _standing_sum_items(spec: FormulaSpec | None) -> list[LineItemRef] | None:
+    """Same-period members of a standing historical ``SUM`` range, or nothing.
+
+    Only a ``sum_range`` whose function is ``SUM`` is a subtotal identity this
+    installer can close. A period override is a filed value and is not read.
+    """
+
+    if (
+        spec is None
+        or spec.type != FormulaType.arithmetic
+        or spec.subtype != "sum_range"
+        or (spec.params or {}).get("function") != "SUM"
+    ):
+        return None
+    raw_items = (spec.params or {}).get("items")
+    if not isinstance(raw_items, list):
+        return None
+    items: list[LineItemRef] = []
+    for raw in raw_items:
+        ref = raw if isinstance(raw, LineItemRef) else line_item_ref_from_obj(raw)
+        if ref is not None and ref.t == 0:
+            items.append(ref)
+    return items
+
+
+def _formula_params_reference(value: object, target_id: str) -> bool:
+    """Whether a formula param tree names ``target_id``.
+
+    Walks ``LineItemRef`` objects and the dict and list forms a spec can
+    still carry before rehydration. A ref-shaped dict is one id, not a walk
+    into its ``id`` string.
+    """
+
+    ref = line_item_ref_from_obj(value)
+    if ref is not None:
+        return ref.id == target_id
+    if isinstance(value, dict):
+        return any(
+            _formula_params_reference(nested, target_id) for nested in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_formula_params_reference(nested, target_id) for nested in value)
+    return False
+
+
+def _period_spec_references(item: LineItem, period: int, target_id: str) -> bool:
+    """Whether the effective historical spec at ``period`` names ``target_id``.
+
+    The period override wins over the standing historical formula. A constant
+    is a filed value and names nothing; a missing spec names nothing.
+    """
+
+    spec = (item.overrides or {}).get(period) or item.historical
+    if spec is None or spec.type == FormulaType.constant:
+        return False
+    return _formula_params_reference(spec.params, target_id)
+
+
+def _install_cash_and_short_term_investments_history(model: FinancialModel) -> None:
+    """The cash and short-term investments line sums the positions it covers.
+
+    The line is derived from the lines that present cash and short-term
+    investments separately (the catalog's ``covered_by_roles``), so its history
+    is the ``SUM`` over their template items in every historical period.
+    """
+
+    catalog = load_required_role_catalog()
+    role = "statement.bs.cash_and_short_term_investments"
+    items = catalog.role(role).template_items
+    covered = [
+        member
+        for row in catalog.required_roles
+        if role in row.covered_by_roles
+        for member in row.template_items
+    ]
+    if len(items) != 1 or not covered:
+        raise AssertionError(f"{role} has no single template line over covered positions")
+    item = model.get_item(items[0])
+    item.historical = FormulaSpec(
+        type=FormulaType.arithmetic,
+        subtype="sum_range",
+        params={
+            "function": "SUM",
+            "items": [LineItemRef(id=member) for member in covered],
+        },
+    )
+    historical = (
+        model.time_structure.historical_periods
+        or model.time_structure.historical_years
+    )
+    item.formula_periods = sorted(
+        {*(int(period) for period in (item.formula_periods or ())), *(int(period) for period in historical)}
+    )
+
+
+def _install_residual_histories(model: FinancialModel) -> None:
+    """Close each cash-flow residual line's history against its filed total.
+
+    A catalog role carrying ``residual_of`` is the plug of a statement total
+    that the filing prints: the residual's value is whatever the filed total
+    leaves after its other members. Its history is ``total - (the other
+    members of the total's standing historical SUM)``, read from the model as
+    it stands, so operands a cash-flow linkage inserted into the sum are
+    subtracted too. A static template formula cannot say this: the total's own
+    ``SUM`` names the residual.
+
+    Only a plug continues as a plug: a residual whose projection is a modeled
+    formula keeps no history close, because its history would be a different
+    quantity than its projection. The financing residual's total is a
+    ``sum_list`` and sums an ``optional_if_unreported`` line the cash-flow plane
+    does not lower, so its identity is not closed here either.
+
+    A year whose effective total or member spec already names the residual is
+    not a history year: the filed subtotal owns that value, and closing the
+    identity there would cycle. A constant override or stored value remains an
+    input; a per-year formula, including a lowered residual, remains a formula
+    period. No supported year leaves the line unset. This installer owns the
+    line's history years, so a year that lost its subtotal support leaves them.
+    """
+
+    catalog = load_required_role_catalog()
+    historical = list(
+        model.time_structure.historical_periods
+        or model.time_structure.historical_years
+    )
+    model.build_index()
+    for row in catalog.required_roles:
+        if row.residual_of is None or len(row.template_items) != 1:
+            continue
+        total_items = catalog.role(row.residual_of).template_items
+        if len(total_items) != 1:
+            continue
+        residual_id, total_id = row.template_items[0], total_items[0]
+        if residual_id not in model._index or total_id not in model._index:
+            continue
+        item = model.get_item(residual_id)
+        if item.projected is not None and item.projected.type != FormulaType.constant:
+            # A modeled projection (the operating residual's balance-sheet deltas)
+            # is a different quantity than the plug a history close would write.
+            continue
+        total = model.get_item(total_id)
+        members = _standing_sum_items(total.historical)
+        if members is None or not any(ref.id == residual_id for ref in members):
+            continue
+        others = [
+            LineItemRef(id=ref.id) for ref in members if ref.id != residual_id
+        ]
+        if not others or any(ref.id not in model._index for ref in others):
+            continue
+        note = f"residual_of:{row.residual_of}"
+        if item.historical is not None and item.historical.note != note:
+            continue
+        existing_periods = {
+            int(period)
+            for period, spec in (item.overrides or {}).items()
+            if spec.type is FormulaType.constant
+        } | {
+            int(period)
+            for period in (item.values.values if item.values is not None else {})
+        }
+        operands = [total, *(model.get_item(ref.id) for ref in others)]
+        supported_historical = [
+            int(period)
+            for period in historical
+            if int(period) not in existing_periods
+            and not any(
+                _period_spec_references(operand, int(period), residual_id)
+                for operand in operands
+            )
+        ]
+        if not supported_historical and item.historical is None:
+            continue
+        item.historical = FormulaSpec(
+            type=FormulaType.arithmetic,
+            params={
+                "expr": {
+                    "op": "-",
+                    "left": LineItemRef(id=total_id),
+                    "right": others[0]
+                    if len(others) == 1
+                    else {"op": "+", "args": others},
+                }
+            },
+            note=note,
+        )
+        historical_set = {int(period) for period in historical}
+        current = (
+            {int(period) for period in item.formula_periods}
+            if item.formula_periods is not None
+            else historical_set
+            | {
+                int(period)
+                for period in (
+                    model.time_structure.projection_periods
+                    or model.time_structure.projection_years
+                    or ()
+                )
+            }
+        )
+        owned = (current - historical_set) | set(supported_historical)
+        if item.formula_periods is not None or owned != current:
+            item.formula_periods = sorted(owned)
+
+
+def _stamp_scenario_offset_labels(model: FinancialModel) -> None:
+    """Offset anchors are labels, not value cells.
+
+    The renderer reads the rows below the anchor. A blank input on the anchor
+    itself stamps ``missing_source`` in every period. They are not presentation
+    captions and are not required to stay inputs: segment expansion only
+    renames the volume label.
+    """
+
+    if not model._index:
+        model.build_index()
+    for item_id in (
+        "tpl.a.scenario_tables.scenario_volume_growth_label",
+        "tpl.a.scenario_tables.scenario_margin_label",
+    ):
+        item = model._index.get(item_id)
+        if item is not None:
+            item.item_type = ItemType.header
+
+
+def _required_role_by_template_item() -> dict[str, str]:
+    # An alias row shares its home's template items; the stamp names the
+    # canonical home role, never the alias.
+    return {
+        item_id: row.required_role
+        for row in load_required_role_catalog().required_roles
+        if row.alias_of is None
+        for item_id in row.template_items
+    }
+
+
+def _apply_required_role_stamps(model: FinancialModel) -> None:
+    required_role_by_item = _required_role_by_template_item()
+    for _sheet_name, item in _iter_items(model):
+        item.required_role = required_role_by_item.get(item.id)
+
+
 def _assign_metadata(
     model: FinancialModel,
     *,
@@ -283,7 +531,7 @@ def _assign_metadata(
     build_notes: Dict[str, str],
     header_dependency_notes: Dict[str, str],
     repeat_group_roles: Dict[str, str],
-    data_concept_map: Dict[str, str],
+    template_item_id_by_build_item: Mapping[str, str],
     key_driver_ids: Set[str],
 ) -> Set[str]:
     promoted_headers = _discover_header_dependency_targets(model)
@@ -294,6 +542,7 @@ def _assign_metadata(
         )
 
     repeat_group_ids = {item_id: "revenue_segment" for item_id in repeat_group_roles}
+    required_role_by_template_item = _required_role_by_template_item()
     for sheet_name, item in _iter_items(model):
         section = _section_for_row(sheet_name, item.row, section_specs=section_specs)
         if item.id in promoted_headers or item.id in input_ids:
@@ -323,7 +572,9 @@ def _assign_metadata(
             repeat_group_ids=repeat_group_ids,
         )
         item.style = _style_for_item(item.id, role, key_driver_ids=key_driver_ids)
-        item.data_concept_id = data_concept_map.get(item.id)
+        item.required_role = required_role_by_template_item.get(
+            template_item_id_by_build_item[item.id]
+        )
         item.template_token = template_tokens.get(item.id)
         item.repeat_group_id = repeat_group_ids.get(item.id)
         item.repeat_group_role = repeat_group_roles.get(item.id)
@@ -343,8 +594,7 @@ def _apply_balance_sheet_section_roles(model: FinancialModel) -> None:
         item_id: str,
         *,
         section: str,
-        role: str,
-        expected_concept_id: str | None = None,
+        role: StatementSectionRoleKind,
     ) -> None:
         if item_id not in item_by_id:
             raise AssertionError(f"BS section role references unknown item: {item_id}")
@@ -353,10 +603,10 @@ def _apply_balance_sheet_section_roles(model: FinancialModel) -> None:
                 statement=FinancialStatement.balance_sheet,
                 section=section,
                 role=role,
-                expected_concept_id=expected_concept_id,
             )
         )
 
+    role_stamped_items = set(_required_role_by_template_item())
     for section, definition in BS_SECTIONS.items():
         if definition.get("presentation_only"):
             continue
@@ -364,17 +614,15 @@ def _apply_balance_sheet_section_roles(model: FinancialModel) -> None:
             add_role(
                 member.template_item_id,
                 section=section,
-                role="member" if member.expected_concept_id else "catch_all",
-                expected_concept_id=member.expected_concept_id,
+                role="member"
+                if member.template_item_id in role_stamped_items
+                else "catch_all",
             )
         add_role(
             definition["total_item_id"],
             section=section,
             role="section_total",
         )
-        pre_subtotal_item_id = definition.get("pre_subtotal_item_id")
-        if pre_subtotal_item_id:
-            add_role(pre_subtotal_item_id, section=section, role="pre_subtotal")
         included_subtotal_item_id = definition.get("also_includes_subtotal")
         if included_subtotal_item_id:
             add_role(
@@ -417,25 +665,6 @@ def _filter_overrides(
     return result or None
 
 
-def _include_treasury_stock_in_total_equity_historical(model: FinancialModel) -> None:
-    total_equity = _find_sheet_item(
-        model,
-        "Financial_model",
-        "tpl.fm.balance_sheet.total_equity",
-    )
-    spec = total_equity.historical
-    if spec is None or spec.type is not FormulaType.arithmetic:
-        raise AssertionError("total_equity historical formula must be arithmetic")
-
-    items = spec.params.get("items")
-    if not isinstance(items, list) or not all(isinstance(ref, LineItemRef) for ref in items):
-        raise AssertionError("total_equity historical formula must be a SUM over refs")
-
-    treasury_ref = "tpl.a.dividends_shares.treasury_stock"
-    if any(ref.id == treasury_ref for ref in items):
-        return
-
-    spec.params["items"] = [*items, LineItemRef(id=treasury_ref)]
 
 
 def _extend_formula_periods_for_stripped_constants(
@@ -554,45 +783,10 @@ def _validate_template(
             raise AssertionError(f"Unexpected item count for {sheet_name}: {total}")
 
 
-PCTY_TEMPLATE_CONFIG = TemplateBuildConfig(
-    name="pcty",
-    source_path=PCTY_PATH,
-    artifact_path=PCTY_REFERENCE_TEMPLATE_PATH,
-    section_specs=SECTION_SPECS_PCTY,
-    name_overrides=CANONICAL_NAME_OVERRIDES_PCTY,
-    expected_item_count=EXPECTED_ITEM_COUNT,
-    expected_sheet_item_counts=EXPECTED_SHEET_ITEM_COUNTS,
-    metadata=TemplateMetadataSpec(
-        source_model="pcty_reference",
-        notes="PCTY reference 2-sheet template derived from the PCTY reference model",
-        company_name="PCTY Reference Template",
-    ),
-    expected_header_dependency_targets=EXPECTED_HEADER_DEPENDENCY_TARGETS_PCTY,
-    scenario_linked_ids=SCENARIO_LINKED_IDS_PCTY,
-    scenario_table_ids=SCENARIO_TABLE_IDS_PCTY,
-    input_ids=INPUT_IDS_PCTY,
-    key_driver_ids=KEY_DRIVER_IDS_PCTY,
-    optional_ids=OPTIONAL_IDS_PCTY,
-    template_tokens=TEMPLATE_TOKENS_PCTY,
-    build_notes=BUILD_NOTES_PCTY,
-    header_dependency_notes=HEADER_DEPENDENCY_NOTES_PCTY,
-    repeat_group_roles=REPEAT_GROUP_ROLES_PCTY,
-    data_concept_map=DATA_CONCEPT_MAP_PCTY,
-    placeholder_inserters=(
-        _insert_inventory_row,
-        _insert_other_non_current_assets_row,
-        _insert_deferred_revenue_row,
-    ),
-    load_kwargs={
-        "expand_shared": True,
-        "historical_cutoff_year": 2023,
-    },
-    clear_cash_flow_artifact_historicals=True,
-)
-
 GENERIC_TEMPLATE_CONFIG = TemplateBuildConfig(
     name="generic",
-    source_path=MODEL_TEMPLATE_PATH,
+    source_input=source_input_path("sia_generic"),
+    source_input_ref="sia_generic",
     artifact_path=SIA_GENERIC_TEMPLATE_PATH,
     section_specs=SECTION_SPECS_GENERIC,
     name_overrides=CANONICAL_NAME_OVERRIDES_GENERIC,
@@ -607,99 +801,49 @@ GENERIC_TEMPLATE_CONFIG = TemplateBuildConfig(
     scenario_linked_ids=SCENARIO_LINKED_IDS_GENERIC,
     scenario_table_ids=SCENARIO_TABLE_IDS_GENERIC,
     input_ids=INPUT_IDS_GENERIC,
+    projected_zero_default_ids=PROJECTED_ZERO_DEFAULT_TEMPLATE_IDS_GENERIC,
     key_driver_ids=KEY_DRIVER_IDS_GENERIC,
     optional_ids=OPTIONAL_IDS_GENERIC,
     template_tokens=TEMPLATE_TOKENS_GENERIC,
     build_notes=BUILD_NOTES_GENERIC,
     header_dependency_notes=HEADER_DEPENDENCY_NOTES_GENERIC,
     repeat_group_roles=REPEAT_GROUP_ROLES_GENERIC,
-    data_concept_map=DATA_CONCEPT_MAP_GENERIC,
     label_overrides=LABEL_OVERRIDES_GENERIC,
     placeholder_inserters=(
+        _normalize_generic_accounting_baseline,
         _insert_other_current_liabilities_row,
         _insert_commercial_paper_row,
         _insert_deferred_revenue_noncurrent_row,
         _insert_investment_activity_rows,
+        _insert_unlevered_free_cash_flow_row,
         _normalize_generic_cash_reconciliation,
     ),
-    load_kwargs={
-        "historical_cutoff_year": 2023,
-    },
     clear_cash_flow_artifact_historicals=True,
     set_if_applicable_default_zero_historicals=True,
+    # Section roles are stamped at the end of ``build_sia_generic_template``,
+    # after the face rows it inserts exist; stamping here would miss them.
+    apply_statement_section_roles=False,
     strip_scenario_table_constant_overrides=True,
     normalize_cash_flow_projection_links=True,
     normalize_valuation_projection_links=True,
 )
 
-TEMPLATE_CONFIGS = {
-    "pcty": PCTY_TEMPLATE_CONFIG,
+TEMPLATE_CONFIGS: Dict[str, TemplateBuildConfig] = {
     "generic": GENERIC_TEMPLATE_CONFIG,
 }
 
 
 def _load_source_model(config: TemplateBuildConfig) -> FinancialModel:
-    model = read_model(
-        str(config.source_path),
-        mode="full",
-        **config.load_kwargs,
-    )
-    if not isinstance(model, FinancialModel):
-        raise TypeError("read_model() did not return a FinancialModel")
-    return model
+    """The parsed source workbook, from the target's checked-in capture.
 
+    An absent capture is ``template_regeneration_input_missing`` (plan §6),
+    never a re-parse of whatever workbook happens to sit on this machine —
+    that arm was deleted at IG-6 with the path constants that named it.
+    """
 
-def build_template(
-    source_path: str | Path,
-    section_specs: Dict[str, Sequence[SectionSpec]],
-    name_overrides: Dict[str, str],
-    metadata: TemplateMetadataSpec,
-    placeholder_inserters: Sequence[PlaceholderInserter] = (),
-    *,
-    artifact_path: Path,
-    expected_item_count: int,
-    expected_sheet_item_counts: Dict[str, int],
-    expected_header_dependency_targets: Set[str],
-    scenario_linked_ids: Set[str],
-    scenario_table_ids: Set[str],
-    input_ids: Set[str],
-    key_driver_ids: Set[str],
-    optional_ids: Set[str],
-    template_tokens: Dict[str, str],
-    build_notes: Dict[str, str],
-    header_dependency_notes: Dict[str, str],
-    repeat_group_roles: Dict[str, str],
-    data_concept_map: Dict[str, str],
-    load_kwargs: Optional[Dict[str, Any]] = None,
-    clear_cash_flow_artifact_historicals: bool = False,
-    name: str = "custom",
-    model: Optional[FinancialModel] = None,
-) -> FinancialModel:
-    config = TemplateBuildConfig(
-        name=name,
-        source_path=Path(source_path),
-        artifact_path=artifact_path,
-        section_specs=section_specs,
-        name_overrides=name_overrides,
-        expected_item_count=expected_item_count,
-        expected_sheet_item_counts=expected_sheet_item_counts,
-        metadata=metadata,
-        expected_header_dependency_targets=expected_header_dependency_targets,
-        scenario_linked_ids=scenario_linked_ids,
-        scenario_table_ids=scenario_table_ids,
-        input_ids=input_ids,
-        key_driver_ids=key_driver_ids,
-        optional_ids=optional_ids,
-        template_tokens=template_tokens,
-        build_notes=build_notes,
-        header_dependency_notes=header_dependency_notes,
-        repeat_group_roles=repeat_group_roles,
-        data_concept_map=data_concept_map,
-        placeholder_inserters=tuple(placeholder_inserters),
-        load_kwargs=dict(load_kwargs or {}),
-        clear_cash_flow_artifact_historicals=clear_cash_flow_artifact_historicals,
+    return load_template_source_model(
+        config.source_input, input_ref=config.source_input_ref
     )
-    return _build_template_from_config(config, model=model)
 
 
 def _build_template_from_config(
@@ -732,7 +876,7 @@ def _build_template_from_config(
         build_notes=config.build_notes,
         header_dependency_notes=config.header_dependency_notes,
         repeat_group_roles=config.repeat_group_roles,
-        data_concept_map=config.data_concept_map,
+        template_item_id_by_build_item=id_map,
         key_driver_ids=config.key_driver_ids,
     )
     if config.clear_cash_flow_artifact_historicals:
@@ -775,13 +919,14 @@ def _build_template_from_config(
                 for period, spec in item.overrides.items()
             }
 
+    apply_template_semantic_units(template)
     _apply_scenario_linked_offset_params(template)
     if config.normalize_cash_flow_projection_links:
         _normalize_cash_flow_projection_links(template)
     if config.normalize_valuation_projection_links:
         _normalize_valuation_projection_links(template)
-    _include_treasury_stock_in_total_equity_historical(template)
-    if config.name == "generic":
+    _normalize_sbc_per_line_rate_historicals(template)
+    if config.apply_statement_section_roles:
         _apply_balance_sheet_section_roles(template)
         apply_template_model_scales(template)
         assert_template_model_scales_declared(template)
@@ -847,60 +992,174 @@ def _build_template_from_config(
     return template
 
 
-def load_pcty_reference() -> FinancialModel:
-    """Load the checked-in PCTY reference artifact."""
-
-    return FinancialModel.model_validate_json(PCTY_REFERENCE_TEMPLATE_PATH.read_text(encoding="utf-8"))
-
-
 def load_sia_generic_template() -> FinancialModel:
     """Load the checked-in generic SIA template artifact."""
 
-    return FinancialModel.model_validate_json(SIA_GENERIC_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    model = FinancialModel.model_validate_json(
+        SIA_GENERIC_TEMPLATE_PATH.read_text(encoding="utf-8")
+    )
+    apply_template_semantic_units(model)
+    _apply_required_role_stamps(model)
+    _apply_balance_sheet_section_roles(model)
+    _install_residual_histories(model)
+    _stamp_scenario_offset_labels(model)
+    return model
 
 
-def build_pcty_reference_template(model: Optional[FinancialModel] = None) -> FinancialModel:
-    """Transform the parsed PCTY workbook into the checked-in PCTY reference artifact."""
+def build_sia_generic_template(
+    config: TemplateBuildConfig = GENERIC_TEMPLATE_CONFIG,
+    *,
+    model: Optional[FinancialModel] = None,
+) -> FinancialModel:
+    """Transform the generic source workbook into the checked-in generic artifact.
 
-    return _build_template_from_config(PCTY_TEMPLATE_CONFIG, model=model)
+    The config is a parameter rather than a closed-over constant so that the
+    registry row and the builder are related by *the config the writer was
+    handed*, not by convention: starving ``config.source_input`` refuses here
+    (``template_regeneration_input_missing``) exactly as it does in the loader.
+    ``model`` stays a keyword-only override for callers that already hold a
+    parsed source model — it never reaches outside the repository either.
+    """
+
+    template = _build_template_from_config(config, model=model)
+    template.build_index()
+
+    other_income = template.get_item(
+        "tpl.a.other_income_interest.other_income_expense"
+    )
+    other_income.item_type = ItemType.input
+    deferred_revenue = template.get_item(
+        "tpl.a.balance_sheet_wc.deferred_revenues"
+    )
+    deferred_revenue.model_scale = "millions"
+    deferred_revenue.item_type = ItemType.input
+    deferred_revenue_rate = template.get_item("tpl.a.balance_sheet_wc.of_rev")
+    deferred_revenue_rate.item_type = ItemType.input
+    deferred_revenue_rate.unit = Unit.percentage
+    # Forecast-assumption policy targets (``employee_stock_plan_proceeds``,
+    # ``non_gaap_other_items``): the driver resolver admits only input rows.
+    for policy_target_id in (
+        "tpl.a.dividends_shares.proceeds_from_employee_stock_purchase_plan",
+        "tpl.a.adj_ebitda.other_items",
+    ):
+        template.get_item(policy_target_id).item_type = ItemType.input
+
+    capital_sources = next(
+        section
+        for section in template.sheets["Assumptions"].sections
+        if section.id == "capital_sources"
+    )
+    current_lease = LineItem.model_validate(
+        {
+            "id": "tpl.a.capital_sources.current_operating_lease_liabilities",
+            "label": " Current operating lease liabilities",
+            "row": 226,
+            "item_type": "input",
+            "unit": "dollars",
+            "model_scale": "millions",
+            "format": "",
+            "required_role": load_required_role_catalog()
+            .role_for_template_item(
+                "tpl.a.capital_sources.current_operating_lease_liabilities"
+            )
+            .required_role,
+            "style": {"color": "input_blue"},
+            "driver_category": "capital_sources",
+            "customization": "optional",
+            "build_notes": (
+                "Current operating lease liability input populated from the "
+                "pinned filing line for its required role when reported."
+            ),
+        }
+    )
+    insert_at = next(
+        index
+        for index, item in enumerate(capital_sources.line_items)
+        if item.id
+        == "tpl.a.capital_sources.long_term_operating_lease_liabilities"
+    )
+    capital_sources.line_items.insert(insert_at, current_lease)
+    _insert_house_revenue_ratio_rows(template)
+    _insert_acquisition_goodwill_allocation_row(template)
+    _insert_treasury_stock_face_row(template)
+    _insert_balance_sheet_face_rows(template)
+    _insert_short_term_investments_row(template)
+    _insert_per_share_face_rows(template)
+    _insert_operating_depreciation_amortization_row(template)
+    _insert_selling_general_administrative_row(template)
+    _insert_net_income_attributable_to_nci_rows(template)
+    _insert_restructuring_charges_row(template)
+    _insert_long_term_asset_3_rows(
+        template,
+        template_tokens=config.template_tokens,
+        build_notes=config.build_notes,
+    )
+    _install_sga_driver_base(template)
+    # Every row a total or cash-flow aggregate reads now exists: the catalog's
+    # membership writes both lanes of each.
+    _generate_statement_totals(template)
+    _install_optional_slot_carry_forward(template)
+    _install_current_debt_bridge(template)
+    _install_share_count_schedule(template)
+    _install_historical_schedule_identities(template)
+    _install_debt_interest_identities(template)
+    _install_canonical_schedules(template)
+    _install_financing_residual_defaults(template)
+    _install_non_gaap_other_items_default(template)
+    _install_non_gaap_tax_effect_identity(template)
+    _generate_cash_flow_movements(template)
+    install_operating_lease_schedule(template)
+    _install_projected_zero_defaults(template, config.projected_zero_default_ids)
+    _add_share_based_compensation_to_apic_roll_forward(template)
+    _install_cash_and_short_term_investments_history(template)
+    _apply_required_role_stamps(template)
+    _install_residual_histories(template)
+    _apply_balance_sheet_section_roles(template)
+    apply_template_model_scales(template)
+    assert_template_model_scales_declared(template)
+
+    cash_end = template.get_item(
+        "tpl.fm.cash_flow.cash_and_cash_equivalents_end_of_period"
+    )
+    cash_end.historical = None
+    template.build_index()
+    return template
 
 
-def build_sia_generic_template(model: Optional[FinancialModel] = None) -> FinancialModel:
-    """Transform the generic source workbook into the checked-in generic artifact."""
-
-    return _build_template_from_config(GENERIC_TEMPLATE_CONFIG, model=model)
-
-
-def _load_pcty_model() -> FinancialModel:
-    return _load_source_model(PCTY_TEMPLATE_CONFIG)
-
-
-def _load_generic_model() -> FinancialModel:
-    return _load_source_model(GENERIC_TEMPLATE_CONFIG)
+#: The build each registered target runs. Declared beside the target rather
+#: than dispatched on its name, so a new target is a registry row and a
+#: builder, never a branch (plan §5.1's dispatch rule applied to this lane).
+#: Each builder takes the *config the writer was handed*, so a row paired with
+#: the wrong builder cannot silently write another target's bytes to this
+#: target's path.
+TEMPLATE_BUILDERS: Dict[str, Callable[[TemplateBuildConfig], FinancialModel]] = {
+    "generic": build_sia_generic_template,
+}
 
 
 def _write_template_artifact(config: TemplateBuildConfig) -> Path:
-    if config.name == "pcty":
-        template = build_pcty_reference_template()
-    elif config.name == "generic":
-        template = build_sia_generic_template()
-    else:  # pragma: no cover - guarded by CLI choices
+    builder = TEMPLATE_BUILDERS.get(config.name)
+    if builder is None:
         raise ValueError(f"Unknown template target: {config.name}")
-    config.artifact_path.write_text(template.model_dump_json(indent=2), encoding="utf-8")
+    template = builder(config)
+    config.artifact_path.write_text(
+        template.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
     return config.artifact_path
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Regenerate checked-in template artifacts.")
+    registered = tuple(sorted(TEMPLATE_CONFIGS))
     parser.add_argument(
         "--target",
-        choices=("pcty", "generic", "all"),
+        choices=(*registered, "all"),
         default="all",
         help="Which artifact(s) to regenerate.",
     )
     args = parser.parse_args(argv)
 
-    targets = ("pcty", "generic") if args.target == "all" else (args.target,)
+    targets = registered if args.target == "all" else (args.target,)
     for target in targets:
         print(_write_template_artifact(TEMPLATE_CONFIGS[target]))
     return 0

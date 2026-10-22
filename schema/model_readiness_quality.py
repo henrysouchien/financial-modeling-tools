@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import math
-import sys
 from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .build_scenarios import compute_scenario_outputs
 from .dependency_graph import DependencyGraph
+from .renderer_columns import _fixed_cell_anchor_period, item_owns_cell
 from .growth_carry_forward_guard import (
     GrowthCarryForwardFinding,
     growth_carry_forward_findings,
 )
+from .handle import ComputedValues
 from .model_readiness_common import (
     _computed_values,
     _has_any_value,
@@ -22,10 +24,6 @@ from .model_readiness_common import (
     _missing_periods,
     _normalize_computed_values,
     _projection_periods,
-)
-from .model_readiness_scenario_bridge import (
-    _scenario_bridge_owners,
-    compute_model_scenario_bridge_readiness,
 )
 from .model_readiness_valuation import ValuationInputReadiness, _valuation_input_status
 from .models import FinancialModel
@@ -42,9 +40,9 @@ ModelQualityReadinessDomain = Literal[
     "valuation",
     "scenario_bridge",
     "segment_basis",
+    "projected_financial_integrity",
 ]
 ModelQualityDomain = ModelQualityReadinessDomain
-_PARENT_MODULE = "schema.model_readiness"
 _CAPITAL_STRUCTURE_REQUIRED_ITEMS = [
     "tpl.v.wacc.wacc",
     "tpl.v.wacc.weight_equity",
@@ -66,6 +64,7 @@ _CAPITAL_STRUCTURE_LABELS = {
     "tpl.fm.balance_sheet.long_term_debt": "long-term debt",
 }
 _CAPITAL_STRUCTURE_TOLERANCE = 1e-6
+_ZERO_DEBT_DIRECT_WACC_TOLERANCE = 1e-4
 _CAPITAL_STRUCTURE_HISTORICAL_DEBT_MATERIALITY = 1.0
 _CAPITAL_STRUCTURE_HISTORICAL_DEBT_SHARE_MATERIALITY = 0.01
 _CAPITAL_STRUCTURE_MATERIAL_DEBT_CHANGE_RATIO = 10.0
@@ -118,28 +117,21 @@ class ModelQualityReadiness(BaseModel):
         return self.model_dump(mode="json")
 
 
-def _compat(name: str, default: Any) -> Any:
-    original = _ORIGINALS.get(name, default)
-    parent = sys.modules.get(_PARENT_MODULE)
-    if parent is None:
-        return default
-    value = getattr(parent, name, original)
-    return value if value is not original else default
 
 
 def compute_model_quality_readiness(
     model: FinancialModel,
     *,
-    computed_values: dict[str, dict[int, float]] | None = None,
+    computed_values: ComputedValues | None = None,
     valuation_input_readiness: ValuationInputReadiness | dict[str, Any] | None = None,
     price_target_skip_reason: str | None = None,
     segment_profile: "SegmentProfile | None" = None,
     guard_config: Any | None = None,
 ) -> ModelQualityReadiness:
-    """Return FMS-26 economic model-quality readiness across downstream domains."""
+    """Return economic model-quality readiness for the remaining owner domains."""
 
     model.build_index()
-    projection_periods = _compat("_projection_periods", _projection_periods)(model)
+    projection_periods = _projection_periods(model)
     if not projection_periods:
         return ModelQualityReadiness(
             status="unknown",
@@ -147,34 +139,28 @@ def compute_model_quality_readiness(
             summary="model has no projection periods",
         )
 
-    computed_values_fn = _compat("_computed_values", _computed_values)
-    normalize_computed_values_fn = _compat("_normalize_computed_values", _normalize_computed_values)
-    values = normalize_computed_values_fn(
-        computed_values if computed_values is not None else computed_values_fn(model)
+    values = _normalize_computed_values(
+        computed_values if computed_values is not None else _computed_values(model)
     )
-    domains = {
-        "share_count": _compat("_share_count_quality_domain", _share_count_quality_domain)(
+    domains: dict[ModelQualityReadinessDomain, ModelQualityDomainReadiness] = {
+        "share_count": _share_count_quality_domain(
             model,
             values,
             projection_periods,
         ),
-        "working_capital": _compat("_working_capital_quality_domain", _working_capital_quality_domain)(
+        "working_capital": _working_capital_quality_domain(
             model,
             values,
             projection_periods,
         ),
-        "valuation": _compat("_valuation_quality_domain", _valuation_quality_domain)(
+        "valuation": _valuation_quality_domain(
             model,
             values,
             projection_periods,
             valuation_input_readiness=valuation_input_readiness,
             price_target_skip_reason=price_target_skip_reason,
         ),
-        "scenario_bridge": _compat("_scenario_bridge_quality_domain", _scenario_bridge_quality_domain)(
-            model,
-            projection_periods,
-        ),
-        "segment_basis": _compat("_segment_basis_quality_domain", _segment_basis_quality_domain)(
+        "segment_basis": _segment_basis_quality_domain(
             model,
             segment_profile=segment_profile,
             values=values,
@@ -191,13 +177,12 @@ def compute_model_quality_readiness(
     else:
         status = "ready"
 
-    readiness_model = _compat("ModelQualityReadiness", ModelQualityReadiness)
-    return readiness_model(
+    return ModelQualityReadiness(
         status=status,
         projection_periods=list(projection_periods),
         domains=domains,
         issues=issues,
-        summary=_compat("_model_quality_summary", _model_quality_summary)(status, domains),
+        summary=_model_quality_summary(status, domains),
     )
 
 
@@ -217,7 +202,7 @@ def _quality_domain(
         for issue in issues
         for period in issue.missing_periods
     })
-    domain_model = _compat("ModelQualityDomainReadiness", ModelQualityDomainReadiness)
+    domain_model = ModelQualityDomainReadiness
     return domain_model(
         status=status,
         required_items=required_items,
@@ -226,9 +211,38 @@ def _quality_domain(
     )
 
 
+
+
+
+
+def _single_anchor_period(model: FinancialModel, item_id: str) -> int | None:
+    """The one period a fixed-cell (``column``) row renders, or None for a per-period row."""
+
+    item = model._index.get(item_id)
+    if item is None or item.column is None:
+        return None
+    return _fixed_cell_anchor_period(model, item)
+
+
+def _rendered_periods(
+    model: FinancialModel,
+    item_id: str,
+    periods: list[int],
+) -> list[int]:
+    """The ``periods`` a row actually renders a cell in (``item_owns_cell``).
+
+    A period the row does not own has no cell, so it can be neither missing nor ``#N/A``.
+    """
+
+    item = model._index.get(item_id)
+    if item is None:
+        return list(periods)
+    return [period for period in periods if item_owns_cell(model, item, period)]
+
+
 def _quality_projection_issue(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     periods: list[int],
     *,
     item_id: str,
@@ -239,7 +253,7 @@ def _quality_projection_issue(
     all_missing_severity: ModelQualityReadinessSeverity = "blocking",
     partial_missing_severity: ModelQualityReadinessSeverity = "warning",
 ) -> ModelQualityReadinessIssue | None:
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     if item_id not in model._index:
         return issue_model(
             code=missing_item_code,
@@ -249,10 +263,11 @@ def _quality_projection_issue(
             item_id=item_id,
             missing_periods=list(periods),
         )
-    missing = _compat("_missing_periods", _missing_periods)(values.get(item_id, {}), periods)
+    rendered = _rendered_periods(model, item_id, periods)
+    missing = _missing_periods(values.get(item_id, {}), rendered)
     if not missing:
         return None
-    severity = all_missing_severity if missing == periods else partial_missing_severity
+    severity = all_missing_severity if missing == rendered else partial_missing_severity
     return issue_model(
         code=missing_values_code,
         severity=severity,
@@ -265,7 +280,7 @@ def _quality_projection_issue(
 
 def _quality_any_projection_issue(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     periods: list[int],
     *,
     item_id: str,
@@ -274,7 +289,7 @@ def _quality_any_projection_issue(
     missing_values_code: str,
     label: str,
 ) -> ModelQualityReadinessIssue | None:
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     if item_id not in model._index:
         return issue_model(
             code=missing_item_code,
@@ -284,7 +299,8 @@ def _quality_any_projection_issue(
             item_id=item_id,
             missing_periods=list(periods),
         )
-    if _compat("_has_any_value", _has_any_value)(values.get(item_id, {}), periods):
+    rendered = _rendered_periods(model, item_id, periods)
+    if _has_any_value(values.get(item_id, {}), rendered):
         return None
     return issue_model(
         code=missing_values_code,
@@ -292,7 +308,7 @@ def _quality_any_projection_issue(
         domain=domain,
         detail=f"{label} row {item_id!r} has no projected value",
         item_id=item_id,
-        missing_periods=list(periods),
+        missing_periods=rendered,
     )
 
 
@@ -307,10 +323,10 @@ def _dependency_issue(
 ) -> ModelQualityReadinessIssue | None:
     if item_id not in model._index or expected_upstream_id not in model._index:
         return None
-    upstream = _compat("_upstream_item_ids", _upstream_item_ids)(model, item_id)
+    upstream = _upstream_item_ids(model, item_id)
     if expected_upstream_id in upstream:
         return None
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     return issue_model(
         code=code,
         severity="blocking",
@@ -323,7 +339,7 @@ def _dependency_issue(
 
 def _share_count_quality_domain(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
 ) -> ModelQualityDomainReadiness:
     share_item_id = "tpl.fm.income_statement.diluted_shares_outstanding_m"
@@ -344,7 +360,7 @@ def _share_count_quality_domain(
         ("tpl.v.current_valuation.shares_outstanding", "current valuation shares"),
         ("tpl.v.dcf.shares_outstanding", "DCF shares"),
     ):
-        issue = _compat("_quality_projection_issue", _quality_projection_issue)(
+        issue = _quality_projection_issue(
             model,
             values,
             projection_periods,
@@ -357,7 +373,7 @@ def _share_count_quality_domain(
         if issue is not None:
             issues.append(issue)
 
-    fy2_issue = _compat("_quality_any_projection_issue", _quality_any_projection_issue)(
+    fy2_issue = _quality_any_projection_issue(
         model,
         values,
         projection_periods,
@@ -375,7 +391,7 @@ def _share_count_quality_domain(
         ("tpl.fm.cash_flow.free_cash_flow_per_share", "free cash flow per share"),
         ("tpl.v.current_valuation.shares_outstanding", "current valuation shares"),
     ):
-        issue = _compat("_dependency_issue", _dependency_issue)(
+        issue = _dependency_issue(
             model,
             item_id=item_id,
             expected_upstream_id=share_item_id,
@@ -386,12 +402,12 @@ def _share_count_quality_domain(
         if issue is not None:
             issues.append(issue)
 
-    return _compat("_quality_domain", _quality_domain)(required_items=required_items, issues=issues)
+    return _quality_domain(required_items=required_items, issues=issues)
 
 
 def _working_capital_quality_domain(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
 ) -> ModelQualityDomainReadiness:
     required_items = [
@@ -413,7 +429,7 @@ def _working_capital_quality_domain(
         ("tpl.fm.cash_flow.changes_in_operating_assets_and_liabilities", "working-capital cash-flow delta"),
         ("tpl.fm.cash_flow.free_cash_flow", "free cash flow"),
     ):
-        issue = _compat("_quality_projection_issue", _quality_projection_issue)(
+        issue = _quality_projection_issue(
             model,
             values,
             projection_periods,
@@ -426,12 +442,12 @@ def _working_capital_quality_domain(
         if issue is not None:
             issues.append(issue)
 
-    if _compat("_inventory_material", _inventory_material)(model, values):
+    if _inventory_material(model, values):
         for item_id, label in (
             ("tpl.fm.balance_sheet.current_asset_2", "inventory balance"),
             ("tpl.fm.cash_flow.current_asset_2", "change in inventory"),
         ):
-            issue = _compat("_quality_projection_issue", _quality_projection_issue)(
+            issue = _quality_projection_issue(
                 model,
                 values,
                 projection_periods,
@@ -451,12 +467,12 @@ def _working_capital_quality_domain(
                 )
                 issues.append(issue)
 
-    return _compat("_quality_domain", _quality_domain)(required_items=required_items, issues=issues)
+    return _quality_domain(required_items=required_items, issues=issues)
 
 
 def _valuation_quality_domain(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
     *,
     valuation_input_readiness: ValuationInputReadiness | dict[str, Any] | None,
@@ -472,7 +488,9 @@ def _valuation_quality_domain(
         "tpl.v.dcf.dcf_price",
     ]
     if has_capital_structure_rows:
-        required_items.extend(_CAPITAL_STRUCTURE_REQUIRED_ITEMS)
+        required_items.extend(
+            _capital_structure_required_items(model, values, projection_periods)
+        )
     required_items = list(dict.fromkeys(required_items))
     issues: list[ModelQualityReadinessIssue] = []
     for item_id, label in (
@@ -480,7 +498,7 @@ def _valuation_quality_domain(
         ("tpl.v.current_valuation.net_debt", "valuation net debt"),
         ("tpl.v.dcf.dcf_price", "DCF price"),
     ):
-        issue = _compat("_quality_projection_issue", _quality_projection_issue)(
+        issue = _quality_projection_issue(
             model,
             values,
             projection_periods,
@@ -495,16 +513,12 @@ def _valuation_quality_domain(
 
     if has_capital_structure_rows:
         issues.extend(
-            _compat("_capital_structure_quality_issues", _capital_structure_quality_issues)(
-                model,
-                values,
-                projection_periods,
-            )
+            _capital_structure_quality_issues(model, values, projection_periods)
         )
 
-    valuation_input_status = _compat("_valuation_input_status", _valuation_input_status)
+    valuation_input_status = _valuation_input_status
     readiness_status, missing_inputs = valuation_input_status(valuation_input_readiness)
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     if readiness_status == "incomplete":
         severity: ModelQualityReadinessSeverity = "blocking" if missing_inputs else "warning"
         detail = (
@@ -521,27 +535,6 @@ def _valuation_quality_domain(
                 related_item_ids=list(missing_inputs),
             )
         )
-    readiness_flags = _valuation_input_flags(valuation_input_readiness)
-    if any(flag.get("code") == "terminal_assumptions_defaulted" for flag in readiness_flags):
-        issues.append(
-            issue_model(
-                code="valuation_terminal_assumptions_defaulted",
-                severity="warning",
-                domain="valuation",
-                detail=(
-                    "DCF terminal growth / exit multiple assumptions use template defaults; "
-                    "review company-specific calibration before treating the DCF as fully clean."
-                ),
-                related_item_ids=[
-                    "tpl.v.dcf.terminal_growth_bull",
-                    "tpl.v.dcf.terminal_growth_base",
-                    "tpl.v.dcf.terminal_growth_bear",
-                    "tpl.v.dcf.exit_multiple_bull",
-                    "tpl.v.dcf.exit_multiple_base",
-                    "tpl.v.dcf.exit_multiple_bear",
-                ],
-            )
-        )
 
     if price_target_skip_reason:
         issues.append(
@@ -553,79 +546,41 @@ def _valuation_quality_domain(
             )
         )
 
-    return _compat("_quality_domain", _quality_domain)(required_items=required_items, issues=issues)
+    return _quality_domain(required_items=required_items, issues=issues)
 
 
-def _scenario_bridge_quality_domain(
-    model: FinancialModel,
-    projection_periods: list[int],
-) -> ModelQualityDomainReadiness:
-    """Validate workbook scenario rows before valuation tools consume them."""
 
-    required_items: list[str] = []
-    owners = _compat("_scenario_bridge_owners", _scenario_bridge_owners)(model)
-    if not owners:
-        return _compat("_quality_domain", _quality_domain)(required_items=required_items, issues=[])
 
-    required_items.extend(owner.id for owner in owners)
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
-    issues: list[ModelQualityReadinessIssue] = []
+_ScenarioPeriodValues = (
+    Mapping[int, float]
+    | Mapping[str, float]
+    | Mapping[int | str, float]
+)
 
-    bridge_readiness = _compat(
-        "compute_model_scenario_bridge_readiness",
-        compute_model_scenario_bridge_readiness,
-    )(model)
-    for bridge_issue in bridge_readiness.issues:
-        related_item_ids = [
-            item_id
-            for item_id in (
-                getattr(bridge_issue, "anchor_id", None),
-                *list(getattr(bridge_issue, "related_item_ids", []) or []),
-            )
-            if item_id
-        ]
-        issues.append(
-            issue_model(
-                code=str(getattr(bridge_issue, "code", "scenario_bridge_issue")),
-                severity=getattr(bridge_issue, "severity", "blocking"),
-                domain="scenario_bridge",
-                detail=str(getattr(bridge_issue, "detail", "scenario bridge issue")),
-                item_id=getattr(bridge_issue, "owner_id", None),
-                related_item_ids=list(dict.fromkeys(related_item_ids)),
-            )
-        )
 
-    try:
-        scenario_outputs = _compat("compute_scenario_outputs", compute_scenario_outputs)(model)
-    except Exception as exc:
-        issues.append(
-            issue_model(
-                code="scenario_output_direction_unavailable",
-                severity="blocking",
-                domain="scenario_bridge",
-                detail=f"scenario output direction could not be computed: {exc}",
-                related_item_ids=list(required_items),
-            )
-        )
-    else:
-        issues.extend(
-            _compat("_scenario_output_direction_issues", _scenario_output_direction_issues)(
-                scenario_outputs,
-                projection_periods,
-            )
-        )
-
-    return _compat("_quality_domain", _quality_domain)(required_items=required_items, issues=issues)
+def _scenario_period_value(
+    values: _ScenarioPeriodValues,
+    period: int,
+) -> float | None:
+    return next(
+        (
+            value
+            for candidate in (period, str(period))
+            for key, value in values.items()
+            if key == candidate
+        ),
+        None,
+    )
 
 
 def _scenario_output_direction_issues(
-    scenario_outputs: dict[str, dict[str, dict[int, float]]],
+    scenario_outputs: Mapping[str, Mapping[str, _ScenarioPeriodValues]],
     projection_periods: list[int],
 ) -> list[ModelQualityReadinessIssue]:
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     issues: list[ModelQualityReadinessIssue] = []
-    output_specs = _compat("_SCENARIO_DIRECTION_OUTPUTS", _SCENARIO_DIRECTION_OUTPUTS)
-    eps = float(_compat("_SCENARIO_DIRECTION_EPS", _SCENARIO_DIRECTION_EPS))
+    output_specs = _SCENARIO_DIRECTION_OUTPUTS
+    eps = float(_SCENARIO_DIRECTION_EPS)
 
     for field_name, (item_id, label) in output_specs.items():
         bull_values = scenario_outputs.get("bull", {}).get(field_name, {})
@@ -637,9 +592,9 @@ def _scenario_output_direction_issues(
         evaluated_periods: list[int] = []
         examples: list[str] = []
         for period in projection_periods:
-            bull = bull_values.get(period, bull_values.get(str(period)))
-            base = base_values.get(period, base_values.get(str(period)))
-            bear = bear_values.get(period, bear_values.get(str(period)))
+            bull = _scenario_period_value(bull_values, period)
+            base = _scenario_period_value(base_values, period)
+            bear = _scenario_period_value(bear_values, period)
             if bull is None or base is None or bear is None:
                 continue
             try:
@@ -688,30 +643,8 @@ def _scenario_output_direction_issues(
     return issues
 
 
-def _valuation_input_flags(
-    valuation_input_readiness: ValuationInputReadiness | dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    if valuation_input_readiness is None:
-        return []
-    if isinstance(valuation_input_readiness, dict):
-        raw_flags = valuation_input_readiness.get("flags")
-    else:
-        raw_flags = getattr(valuation_input_readiness, "flags", None)
-    flags: list[dict[str, Any]] = []
-    for raw_flag in raw_flags or []:
-        if isinstance(raw_flag, dict):
-            flags.append(raw_flag)
-            continue
-        model_dump = getattr(raw_flag, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump(mode="json")
-            if isinstance(dumped, dict):
-                flags.append(dumped)
-    return flags
-
-
 def _finite_value(
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     item_id: str,
     period: int,
 ) -> float | None:
@@ -727,10 +660,10 @@ def _finite_value(
 
 def _latest_historical_value(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     item_id: str,
 ) -> float | None:
-    historical_periods = sorted(_compat("_historical_periods", _historical_periods)(model))
+    historical_periods = sorted(_historical_periods(model))
     for period in reversed(historical_periods):
         value = _finite_value(values, item_id, int(period))
         if value is not None:
@@ -738,15 +671,82 @@ def _latest_historical_value(
     return None
 
 
+def _projected_debt_is_zero(
+    values: ComputedValues,
+    projection_periods: list[int],
+) -> bool:
+    """True when projected long-term debt is zero and every stated debt value is zero.
+
+    ``tpl.v.wacc.debt_value`` is a first-period anchor, not a horizon series. A
+    year it does not state is not evidence of debt.
+    """
+
+    if not projection_periods:
+        return False
+    for period in projection_periods:
+        long_term = _finite_value(values, "tpl.fm.balance_sheet.long_term_debt", int(period))
+        if long_term is None or abs(long_term) > _CAPITAL_STRUCTURE_TOLERANCE:
+            return False
+    stated = [
+        value
+        for period in projection_periods
+        if (value := _finite_value(values, "tpl.v.wacc.debt_value", int(period))) is not None
+    ]
+    return bool(stated) and all(abs(value) <= _CAPITAL_STRUCTURE_TOLERANCE for value in stated)
+
+
+#: The rows that read the debt capital ``retire_unused_cost_of_debt`` retires
+#: (``schema/build_valuation_inputs.py``) when the filer carries no debt: with the capital gone
+#: the structure is equity-only and these are not required.
+_RETIRED_DEBT_READERS = (
+    "tpl.v.wacc.weight_debt",
+    "tpl.v.wacc.after_tax_cost_of_debt",
+)
+
+
+def _debt_capital_retired(model: FinancialModel, projection_periods: list[int]) -> bool:
+    """The model carries the debt-capital row but it holds no cell in any projection period:
+    the build retired it because the filer carries no debt. A model without the row at all is
+    not that case and is judged as before (``capital_structure_item_missing``)."""
+
+    from .build_valuation_inputs import _DEBT_CAPITAL_ROWS
+
+    rows = [model._index.get(item_id) for item_id in _DEBT_CAPITAL_ROWS]
+    return all(row is not None for row in rows) and not any(
+        item_owns_cell(model, row, int(period), gaps={})
+        for row in rows
+        if row is not None
+        for period in projection_periods
+    )
+
+
+def _capital_structure_required_items(
+    model: FinancialModel,
+    values: ComputedValues,
+    projection_periods: list[int],
+) -> list[str]:
+    from .build_valuation_inputs import _DEBT_CAPITAL_ROWS
+
+    required = list(_CAPITAL_STRUCTURE_REQUIRED_ITEMS)
+    if _debt_capital_retired(model, projection_periods):
+        gone = set(_DEBT_CAPITAL_ROWS) | set(_RETIRED_DEBT_READERS)
+        return [item_id for item_id in required if item_id not in gone]
+    if _projected_debt_is_zero(values, projection_periods):
+        required.remove("tpl.v.wacc.after_tax_cost_of_debt")
+    return required
+
+
 def _capital_structure_quality_issues(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
 ) -> list[ModelQualityReadinessIssue]:
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     issues: list[ModelQualityReadinessIssue] = []
-    for item_id in _CAPITAL_STRUCTURE_REQUIRED_ITEMS:
-        issue = _compat("_quality_projection_issue", _quality_projection_issue)(
+    required_items = _capital_structure_required_items(model, values, projection_periods)
+    debt_retired = _debt_capital_retired(model, projection_periods)
+    for item_id in required_items:
+        issue = _quality_projection_issue(
             model,
             values,
             projection_periods,
@@ -763,51 +763,68 @@ def _capital_structure_quality_issues(
     if issues:
         return issues
 
-    latest_historical_debt = _compat("_latest_historical_value", _latest_historical_value)(
+    latest_historical_debt = _latest_historical_value(
         model,
         values,
         "tpl.fm.balance_sheet.long_term_debt",
     )
     prior_debt = latest_historical_debt
     for period in projection_periods:
-        row_values = {
-            item_id: _finite_value(values, item_id, int(period))
-            for item_id in _CAPITAL_STRUCTURE_REQUIRED_ITEMS
-        }
+        # A single-anchor row holds one value for the whole horizon: the rows that
+        # read it read that cell. A finding about the row is reported only in the
+        # period the row renders (``renders``); a period it does not render has no
+        # cell to be wrong.
+        def read(item_id: str, period: int = period) -> float | None:
+            anchor = _single_anchor_period(model, item_id)
+            return _finite_value(values, item_id, int(period if anchor is None else anchor))
+
+        def renders(item_id: str, period: int = period) -> bool:
+            return period in _rendered_periods(model, item_id, [period])
+
+        row_values = {item_id: read(item_id) for item_id in required_items}
+        if debt_retired:
+            # Equity-only capital structure: the retired debt capital and its weight are
+            # zero. The projected long-term debt row is still the model's own computed
+            # value and is judged as such below (a cited absence there is no cell).
+            row_values.update({"tpl.v.wacc.debt_value": 0.0, "tpl.v.wacc.weight_debt": 0.0})
+            if row_values.get("tpl.fm.balance_sheet.long_term_debt") is None and not renders(
+                "tpl.fm.balance_sheet.long_term_debt"
+            ):
+                row_values.pop("tpl.fm.balance_sheet.long_term_debt", None)
         invalid_ids = [item_id for item_id, value in row_values.items() if value is None]
         if invalid_ids:
-            issues.append(
-                issue_model(
-                    code="capital_structure_value_invalid",
-                    severity="blocking",
-                    domain="valuation",
-                    detail=(
-                        f"capital structure rows have non-finite values in {period}: "
-                        f"{', '.join(invalid_ids)}"
-                    ),
-                    missing_periods=[int(period)],
-                    related_item_ids=invalid_ids,
+            reported_invalid = [item_id for item_id in invalid_ids if renders(item_id)]
+            if reported_invalid:
+                issues.append(
+                    issue_model(
+                        code="capital_structure_value_invalid",
+                        severity="blocking",
+                        domain="valuation",
+                        detail=(
+                            f"capital structure rows have non-finite values in {period}: "
+                            f"{', '.join(reported_invalid)}"
+                        ),
+                        missing_periods=[int(period)],
+                        related_item_ids=reported_invalid,
+                    )
                 )
-            )
             continue
 
-        ltd = row_values["tpl.fm.balance_sheet.long_term_debt"]
+        ltd = row_values.get("tpl.fm.balance_sheet.long_term_debt")
         total_capital = row_values["tpl.v.wacc.total_capital"]
         weight_equity = row_values["tpl.v.wacc.weight_equity"]
         weight_debt = row_values["tpl.v.wacc.weight_debt"]
         wacc = row_values["tpl.v.wacc.wacc"]
-        kd = row_values["tpl.v.wacc.after_tax_cost_of_debt"]
+        kd = row_values.get("tpl.v.wacc.after_tax_cost_of_debt")
         ke = row_values["tpl.v.cost_of_equity.cost_of_equity"]
-        assert ltd is not None
         assert total_capital is not None
         assert weight_equity is not None
         assert weight_debt is not None
         assert wacc is not None
-        assert kd is not None
         assert ke is not None
 
         blocked_period = False
-        if ltd < -_CAPITAL_STRUCTURE_TOLERANCE:
+        if ltd is not None and ltd < -_CAPITAL_STRUCTURE_TOLERANCE:
             blocked_period = True
             issues.append(
                 issue_model(
@@ -822,16 +839,17 @@ def _capital_structure_quality_issues(
             )
         if total_capital <= _CAPITAL_STRUCTURE_TOLERANCE:
             blocked_period = True
-            issues.append(
-                issue_model(
-                    code="capital_structure_total_capital_invalid",
-                    severity="blocking",
-                    domain="valuation",
-                    detail=f"total capital must be positive in {period}: {total_capital:g}",
-                    item_id="tpl.v.wacc.total_capital",
-                    missing_periods=[int(period)],
+            if renders("tpl.v.wacc.total_capital"):
+                issues.append(
+                    issue_model(
+                        code="capital_structure_total_capital_invalid",
+                        severity="blocking",
+                        domain="valuation",
+                        detail=f"total capital must be positive in {period}: {total_capital:g}",
+                        item_id="tpl.v.wacc.total_capital",
+                        missing_periods=[int(period)],
+                    )
                 )
-            )
 
         out_of_bounds_weights = [
             item_id
@@ -843,6 +861,10 @@ def _capital_structure_quality_issues(
         ]
         if out_of_bounds_weights:
             blocked_period = True
+        reported_weights = [
+            item_id for item_id in out_of_bounds_weights if renders(item_id)
+        ]
+        if reported_weights:
             issues.append(
                 issue_model(
                     code="capital_structure_weight_out_of_bounds",
@@ -853,16 +875,20 @@ def _capital_structure_quality_issues(
                         f"equity={weight_equity:g}, debt={weight_debt:g}"
                     ),
                     missing_periods=[int(period)],
-                    related_item_ids=out_of_bounds_weights,
+                    related_item_ids=reported_weights,
                 )
             )
         if blocked_period:
             prior_debt = ltd
             continue
 
-        lower = min(kd, ke) - _CAPITAL_STRUCTURE_TOLERANCE
-        upper = max(kd, ke) + _CAPITAL_STRUCTURE_TOLERANCE
-        if wacc < lower or wacc > upper:
+        if kd is None:
+            lower = ke - _ZERO_DEBT_DIRECT_WACC_TOLERANCE
+            upper = ke + _ZERO_DEBT_DIRECT_WACC_TOLERANCE
+        else:
+            lower = min(kd, ke) - _CAPITAL_STRUCTURE_TOLERANCE
+            upper = max(kd, ke) + _CAPITAL_STRUCTURE_TOLERANCE
+        if (wacc < lower or wacc > upper) and renders("tpl.v.wacc.wacc"):
             issues.append(
                 issue_model(
                     code="capital_structure_wacc_out_of_band",
@@ -870,21 +896,27 @@ def _capital_structure_quality_issues(
                     domain="valuation",
                     detail=(
                         f"WACC must sit within the cost-of-capital band in {period}: "
-                        f"kd={kd:g}, ke={ke:g}, wacc={wacc:g}"
+                        f"kd={'not applicable' if kd is None else f'{kd:g}'}, "
+                        f"ke={ke:g}, wacc={wacc:g}"
                     ),
                     item_id="tpl.v.wacc.wacc",
                     missing_periods=[int(period)],
-                    related_item_ids=[
-                        "tpl.v.wacc.after_tax_cost_of_debt",
-                        "tpl.v.cost_of_equity.cost_of_equity",
-                    ],
+                    related_item_ids=(
+                        ["tpl.v.cost_of_equity.cost_of_equity"]
+                        if kd is None
+                        else [
+                            "tpl.v.wacc.after_tax_cost_of_debt",
+                            "tpl.v.cost_of_equity.cost_of_equity",
+                        ]
+                    ),
                 )
             )
 
-        if prior_debt is None:
+        if prior_debt is None or ltd is None:
+            prior_debt = ltd
             continue
         projected_debt_change = ltd - prior_debt
-        market_cap = _finite_value(values, "tpl.v.current_valuation.market_cap", int(period))
+        market_cap = read("tpl.v.current_valuation.market_cap")
         comparison_base = max(
             abs(total_capital),
             abs(market_cap) if market_cap is not None else 0.0,
@@ -943,17 +975,20 @@ def _segment_basis_quality_domain(
     model: FinancialModel,
     *,
     segment_profile: "SegmentProfile | None",
-    values: dict[str, dict[int, float]] | None = None,
+    values: ComputedValues | None = None,
     projection_periods: list[int] | None = None,
     guard_config: Any | None = None,
 ) -> ModelQualityDomainReadiness:
     issues: list[ModelQualityReadinessIssue] = []
-    segment_profile_basis_issues = _compat("_segment_profile_basis_issues", None)
-    if segment_profile is not None and segment_profile_basis_issues is not None:
-        issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
-        for source_issue in segment_profile_basis_issues(model, segment_profile=segment_profile):
+    if segment_profile is not None:
+        from .model_readiness import _segment_profile_basis_issues
+
+        for source_issue in _segment_profile_basis_issues(
+            model,
+            segment_profile=segment_profile,
+        ):
             issues.append(
-                issue_model(
+                ModelQualityReadinessIssue(
                     code=source_issue.code,
                     severity=source_issue.severity,
                     domain="segment_basis",
@@ -973,13 +1008,13 @@ def _segment_basis_quality_domain(
                 guard_config=guard_config,
             )
         )
-    return _compat("_quality_domain", _quality_domain)(required_items=[], issues=issues)
+    return _quality_domain(required_items=[], issues=issues)
 
 
 def _growth_carry_forward_quality_issue(
     finding: GrowthCarryForwardFinding,
 ) -> ModelQualityReadinessIssue:
-    issue_model = _compat("ModelQualityReadinessIssue", ModelQualityReadinessIssue)
+    issue_model = ModelQualityReadinessIssue
     if finding.scenario_row_item_id is not None:
         detail = (
             f"segment {finding.segment_id!r} reads scenario row "
@@ -1013,13 +1048,13 @@ def _growth_carry_forward_quality_issue(
 
 def _inventory_material(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
 ) -> bool:
     inventory_values = values.get("tpl.fm.balance_sheet.current_asset_2", {})
     if not inventory_values:
         return False
-    historical_periods = _compat("_historical_periods", _historical_periods)(model)
-    is_present = _compat("_is_present", _is_present)
+    historical_periods = _historical_periods(model)
+    is_present = _is_present
     inventory = [
         abs(float(value))
         for period, value in inventory_values.items()
@@ -1068,7 +1103,7 @@ def _model_quality_summary(
     domains: dict[ModelQualityReadinessDomain, ModelQualityDomainReadiness],
 ) -> str:
     if status == "ready":
-        return "share count, working capital, valuation, scenario bridge, and segment-basis quality checks are ready"
+        return "share count, working capital, valuation, and segment-basis quality checks are ready"
     pieces = [
         f"{domain}={readiness.status}"
         for domain, readiness in domains.items()
@@ -1077,42 +1112,6 @@ def _model_quality_summary(
     return f"{status}: " + ", ".join(pieces)
 
 
-_ORIGINALS = {
-    "ModelQualityDomainReadiness": ModelQualityDomainReadiness,
-    "ModelQualityReadiness": ModelQualityReadiness,
-    "ModelQualityReadinessIssue": ModelQualityReadinessIssue,
-    "_SCENARIO_DIRECTION_EPS": _SCENARIO_DIRECTION_EPS,
-    "_SCENARIO_DIRECTION_OUTPUTS": _SCENARIO_DIRECTION_OUTPUTS,
-    "_computed_values": _computed_values,
-    "_capital_structure_quality_issues": _capital_structure_quality_issues,
-    "_dependency_issue": _dependency_issue,
-    "_has_any_value": _has_any_value,
-    "_historical_periods": _historical_periods,
-    "_inventory_material": _inventory_material,
-    "_is_present": _is_present,
-    "_latest_historical_value": _latest_historical_value,
-    "_missing_periods": _missing_periods,
-    "_model_quality_summary": _model_quality_summary,
-    "_normalize_computed_values": _normalize_computed_values,
-    "_projection_periods": _projection_periods,
-    "_quality_any_projection_issue": _quality_any_projection_issue,
-    "_quality_domain": _quality_domain,
-    "_quality_projection_issue": _quality_projection_issue,
-    "_segment_basis_quality_domain": _segment_basis_quality_domain,
-    "_segment_profile_basis_issues": None,
-    "_scenario_bridge_owners": _scenario_bridge_owners,
-    "_scenario_bridge_quality_domain": _scenario_bridge_quality_domain,
-    "_scenario_output_direction_issues": _scenario_output_direction_issues,
-    "_share_count_quality_domain": _share_count_quality_domain,
-    "_upstream_item_ids": _upstream_item_ids,
-    "_valuation_input_flags": _valuation_input_flags,
-    "_valuation_input_status": _valuation_input_status,
-    "_valuation_quality_domain": _valuation_quality_domain,
-    "_working_capital_quality_domain": _working_capital_quality_domain,
-    "compute_model_scenario_bridge_readiness": compute_model_scenario_bridge_readiness,
-    "compute_model_quality_readiness": compute_model_quality_readiness,
-    "compute_scenario_outputs": compute_scenario_outputs,
-}
 
 
 __all__ = [
@@ -1131,11 +1130,9 @@ __all__ = [
     "_quality_domain",
     "_quality_projection_issue",
     "_segment_basis_quality_domain",
-    "_scenario_bridge_quality_domain",
     "_scenario_output_direction_issues",
     "_share_count_quality_domain",
     "_upstream_item_ids",
-    "_valuation_input_flags",
     "_valuation_quality_domain",
     "_working_capital_quality_domain",
     "compute_model_quality_readiness",

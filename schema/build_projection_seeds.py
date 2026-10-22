@@ -1,721 +1,417 @@
-"""Projection override seeding helpers for schema build orchestration."""
+"""Compile authenticated stable-ID control snapshots into model inputs.
+
+This module owns the one renderer projection for forecast and scenario control
+state.  It accepts only :class:`CanonicalProjectionCurve` values derived from
+the exact current canonical control-snapshot heads.  The retired
+``TickerOverrides.projections`` JSON shape is neither imported nor decoded.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import logging
-import sys
-from typing import TYPE_CHECKING, Any, Callable, Literal
+import copy
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Mapping
 
-from .build_scenarios import _find_scenario_value_row as _find_scenario_value_row_fallback
-from .models import FinancialModel, FormulaSpec, FormulaType, LineItem
-from .overrides import TickerOverrides
-from .refs import line_item_ref_from_obj as _line_item_ref_from_obj_fallback
+from .control_snapshot_projection import (
+    AUTHENTICATED_SCENARIO_PROJECTION_NOTE,
+    CanonicalProjectionCurve,
+    canonical_projection_render_target,
+    validate_canonical_projection_target_uniqueness,
+)
+from .handle import ComputedValues
+from .models import (
+    FinancialModel,
+    FormulaSpec,
+    FormulaType,
+    ItemType,
+    LineItemRef,
+    ValueCell,
+    ValueProvenance,
+    ValueSeries,
+)
+from .refs import line_item_ref_from_obj
 
 if TYPE_CHECKING:
+    from .business_model_revision import BusinessModelRevision
     from .business_model_compiler import CompiledDriverRegistry
 
 
-@dataclass
-class OrphanedProjection:
-    rate_key: str
-    reason: Literal[
-        "bm_key_not_in_registry",
-        "tpl_item_not_found",
-        "item_not_found",
-        "bull_flex_row_not_found",
-        "bear_flex_row_not_found",
-    ]
-    detail: str
-    last_provenance: dict[str, Any] | None
+@dataclass(frozen=True, slots=True)
+class ControlSnapshotProjectionResult:
+    """Deterministic renderer projection of exact canonical control state."""
+
+    projected_curve_count: int = 0
+    available_curve_count: int = 0
+    coverage: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "rate_key": self.rate_key,
-            "reason": self.reason,
-            "detail": self.detail,
-            "last_provenance": self.last_provenance,
+            "projected_curve_count": self.projected_curve_count,
+            "available_curve_count": self.available_curve_count,
+            "coverage": list(self.coverage),
+            "source_authority": "canonical_control_snapshot",
         }
 
 
-@dataclass
-class SeedProjectionWarning:
-    rate_key: str
-    kind: Literal[
-        "base_flex_row_not_found",
-        "base_period_values_missing",
-        "scenario_ordering_violation",
-    ]
-    detail: str
-    last_provenance: dict[str, Any] | None
-    scenario: Literal["bull", "bear"] | None = None
+@dataclass(frozen=True, slots=True)
+class CandidateModelCompileResult:
+    """Rebuild-equivalent compile against exact stable-ID control curves."""
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "rate_key": self.rate_key,
-            "kind": self.kind,
-            "scenario": self.scenario,
-            "detail": self.detail,
-            "last_provenance": self.last_provenance,
-        }
+    model: FinancialModel
+    control_snapshot_projection: ControlSnapshotProjectionResult
+    computed_values: ComputedValues
 
 
-@dataclass
-class SeedProjectionsResult:
-    seeded_count: int = 0
-    orphans: list[OrphanedProjection] = field(default_factory=list)
-    warnings: list[SeedProjectionWarning] = field(default_factory=list)
-    total_rate_keys: int = 0
-    schema_version_seen: str | None = None
-    validation_error: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "seeded_count": self.seeded_count,
-            "orphans": [orphan.to_dict() for orphan in self.orphans],
-            "warnings": [warning.to_dict() for warning in self.warnings],
-            "total_rate_keys": self.total_rate_keys,
-            "schema_version_seen": self.schema_version_seen,
-            "validation_error": self.validation_error,
-        }
-
-
-_SCENARIO_ORDERING_EPS = 1e-12
-
-
-def _parent_attr(name: str, fallback: Any) -> Any:
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    if parent is None:
-        from . import build as parent
-    return getattr(parent, name, fallback)
-
-
-def _schema_version_seen(ticker_overrides: TickerOverrides | None) -> str | None:
-    if ticker_overrides is None:
-        return None
-    value = (ticker_overrides.file_meta or {}).get("schema_version")
-    return str(value) if value is not None else None
-
-
-def _projection_provenance_to_dict(provenance: Any) -> dict[str, Any] | None:
-    if provenance is None:
-        return None
-    if hasattr(provenance, "model_dump"):
-        return provenance.model_dump(mode="json")
-    if isinstance(provenance, dict):
-        return dict(provenance)
-    return None
-
-
-def _extract_last_provenance(projection_entry: Any) -> dict[str, Any] | None:
-    projection_provenance_to_dict = _parent_attr(
-        "_projection_provenance_to_dict",
-        _projection_provenance_to_dict,
-    )
-    latest: tuple[str, dict[str, Any] | None] | None = None
-    for scenario in getattr(projection_entry, "scenarios", {}).values():
-        provenance = projection_provenance_to_dict(getattr(scenario, "provenance", None))
-        if provenance is None:
-            continue
-        written_at = str(provenance.get("written_at") or "")
-        if latest is None or written_at >= latest[0]:
-            latest = (written_at, provenance)
-    return latest[1] if latest is not None else None
-
-
-def _resolve_scenario_flex_row(
-    model: FinancialModel,
-    item_id: str,
-    scenario_name: Literal["bull", "bear"],
-) -> LineItem | None:
-    """Resolve a scenario-table flex row for an offset-scenario owner or anchor."""
-
-    try:
-        item = model.get_item(item_id)
-    except KeyError:
-        return None
-
-    formula_type = _parent_attr("FormulaType", FormulaType)
-    line_item_ref_from_obj = _parent_attr(
-        "line_item_ref_from_obj",
-        _line_item_ref_from_obj_fallback,
-    )
-    find_scenario_value_row = _parent_attr(
-        "_find_scenario_value_row",
-        _find_scenario_value_row_fallback,
-    )
-
-    anchor_ids: list[str] = []
-    spec = item.projected
-    if spec is not None and spec.type == formula_type.valuation and spec.subtype == "offset_scenario":
-        anchor_ref = line_item_ref_from_obj((spec.params or {}).get("anchor"))
-        if anchor_ref is not None:
-            anchor_ids.append(anchor_ref.id)
-
-    anchor_ids.append(item_id)
-
-    seen: set[str] = set()
-    for anchor_id in anchor_ids:
-        if anchor_id in seen:
-            continue
-        seen.add(anchor_id)
-        value_row_id = find_scenario_value_row(model, anchor_id, scenario_name)
-        if value_row_id is None:
-            continue
-        try:
-            return model.get_item(value_row_id)
-        except KeyError:
-            continue
-    return None
-
-
-def _resolve_scenario_case_row(
-    model: FinancialModel,
-    item_id: str,
-    scenario_name: Literal["bull", "base", "bear"],
-) -> LineItem | None:
-    resolve_scenario_flex_row = _parent_attr(
-        "_resolve_scenario_flex_row",
-        _resolve_scenario_flex_row,
-    )
-    if scenario_name in {"bull", "bear"}:
-        return resolve_scenario_flex_row(model, item_id, scenario_name)
-
-    try:
-        item = model.get_item(item_id)
-    except KeyError:
-        return None
-
-    formula_type = _parent_attr("FormulaType", FormulaType)
-    line_item_ref_from_obj = _parent_attr(
-        "line_item_ref_from_obj",
-        _line_item_ref_from_obj_fallback,
-    )
-    find_scenario_value_row = _parent_attr(
-        "_find_scenario_value_row",
-        _find_scenario_value_row_fallback,
-    )
-
-    anchor_ids: list[str] = []
-    spec = item.projected
-    if spec is not None and spec.type == formula_type.valuation and spec.subtype == "offset_scenario":
-        anchor_ref = line_item_ref_from_obj((spec.params or {}).get("anchor"))
-        if anchor_ref is not None:
-            anchor_ids.append(anchor_ref.id)
-    anchor_ids.append(item_id)
-
-    seen: set[str] = set()
-    for anchor_id in anchor_ids:
-        if anchor_id in seen:
-            continue
-        seen.add(anchor_id)
-        value_row_id = find_scenario_value_row(model, anchor_id, "base")
-        if value_row_id is None:
-            continue
-        try:
-            return model.get_item(value_row_id)
-        except KeyError:
-            continue
-    return None
-
-
-def _projection_entry_values_by_period(
+def _require_canonical_curve_order(
+    curves: tuple[CanonicalProjectionCurve, ...] | None,
     *,
-    model: FinancialModel,
-    item_id: str,
-    scenario_entry: Any,
-    most_recent_fy: int,
-    percent_normalize: Callable[..., float],
-) -> dict[int, float]:
-    projection_entry_value_for_model = _parent_attr(
-        "_projection_entry_value_for_model",
-        _projection_entry_value_for_model,
-    )
-    return {
-        int(year_str): projection_entry_value_for_model(
-            model=model,
-            item_id=item_id,
-            scenario_entry=scenario_entry,
-            raw_value=raw_value,
-            percent_normalize=percent_normalize,
+    field_name: str,
+) -> tuple[CanonicalProjectionCurve, ...]:
+    """Hold a curve tuple to the canonical form the persisted artifact assumes.
+
+    SchemaAudit PS-2 is a KEEP: sortedness and uniqueness are a determinism and
+    data-integrity invariant on the canonical form, not a construction-pedigree
+    re-proof.  PS-1 -- the exact-container/exact-class pin that used to sit
+    beside it -- is retired under the B6 ruling and is deliberately not
+    reinstated here.
+    """
+
+    if curves is None:
+        return ()
+    keys = tuple(
+        (
+            item.template_item_id.encode("utf-8"),
+            item.domain,
+            item.scenario.encode("utf-8"),
+            item.control_id,
         )
-        for year_str, raw_value in getattr(scenario_entry, "values", {}).items()
-        if int(year_str) > most_recent_fy
-    }
+        for item in curves
+    )
+    if keys != tuple(sorted(set(keys))):
+        raise ValueError(f"{field_name} must be canonically sorted and unique")
+    return curves
 
 
-def _projection_entry_value_for_model(
-    *,
+def _remove_control_snapshot_effects(
     model: FinancialModel,
-    item_id: str,
-    scenario_entry: Any,
-    raw_value: Any,
-    percent_normalize: Callable[..., float],
-) -> float:
-    value_scale = getattr(scenario_entry, "value_scale", "display")
-    if value_scale == "model":
-        return float(raw_value)
-    fields_set = (
-        getattr(scenario_entry, "model_fields_set", None)
-        or getattr(scenario_entry, "__fields_set__", set())
-        or set()
-    )
-    explicit_display_scale = value_scale == "display" and "value_scale" in fields_set
-    return percent_normalize(
-        model,
-        item_id,
-        raw_value,
-        decimal_passthrough=explicit_display_scale,
-    )
+    curves: tuple[CanonicalProjectionCurve, ...],
+) -> None:
+    """Remove only exact cells previously owned by canonical control curves."""
 
-
-def _item_seeded_values_by_period(item: LineItem, most_recent_fy: int) -> dict[int, float]:
-    values: dict[int, float] = {}
-    if item.values is not None:
-        for period, cell in item.values.values.items():
-            if int(period) > most_recent_fy and cell.value is not None:
-                values[int(period)] = float(cell.value)
-    if item.overrides is not None:
-        formula_type = _parent_attr("FormulaType", FormulaType)
-        for period, spec in item.overrides.items():
-            if int(period) <= most_recent_fy:
+    for curve in curves:
+        target_id = canonical_projection_render_target(model, curve)
+        try:
+            item = model.get_item(target_id)
+        except KeyError as exc:
+            raise ValueError(
+                "prior canonical control binding targets an absent template item: "
+                f"{target_id}"
+            ) from exc
+        if curve.domain == "scenario":
+            if item.values is None:
                 continue
-            if spec.type != formula_type.constant:
-                continue
-            value = (spec.params or {}).get("value")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                values[int(period)] = float(value)
-    return values
-
-
-def _projection_base_values_by_period(
-    *,
-    model: FinancialModel,
-    projections: Any,
-    projection_entry: Any,
-    rate_key: str,
-    base_item: LineItem | None,
-    most_recent_fy: int,
-    percent_normalize: Callable[..., float],
-) -> dict[int, float]:
-    if base_item is None:
-        return {}
-
-    projection_entry_values_by_period = _parent_attr(
-        "_projection_entry_values_by_period",
-        _projection_entry_values_by_period,
-    )
-    projection_owner_base_entry_for_case_row = _parent_attr(
-        "_projection_owner_base_entry_for_case_row",
-        _projection_owner_base_entry_for_case_row,
-    )
-    item_seeded_values_by_period = _parent_attr(
-        "_item_seeded_values_by_period",
-        _item_seeded_values_by_period,
-    )
-
-    base_entry = projection_entry.scenarios.get("base")
-    if base_entry is None:
-        base_projection_entry = projections.root.get(base_item.id)
-        if base_projection_entry is None and base_item.id != rate_key:
-            base_projection_entry = projections.root.get(rate_key)
-        if base_projection_entry is not None:
-            base_entry = base_projection_entry.scenarios.get("base")
-    if base_entry is None:
-        base_entry = projection_owner_base_entry_for_case_row(
-            model=model,
-            projections=projections,
-            rate_key=rate_key,
-            base_item=base_item,
-        )
-    if base_entry is not None:
-        return projection_entry_values_by_period(
-            model=model,
-            item_id=base_item.id,
-            scenario_entry=base_entry,
-            most_recent_fy=most_recent_fy,
-            percent_normalize=percent_normalize,
-        )
-    return item_seeded_values_by_period(base_item, most_recent_fy)
-
-
-def _projection_owner_base_entry_for_case_row(
-    *,
-    model: FinancialModel,
-    projections: Any,
-    rate_key: str,
-    base_item: LineItem,
-) -> Any | None:
-    """Find an owner-row base projection for an anchor-level scenario entry."""
-
-    resolve_scenario_case_row = _parent_attr(
-        "_resolve_scenario_case_row",
-        _resolve_scenario_case_row,
-    )
-    for candidate_key, candidate_entry in getattr(projections, "root", {}).items():
-        if candidate_key in {rate_key, base_item.id}:
+            for year, _value in curve.values:
+                item.values.values.pop(year, None)
+            if not item.values.values:
+                item.values = None
             continue
-        candidate_base_entry = candidate_entry.scenarios.get("base")
-        if candidate_base_entry is None:
-            continue
-        try:
-            model.get_item(candidate_key)
-        except KeyError:
-            continue
-        candidate_base_item = resolve_scenario_case_row(model, candidate_key, "base")
-        if candidate_base_item is None or candidate_base_item.id != base_item.id:
-            continue
-        return candidate_base_entry
-    return None
+        if item.overrides is not None:
+            for year, _value in curve.values:
+                item.overrides.pop(year, None)
+            if not item.overrides:
+                item.overrides = None
 
 
-def _scenario_ordering_violations_by_case(
-    *,
-    bull_values: dict[int, float],
-    base_values: dict[int, float],
-    bear_values: dict[int, float],
-) -> dict[Literal["bull", "bear"], list[str]]:
-    scenario_ordering_eps = _parent_attr("_SCENARIO_ORDERING_EPS", _SCENARIO_ORDERING_EPS)
-    violations: dict[Literal["bull", "bear"], list[str]] = {"bull": [], "bear": []}
-    for period in sorted(set(bull_values) & set(base_values) & set(bear_values)):
-        bull = bull_values[period]
-        base = base_values[period]
-        bear = bear_values[period]
-        detail = f"{period}:bull={bull:g},base={base:g},bear={bear:g}"
-        if abs(bull - bear) <= scenario_ordering_eps:
-            violations["bull"].append(f"{detail},expected=bull/base/bear_distinct")
-            violations["bear"].append(f"{detail},expected=bull/base/bear_distinct")
-        elif bull > bear:
-            if bull <= base + scenario_ordering_eps:
-                violations["bull"].append(f"{detail},expected=bull>base")
-            if bear >= base - scenario_ordering_eps:
-                violations["bear"].append(f"{detail},expected=bear<base")
-        else:
-            if bull >= base - scenario_ordering_eps:
-                violations["bull"].append(f"{detail},expected=bull<base")
-            if bear <= base + scenario_ordering_eps:
-                violations["bear"].append(f"{detail},expected=bear>base")
-    return {case: details for case, details in violations.items() if details}
+def _ref_offsets(params: Any) -> tuple[int, ...]:
+    offsets: list[int] = []
 
-
-def _seed_projections_from_overrides(
-    model: FinancialModel,
-    ticker_overrides: TickerOverrides | None,
-    compiled_registry: "CompiledDriverRegistry | None",
-    most_recent_fy: int,
-) -> SeedProjectionsResult:
-    """Seed durable projection override values into renderer-priority overrides."""
-
-    schema_version_seen = _parent_attr("_schema_version_seen", _schema_version_seen)
-    seed_projections_result = _parent_attr("SeedProjectionsResult", SeedProjectionsResult)
-    schema_version_seen_value = schema_version_seen(ticker_overrides)
-    if ticker_overrides is None or not ticker_overrides.projections:
-        return seed_projections_result(
-            total_rate_keys=0,
-            schema_version_seen=schema_version_seen_value,
-        )
-
-    from pydantic import ValidationError
-
-    from .overrides_projections import ProjectionsSection
-    from .scenario_bridge import percent_normalize_via_formatter
-
-    def _projection_percent_normalize(
-        model: FinancialModel,
-        target_item_id: str,
-        value: Any,
-        *,
-        decimal_passthrough: bool = False,
-    ) -> float:
-        return percent_normalize_via_formatter(
-            model,
-            target_item_id,
-            value,
-            decimal_passthrough=decimal_passthrough,
-        )
-
-    try:
-        projections = ProjectionsSection.model_validate(ticker_overrides.projections)
-    except ValidationError as exc:
-        logging.error("Projections section failed validation: %s", exc)
-        return seed_projections_result(
-            seeded_count=0,
-            orphans=[],
-            total_rate_keys=0,
-            schema_version_seen=schema_version_seen_value,
-            validation_error=str(exc),
-        )
-
-    orphaned_projection = _parent_attr("OrphanedProjection", OrphanedProjection)
-    seed_projection_warning = _parent_attr("SeedProjectionWarning", SeedProjectionWarning)
-    extract_last_provenance = _parent_attr("_extract_last_provenance", _extract_last_provenance)
-    projection_provenance_to_dict = _parent_attr(
-        "_projection_provenance_to_dict",
-        _projection_provenance_to_dict,
-    )
-    resolve_scenario_case_row = _parent_attr(
-        "_resolve_scenario_case_row",
-        _resolve_scenario_case_row,
-    )
-    resolve_scenario_flex_row = _parent_attr(
-        "_resolve_scenario_flex_row",
-        _resolve_scenario_flex_row,
-    )
-    projection_entry_values_by_period = _parent_attr(
-        "_projection_entry_values_by_period",
-        _projection_entry_values_by_period,
-    )
-    projection_entry_value_for_model = _parent_attr(
-        "_projection_entry_value_for_model",
-        _projection_entry_value_for_model,
-    )
-    projection_base_values_by_period = _parent_attr(
-        "_projection_base_values_by_period",
-        _projection_base_values_by_period,
-    )
-    scenario_ordering_violations_by_case = _parent_attr(
-        "_scenario_ordering_violations_by_case",
-        _scenario_ordering_violations_by_case,
-    )
-    formula_spec = _parent_attr("FormulaSpec", FormulaSpec)
-    formula_type = _parent_attr("FormulaType", FormulaType)
-
-    seeded_count = 0
-    orphans: list[OrphanedProjection] = []
-    warnings: list[SeedProjectionWarning] = []
-    total_rate_keys = len(projections.root)
-
-    bm_registry_items: set[str] = set()
-    if compiled_registry is not None:
-        bm_registry_items = set(compiled_registry.node_items.values()) | set(
-            compiled_registry.driver_keys.values()
-        )
-
-    for rate_key, projection_entry in projections.root.items():
-        try:
-            item = model.get_item(rate_key)
-        except KeyError:
-            item = None
-
-        if item is None:
-            if (
-                rate_key.startswith("bm.")
-                and compiled_registry is not None
-                and rate_key not in bm_registry_items
+    def walk(value: Any) -> None:
+        if isinstance(value, LineItemRef):
+            offsets.append(int(value.t or 0))
+            return
+        if isinstance(value, dict):
+            item_id = value.get("id")
+            if isinstance(item_id, str) and set(value).issubset(
+                {"id", "t", "resolved", "period_anchor"}
             ):
-                reason: Literal[
-                    "bm_key_not_in_registry",
-                    "tpl_item_not_found",
-                    "item_not_found",
-                    "bull_flex_row_not_found",
-                    "bear_flex_row_not_found",
-                ] = "bm_key_not_in_registry"
-                detail = (
-                    f"BM-driven key {rate_key!r} is not in this build's compiled registry; "
-                    "the BM artifact may have changed since the projection was written"
-                )
-            elif rate_key.startswith("tpl."):
-                reason = "tpl_item_not_found"
-                detail = (
-                    f"Template-driven key {rate_key!r} is not present in the model; "
-                    "the SIA template may have been renamed or restructured"
-                )
-            else:
-                reason = "item_not_found"
-                detail = (
-                    f"Projection key {rate_key!r} is not present in the current model; "
-                    "it may be a manual edit or stale key"
-                )
-            orphans.append(
-                orphaned_projection(
-                    rate_key=rate_key,
-                    reason=reason,
-                    detail=detail,
-                    last_provenance=extract_last_provenance(projection_entry),
-                )
-            )
-            continue
+                try:
+                    offsets.append(int(value.get("t") or 0))
+                except (TypeError, ValueError):
+                    return
+                return
+            for nested in value.values():
+                walk(nested)
+            return
+        if isinstance(value, (list, tuple)):
+            for nested in value:
+                walk(nested)
 
-        base = projection_entry.scenarios.get("base")
-        if base is not None:
+    walk(params)
+    return tuple(offsets)
+
+
+def _scenario_historical_formula_periods(
+    model: FinancialModel,
+    item: Any,
+    most_recent_fy: int,
+) -> set[int]:
+    """Historical years a scenario control row may still formula-cover.
+
+    A cell_ref (t=0) to a growth row covers only the years that row covers.
+    A referenced formula that reads a prior period cannot cover the first
+    axis year when that prior period is off the axis.
+    """
+
+    historical_periods = {
+        int(period)
+        for period in item.formula_periods
+        if int(period) <= most_recent_fy
+    }
+    historical = item.historical
+    if historical is None or historical.type is not FormulaType.ref:
+        return historical_periods
+    source = line_item_ref_from_obj((historical.params or {}).get("source"))
+    if source is None or int(source.t or 0) != 0:
+        return historical_periods
+    if not model._index:
+        model.build_index()
+    target_item = model._index.get(source.id)
+    if target_item is None or target_item.formula_periods is None:
+        return historical_periods
+    historical_periods &= {int(period) for period in target_item.formula_periods}
+    target_historical = target_item.historical
+    if target_historical is None or not any(
+        offset < 0 for offset in _ref_offsets(target_historical.params)
+    ):
+        return historical_periods
+    axis = model.time_structure
+    axis_historical = [int(period) for period in (axis.historical_periods or ())]
+    if not axis_historical:
+        return historical_periods
+    first = min(axis_historical)
+    on_axis = set(axis_historical) | {
+        int(period) for period in (axis.projection_periods or ())
+    }
+    if (first - 1) not in on_axis:
+        historical_periods.discard(first)
+    return historical_periods
+
+
+def _project_control_snapshots(
+    model: FinancialModel,
+    curves: tuple[CanonicalProjectionCurve, ...],
+    most_recent_fy: int,
+) -> ControlSnapshotProjectionResult:
+    """Seed exact canonical stable-ID curves into their bound workbook targets."""
+
+    # The exact-container/exact-class pin is retired (B6 ruling, 2026-08-22);
+    # the canonical-form invariant (PS-2) is a KEEP and still holds here.
+    exact_curves = _require_canonical_curve_order(curves, field_name="curves")
+    validate_canonical_projection_target_uniqueness(model, exact_curves)
+    coverage: list[dict[str, Any]] = []
+    seeded_count = 0
+    scenario_targets: dict[str, dict[str, str]] = {}
+    for curve in exact_curves:
+        target_id = canonical_projection_render_target(model, curve)
+        if curve.domain == "scenario":
+            scenario_targets.setdefault(curve.template_item_id, {})[
+                curve.scenario
+            ] = target_id
+        try:
+            item = model.get_item(target_id)
+        except KeyError as exc:
+            raise ValueError(
+                "canonical compile binding targets an absent template item: "
+                f"{target_id}"
+            ) from exc
+        if curve.domain == "scenario":
+            # Authenticated case rows are input controls for the forecast
+            # years: retire the inherited projected path and overrides so none
+            # competes with the verified snapshot values.  The inherited
+            # historical spec (a cell_ref to the driver's own history) stays,
+            # so the row's reported-year cells keep their lineage; snapshot
+            # values are written only for years > most_recent_fy and never
+            # meet it.
+            item.projected = None
+            item.item_type = ItemType.input
+            item.overrides = None
+        values = tuple(
+            (year, value)
+            for year, value in curve.values
+            if year > most_recent_fy
+        )
+        if not values:
+            continue
+        if curve.domain == "scenario":
+            if item.values is None:
+                item.values = ValueSeries()
+            for year, value in values:
+                item.values.values[year] = ValueCell(
+                    period=year,
+                    value=value,
+                    provenance=ValueProvenance.input,
+                    note=AUTHENTICATED_SCENARIO_PROJECTION_NOTE,
+                )
+            if item.formula_periods is not None:
+                item.formula_periods = sorted(
+                    _scenario_historical_formula_periods(
+                        model, item, most_recent_fy,
+                    )
+                    | {year for year, _value in values}
+                )
+        else:
             if item.overrides is None:
                 item.overrides = {}
-            for year_str, raw_value in base.values.items():
-                period = int(year_str)
-                if period <= most_recent_fy:
-                    continue
-                normalized = projection_entry_value_for_model(
-                    model=model,
-                    item_id=item.id,
-                    scenario_entry=base,
-                    raw_value=raw_value,
-                    percent_normalize=_projection_percent_normalize,
+            for year, value in values:
+                item.overrides[year] = FormulaSpec(
+                    type=FormulaType.constant,
+                    params={"value": value},
                 )
-                item.overrides[period] = formula_spec(
-                    type=formula_type.constant,
-                    params={"value": normalized},
-                )
-            seeded_count += 1
-            base_scenario_item = resolve_scenario_case_row(model, item.id, "base")
-            if (
-                base_scenario_item is not None
-                and base_scenario_item.id != item.id
-                and projections.root.get(base_scenario_item.id) is None
-            ):
-                base_scenario_values = projection_entry_values_by_period(
-                    model=model,
-                    item_id=base_scenario_item.id,
-                    scenario_entry=base,
-                    most_recent_fy=most_recent_fy,
-                    percent_normalize=_projection_percent_normalize,
-                )
-                if base_scenario_values:
-                    if base_scenario_item.overrides is None:
-                        base_scenario_item.overrides = {}
-                    for period, normalized in base_scenario_values.items():
-                        base_scenario_item.overrides[period] = formula_spec(
-                            type=formula_type.constant,
-                            params={"value": normalized},
-                        )
-                    seeded_count += 1
-
-        skip_scenario_seed: set[str] = set()
-        bull_entry = projection_entry.scenarios.get("bull")
-        bear_entry = projection_entry.scenarios.get("bear")
-        scenario_values: dict[str, dict[int, float]] = {}
-        scenario_items: dict[str, LineItem] = {}
-        if bull_entry is not None or bear_entry is not None:
-            base_item = resolve_scenario_case_row(model, item.id, "base")
-            if base_item is None:
-                for scenario_name, scenario_entry in (
-                    ("bull", bull_entry),
-                    ("bear", bear_entry),
-                ):
-                    if scenario_entry is None:
-                        continue
-                    warnings.append(
-                        seed_projection_warning(
-                            rate_key=rate_key,
-                            kind="base_flex_row_not_found",
-                            scenario=scenario_name,
-                            detail=f"No base scenario flex row found for {rate_key!r}; skipped {scenario_name} seed",
-                            last_provenance=projection_provenance_to_dict(
-                                scenario_entry.provenance
-                            ),
-                        )
-                    )
-                    skip_scenario_seed.add(scenario_name)
-            else:
-                base_values = projection_base_values_by_period(
-                    model=model,
-                    projections=projections,
-                    projection_entry=projection_entry,
-                    rate_key=rate_key,
-                    base_item=base_item,
-                    most_recent_fy=most_recent_fy,
-                    percent_normalize=_projection_percent_normalize,
-                )
-                for scenario_name, scenario_entry in (
-                    ("bull", bull_entry),
-                    ("bear", bear_entry),
-                ):
-                    if scenario_entry is None:
-                        continue
-                    scenario_item = resolve_scenario_case_row(model, item.id, scenario_name)
-                    if scenario_item is None:
-                        continue
-                    scenario_items[scenario_name] = scenario_item
-                    values = projection_entry_values_by_period(
-                        model=model,
-                        item_id=scenario_item.id,
-                        scenario_entry=scenario_entry,
-                        most_recent_fy=most_recent_fy,
-                        percent_normalize=_projection_percent_normalize,
-                    )
-                    scenario_values[scenario_name] = values
-                    missing_base_periods = sorted(set(values) - set(base_values))
-                    if missing_base_periods:
-                        warnings.append(
-                            seed_projection_warning(
-                                rate_key=rate_key,
-                                kind="base_period_values_missing",
-                                scenario=scenario_name,
-                                detail=(
-                                    f"Base scenario row {base_item.id!r} lacks periods "
-                                    f"{','.join(str(period) for period in missing_base_periods)}; "
-                                    f"skipped {scenario_name} seed"
-                                ),
-                                last_provenance=projection_provenance_to_dict(
-                                    scenario_entry.provenance
-                                ),
-                            )
-                        )
-                        skip_scenario_seed.add(scenario_name)
-                if {"bull", "bear"} <= set(scenario_values):
-                    ordering_issues = scenario_ordering_violations_by_case(
-                        bull_values=scenario_values["bull"],
-                        base_values=base_values,
-                        bear_values=scenario_values["bear"],
-                    )
-                    for scenario_name, details in ordering_issues.items():
-                        scenario_entry = projection_entry.scenarios[scenario_name]
-                        warnings.append(
-                            seed_projection_warning(
-                                rate_key=rate_key,
-                                kind="scenario_ordering_violation",
-                                scenario=scenario_name,
-                                detail=";".join(details[:5]),
-                                last_provenance=projection_provenance_to_dict(
-                                    scenario_entry.provenance
-                                ),
-                            )
-                        )
-                        skip_scenario_seed.add(scenario_name)
-
-        for scenario_name in ("bull", "bear"):
-            if scenario_name in skip_scenario_seed:
-                continue
-            scenario_entry = projection_entry.scenarios.get(scenario_name)
-            if scenario_entry is None:
-                continue
-            scenario_item = scenario_items.get(scenario_name)
-            if scenario_item is None:
-                scenario_item = resolve_scenario_flex_row(model, item.id, scenario_name)
-            if scenario_item is None:
-                orphans.append(
-                    orphaned_projection(
-                        rate_key=rate_key,
-                        reason=f"{scenario_name}_flex_row_not_found",
-                        detail=f"No Scenarios sheet flex row found for {scenario_name} of {rate_key!r}",
-                        last_provenance=projection_provenance_to_dict(
-                            scenario_entry.provenance
-                        ),
-                    )
-                )
-                continue
-            if scenario_item.overrides is None:
-                scenario_item.overrides = {}
-            values = scenario_values.get(scenario_name)
-            if values is None:
-                values = projection_entry_values_by_period(
-                    model=model,
-                    item_id=scenario_item.id,
-                    scenario_entry=scenario_entry,
-                    most_recent_fy=most_recent_fy,
-                    percent_normalize=_projection_percent_normalize,
-                )
-            for period, normalized in values.items():
-                scenario_item.overrides[period] = formula_spec(
-                    type=formula_type.constant,
-                    params={"value": normalized},
-                )
-            seeded_count += 1
-
-    return seed_projections_result(
-        seeded_count=seeded_count,
-        orphans=orphans,
-        warnings=warnings,
-        total_rate_keys=total_rate_keys,
-        schema_version_seen=schema_version_seen_value,
+        seeded_count += 1
+        coverage.append(
+            {
+                "canonical_driver_key": (
+                    curve.driver_id if curve.driver_id is not None else curve.control_id
+                ),
+                "resolved_item_id": item.id,
+                "periods": [year for year, _value in values],
+                "source_kind": "projection_override",
+                "control_id": curve.control_id,
+                "binding_id": curve.binding_id,
+                "scenario": curve.scenario,
+            }
+        )
+    for owner_id, targets in scenario_targets.items():
+        owner = model.get_item(owner_id)
+        # The owner is selected exclusively from authenticated scenario rows.
+        # Remove any base-case ModelSpec assumption seeds on the owner so there
+        # is no parallel, unauthenticated curve path.
+        scenario_periods = {
+            year
+            for curve in exact_curves
+            if curve.domain == "scenario" and curve.template_item_id == owner_id
+            for year, _value in curve.values
+        }
+        if owner.overrides is not None:
+            for year in scenario_periods:
+                owner.overrides.pop(year, None)
+            if not owner.overrides:
+                owner.overrides = None
+        original = owner.projected
+        selector = (
+            None
+            if original is None
+            else line_item_ref_from_obj((original.params or {}).get("selector"))
+        )
+        if selector is None:
+            raise ValueError(
+                "authenticated scenario projection owner has no selector"
+            )
+        owner.projected = FormulaSpec(
+            type=FormulaType.valuation,
+            subtype="scenario_select",
+            params={
+                "selector": selector,
+                **{
+                    case: LineItemRef(id=target_id)
+                    for case, target_id in sorted(targets.items())
+                },
+            },
+            note=AUTHENTICATED_SCENARIO_PROJECTION_NOTE,
+        )
+    return ControlSnapshotProjectionResult(
+        projected_curve_count=seeded_count,
+        available_curve_count=len(exact_curves),
+        coverage=tuple(coverage),
     )
+
+
+def compile_candidate_model(
+    base_model: FinancialModel,
+    prior_curves: tuple[CanonicalProjectionCurve, ...] | None,
+    candidate_curves: tuple[CanonicalProjectionCurve, ...] | None,
+    compiled_registry: "CompiledDriverRegistry | None",
+    most_recent_fy: int,
+) -> CandidateModelCompileResult:
+    """Compile a candidate after erasing the exact prior canonical controls."""
+
+    del compiled_registry
+    prior = _require_canonical_curve_order(prior_curves, field_name="prior_curves")
+    candidate = _require_canonical_curve_order(
+        candidate_curves, field_name="candidate_curves"
+    )
+    model = copy.deepcopy(base_model)
+    model.build_index()
+    _remove_control_snapshot_effects(model, prior)
+    projection_result = _project_control_snapshots(
+        model,
+        candidate,
+        most_recent_fy,
+    )
+    model.build_index()
+    from .dependency_graph import DependencyGraph, formula_owned_recompute_ids
+
+    graph = DependencyGraph()
+    graph.build(model)
+    computed_values = graph.compute(
+        {},
+        recompute=formula_owned_recompute_ids(model),
+    )
+    return CandidateModelCompileResult(
+        model=model,
+        control_snapshot_projection=projection_result,
+        computed_values=computed_values,
+    )
+
+
+def reconstruct_compiled_registry(
+    compiler_inputs: Mapping[str, Any],
+    *,
+    business_model_revision: "BusinessModelRevision",
+) -> "CompiledDriverRegistry":
+    """Recompile the canonical ModelSpec against a fresh template."""
+
+    model_spec_input = compiler_inputs["model_spec"]
+    model_spec_payload = model_spec_input.get("payload")
+    expected_hash = str(model_spec_input.get("content_hash") or "")
+
+    from .build import load_template
+    from .build_model_product_contracts import resolve_model_spec_business_model_revision
+    from .model_spec_decoder import (
+        VerifiedModelSpecDecodeRequest,
+        decode_verified_model_spec_compiler_input,
+    )
+    from .business_model_revision import BusinessModelRevision
+    from .business_model_compiler import (
+        bind_driver_assumption_plan,
+        compile_business_model,
+    )
+
+    verified_model_spec = decode_verified_model_spec_compiler_input(
+        VerifiedModelSpecDecodeRequest(
+            payload_mapping=model_spec_payload,
+            compiler_input_hash=expected_hash,
+            external_model_version_digest=None,
+        )
+    )
+    model_spec = verified_model_spec.model_spec
+    revision = BusinessModelRevision.model_validate(
+        business_model_revision
+    )
+    revision = resolve_model_spec_business_model_revision(
+        model_spec,
+        revision,
+    )
+    return bind_driver_assumption_plan(
+        compile_business_model(load_template(), revision.business_model),
+        revision.driver_assumption_plan,
+    )
+
+
+__all__ = [
+    "CandidateModelCompileResult",
+    "ControlSnapshotProjectionResult",
+    "_project_control_snapshots",
+    "compile_candidate_model",
+    "reconstruct_compiled_registry",
+]

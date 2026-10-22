@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from schema._insights_shared import _FROZEN_CONTRACT
+from schema.finding_vocabulary import Finding
 
 
 ResearchBriefStatus = Literal["pending", "ready", "failed"]
@@ -62,6 +63,7 @@ class ResearchBrief(BaseModel):
     valuation_slot: ResearchBriefSlot | None = None
     editorial_metadata: ResearchEditorialMetadata | None = None
     error_code: str | None = None
+    findings: tuple[Finding, ...] = ()
 
     @model_validator(mode="after")
     def _validate_status_payload(self) -> "ResearchBrief":

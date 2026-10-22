@@ -11,10 +11,8 @@ from ._insights_shared import (
     Severity as Severity,
     _FROZEN_CONTRACT,
 )
-from .thesis import (
-    PositionSize,
-    ThesisPriceTarget,
-)
+from .model_ref import ModelVersionRef
+from .thesis import PositionSize
 from .thesis_shared_slice import (
     BusinessOverview,
     CompsNarrative,
@@ -52,6 +50,7 @@ from .handoff_patch_targets import (
     HistoricalCoincidenceTarget as HistoricalCoincidenceTarget,
     StableIdTarget as StableIdTarget,
     ThesisFieldTargetInt as ThesisFieldTargetInt,
+    ThesisFieldTargetRefs as ThesisFieldTargetRefs,
     ThesisFieldTargetStr as ThesisFieldTargetStr,
     ThesisQuantitativeTarget as ThesisQuantitativeTarget,
     ValuationTarget as ValuationTarget,
@@ -78,6 +77,7 @@ from .handoff_patch_values import (
     UpdateTriggerValue as UpdateTriggerValue,
     WatchItemWriteValue as WatchItemWriteValue,
 )
+from .period_value_series import AssumptionValue
 
 
 class _PatchOpBase(BaseModel):
@@ -90,7 +90,12 @@ class _PatchOpBase(BaseModel):
 class ReplaceAssumptionValueOp(_PatchOpBase):
     op: Literal["replace_assumption_value"] = "replace_assumption_value"
     target: AssumptionTarget
-    value: float
+    value: AssumptionValue
+    mutation_mode: Literal["patch", "replace"] = "replace"
+    source_refs_by_period: dict[int, list[SourceId]] = Field(default_factory=dict)
+    extension_basis_by_period: dict[int, str] = Field(default_factory=dict)
+    confidence_by_period: dict[int, Confidence] = Field(default_factory=dict)
+    source_notes_by_period: dict[int, str] = Field(default_factory=dict)
 
 
 class UpdateAssumptionFieldOp(_PatchOpBase):
@@ -117,6 +122,7 @@ class AddAssumptionOp(_PatchOpBase):
     op: Literal["add_assumption"] = "add_assumption"
     target: None = None
     value: AddAssumptionValue
+    mutation_mode: Literal["patch", "replace"] = "replace"
 
     @model_validator(mode="before")
     @classmethod
@@ -148,10 +154,16 @@ class ReplaceThesisFieldIntOp(_PatchOpBase):
     value: int | None = None
 
 
+class ReplaceThesisFieldRefsOp(_PatchOpBase):
+    op: Literal["replace_thesis_field_refs"] = "replace_thesis_field_refs"
+    target: ThesisFieldTargetRefs
+    value: list[SourceId]
+
+
 class UpdateThesisQuantitativeOp(_PatchOpBase):
     op: Literal["update_thesis_quantitative"] = "update_thesis_quantitative"
     target: ThesisQuantitativeTarget
-    value: float | str
+    value: float | str | list[SourceId]
 
 
 class UpdateValuationOp(_PatchOpBase):
@@ -182,10 +194,17 @@ class UpdateValuationOp(_PatchOpBase):
         return self
 
 
-class SetPriceTargetOp(_PatchOpBase):
-    op: Literal["set_price_target"] = "set_price_target"
+class SetQuantitativeFramingProvenanceValue(BaseModel):
+    model_ref: ModelVersionRef
+    as_of: str | None = None
+
+    model_config = _FROZEN_CONTRACT
+
+
+class SetQuantitativeFramingProvenanceOp(_PatchOpBase):
+    op: Literal["set_quantitative_framing_provenance"] = "set_quantitative_framing_provenance"
     target: None = None
-    value: ThesisPriceTarget
+    value: SetQuantitativeFramingProvenanceValue
 
 
 class UpdateConsensusViewOp(_PatchOpBase):
@@ -334,6 +353,19 @@ class UpdateDifferentiatedViewClaimOp(_PatchOpBase):
 class RemoveDifferentiatedViewClaimOp(_PatchOpBase):
     op: Literal["remove_differentiated_view_claim"] = "remove_differentiated_view_claim"
     target: StableIdTarget
+    value: None = None
+
+
+class MergeDifferentiatedViewClaimOp(_PatchOpBase):
+    """Retire ``target.id`` into the surviving claim ``into.id``.
+
+    The retired claim leaves the Thesis with a merged-into record naming the
+    survivor, so every handle that named it resolves to the survivor.
+    """
+
+    op: Literal["merge_differentiated_view_claim"] = "merge_differentiated_view_claim"
+    target: StableIdTarget
+    into: StableIdTarget
     value: None = None
 
 
@@ -498,9 +530,10 @@ HandoffPatchOp = Annotated[
         SetAssumptionHeldAtBaseOp,
         ReplaceThesisFieldStrOp,
         ReplaceThesisFieldIntOp,
+        ReplaceThesisFieldRefsOp,
         UpdateThesisQuantitativeOp,
         UpdateValuationOp,
-        SetPriceTargetOp,
+        SetQuantitativeFramingProvenanceOp,
         UpdateConsensusViewOp,
         UpdateBusinessOverviewOp,
         UpdateEpsFcfOp,
@@ -522,6 +555,7 @@ HandoffPatchOp = Annotated[
         AddDifferentiatedViewClaimOp,
         UpdateDifferentiatedViewClaimOp,
         RemoveDifferentiatedViewClaimOp,
+        MergeDifferentiatedViewClaimOp,
         AddRiskOp,
         UpdateRiskOp,
         RemoveRiskOp,
@@ -567,6 +601,14 @@ class HandoffPatchBatch(BaseModel):
             raise ValueError(
                 f"op_ids must be unique within batch; duplicates: {sorted(duplicates)}"
             )
+        provenance_ops = [
+            op for op in self.ops
+            if isinstance(op, SetQuantitativeFramingProvenanceOp)
+        ]
+        if len(provenance_ops) > 1:
+            raise ValueError(
+                "at most one set_quantitative_framing_provenance op is allowed per batch"
+            )
         return self
 
     model_config = _FROZEN_CONTRACT
@@ -598,6 +640,7 @@ __all__ = [
     "RemoveCatalystOp",
     "RemoveDataGapOp",
     "RemoveDifferentiatedViewClaimOp",
+    "MergeDifferentiatedViewClaimOp",
     "RemoveEditorialPeerOp",
     "RemoveHistoricalCoincidenceOp",
     "RemoveInvalidationTriggerOp",
@@ -606,6 +649,7 @@ __all__ = [
     "ReplaceAssumptionValueOp",
     "ReplaceIndustryPeerComparisonOp",
     "ReplaceThesisFieldIntOp",
+    "ReplaceThesisFieldRefsOp",
     "ReplaceThesisFieldStrOp",
     "ReplaceStructuralTrendsOp",
     "SetAssumptionHeldAtBaseOp",
@@ -614,9 +658,11 @@ __all__ = [
     "SetMaterialityOp",
     "SetOperatingComparisonOp",
     "SetPeerComparisonSectionsOp",
-    "SetPriceTargetOp",
+    "SetQuantitativeFramingProvenanceOp",
+    "SetQuantitativeFramingProvenanceValue",
     "StableIdTarget",
     "ThesisFieldTargetInt",
+    "ThesisFieldTargetRefs",
     "ThesisFieldTargetStr",
     "ThesisQuantitativeTarget",
     "UpdateAssumptionFieldOp",

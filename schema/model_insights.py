@@ -7,8 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ._insights_shared import DriverCategory, DriverUnit, Severity, _FROZEN_CONTRACT
 from .handoff_patch import HandoffPatchOp
-from .model_ref import ModelVersionRef
-from .thesis_shared_slice import SourceId
+from industry_slice_core.thesis_shared_sources import SourceId
 
 
 class DriverSensitivity(BaseModel):
@@ -78,6 +77,7 @@ class ImpliedAssumption(BaseModel):
     value: float
     unit: DriverUnit
     rationale: str = Field(min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
     suggests_patch: bool = False
 
     @field_validator("sia_category", mode="before")
@@ -101,14 +101,14 @@ class RiskSurfaced(BaseModel):
 
 class ModelInsights(BaseModel):
     model_insights_id: str = Field(min_length=1)
-    model_ref: ModelVersionRef
-    model_build_context_id: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    model_version: int = Field(ge=1)
     generated_at: str = Field(min_length=1)
     driver_sensitivities: list[DriverSensitivity] = Field(default_factory=list)
     implied_assumptions: list[ImpliedAssumption] = Field(default_factory=list)
     risks_surfaced: list[RiskSurfaced] = Field(default_factory=list)
     handoff_patch_suggestions: list[HandoffPatchOp] = Field(default_factory=list)
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["3.0"] = "3.0"
 
     @field_validator("driver_sensitivities")
     @classmethod
@@ -145,6 +145,5 @@ __all__ = [
     "DriverSensitivity",
     "ImpliedAssumption",
     "ModelInsights",
-    "ModelVersionRef",
     "RiskSurfaced",
 ]

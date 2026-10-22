@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Optional
 
 from .build_formula_eval import (
@@ -17,12 +16,6 @@ from .build_formula_refs import (
 from .models import FinancialModel, FormulaType, LineItem
 
 
-def _parent_attr(name: str, fallback):
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    return getattr(parent, name, fallback) if parent is not None else fallback
-
-
 def _item_has_real_data(
     item: LineItem,
     period: int,
@@ -34,7 +27,7 @@ def _item_has_real_data(
     """Return True when an item has real data for a specific period."""
 
     if model is not None:
-        available_periods = _parent_attr("_available_periods", _formula_available_periods)(model)
+        available_periods = _formula_available_periods(model)
         if available_periods is not None and int(period) not in available_periods:
             return False
 
@@ -52,12 +45,12 @@ def _item_has_real_data(
         and item.historical is not None
         and item.historical.type is FormulaType.ref
     ):
-        if _depth >= _parent_attr("_MAX_REF_CHAIN_DEPTH", _FORMULA_MAX_REF_CHAIN_DEPTH):
+        if _depth >= _FORMULA_MAX_REF_CHAIN_DEPTH:
             return False
         key = (str(item.id), int(period))
         if key in (_seen or set()):
             return False
-        ref_target = _parent_attr("_extract_single_ref", _formula_extract_single_ref)(
+        ref_target = _formula_extract_single_ref(
             item.historical.params
         )
         if ref_target is None:
@@ -84,11 +77,7 @@ def _item_has_real_data(
         and item.historical is not None
         and item.historical.type is FormulaType.constant
     ):
-        constant_override_value = _parent_attr(
-            "_constant_override_value",
-            _formula_constant_override_value,
-        )
-        if constant_override_value(item.historical) is not None:
+        if _formula_constant_override_value(item.historical) is not None:
             return True
 
     return False

@@ -1,10 +1,21 @@
-"""Render FinancialModel templates back into Excel-oriented cell plans."""
+"""Render a ``FinancialModel`` into a pure, Excel-oriented cell plan.
+
+``render_model`` computes formula-owned values through the dependency graph,
+delegates formula and payload details to the focused ``renderer_*.py``
+modules, and returns a ``RenderPlan`` without writing a workbook or durable
+product state. ``schema/excel_writer.py`` owns XLSX serialization.
+
+Owner and render-pipeline guide: ``schema/README.md``.
+"""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any, DefaultDict, Dict, List, Optional
 
+from .build_formula_refs import _extract_ref_ids
+from .build_company_info import _YEAR_HEADER_ID
+from .dependency_graph import DependencyGraph, formula_owned_recompute_ids
 from .formatter import ModelFormatter, SIA_FORMATTER
 from .models import (
     CellColor,
@@ -14,61 +25,42 @@ from .models import (
     ItemType,
     LineItem,
     LineItemRef as LineItemRef,
-    PERIOD_MODE_YEARLY as PERIOD_MODE_YEARLY,
     Sheet,
     SheetLayout,
-    TimeStructure as TimeStructure,
-    shift_period as shift_period,
 )
-from .refs import line_item_ref_from_obj as line_item_ref_from_obj
+from .presentation_captions import (
+    PresentationCaptionSpecError,
+    WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS,
+    item_renders_text,
+)
 from .renderer_columns import (
     AbsoluteColumnMapper as AbsoluteColumnMapper,
+    _fixed_cell_anchor_period as _fixed_cell_anchor_period,
     _historical_periods as _historical_periods,
     _projection_periods as _projection_periods,
-    _scoped_periods as _scoped_periods,
     _selector_column as _selector_column,
     _time_order as _time_order,
 )
 from .renderer_formula import (
     ExcelFormulaCompiler as ExcelFormulaCompiler,
-    _COLUMN_OFFSET_MODE_PERIOD_RELATIVE as _COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
-    _apply_adjustment as _apply_adjustment,
-    _cell_ref as _cell_ref,
-    _excel_number_literal as _excel_number_literal,
-    _is_operator_expr as _is_operator_expr,
-    _normalize_literal as _normalize_literal,
-    _quote_sheet_name as _quote_sheet_name,
-    _wrap_if_operator_expr as _wrap_if_operator_expr,
+    _normalize_literal,
 )
-from .renderer_summary import (
-    _SUMMARY_DRIVER_ROWS as _SUMMARY_DRIVER_ROWS,
-    _SUMMARY_OUTPUT_ROWS as _SUMMARY_OUTPUT_ROWS,
-    _SUMMARY_SCENARIO_ROWS as _SUMMARY_SCENARIO_ROWS,
-    _SUMMARY_VALUATION_ROWS as _SUMMARY_VALUATION_ROWS,
-    _append_summary_sheet as _append_summary_sheet,
-    _format_cell_count as _format_cell_count,
-    _item_locations as _item_locations,
-    _summary_cell_for_item as _summary_cell_for_item,
-    _summary_default_period as _summary_default_period,
-    _summary_formula_or_missing as _summary_formula_or_missing,
-    _summary_health_rows as _summary_health_rows,
-    _summary_item_ref as _summary_item_ref,
-    _summary_period_list as _summary_period_list,
-    _summary_source_label as _summary_source_label,
-    _unique_sheet_name as _unique_sheet_name,
-)
+from . import renderer_summary as _renderer_summary
 from .renderer_payload import (
-    _batch_sheet_formats as _batch_sheet_formats,
-    _batch_sheet_writes as _batch_sheet_writes,
     _col_to_index as _col_to_index,
-    _data_column_bounds as _data_column_bounds,
     _index_to_col as _index_to_col,
-    _split_cell as _split_cell,
-    _split_range as _split_range,
     plan_to_mcp_calls as plan_to_mcp_calls,
     render_plan_to_addin_payload as render_plan_to_addin_payload,
 )
-from .renderer_types import CellFormat, CellWrite, RenderPlan, SheetSetup
+from .published_model_readback import WRITER_NUMERIC_TOLERANCE
+from .renderer_types import (
+    AnnualRenderContext,
+    CellFormat,
+    CellWrite,
+    RenderPlan,
+    SemanticCellRender,
+    SheetSetup,
+)
 
 
 CELL_COLOR_MAP = {
@@ -87,11 +79,25 @@ _FIXED_LABEL_COLUMN_PADDING = 2.0
 def render_model(
     model: FinancialModel,
     formatter: Optional[ModelFormatter] = None,
+    *,
+    annual_context: AnnualRenderContext | None = None,
 ) -> RenderPlan:
-    """Produce a pure render plan from a FinancialModel."""
+    """Produce a pure render plan or raise on an invalid render contract.
+
+    The supported extension points are ``ModelFormatter`` and the focused
+    renderer helpers; persistence belongs to the caller.
+    """
 
     model.build_index()
+    _validate_presentation_caption_specs(model)
     formatter = formatter or SIA_FORMATTER
+    graph = DependencyGraph()
+    graph.build(model)
+    typed_values = graph.compute_typed(
+        {},
+        recompute=formula_owned_recompute_ids(model),
+        propagate_roots=set(),
+    )
 
     plan = RenderPlan()
     layouts: Dict[str, SheetLayout] = {}
@@ -191,8 +197,16 @@ def render_model(
                 if item.item_type in {ItemType.header, ItemType.spacer}:
                     continue
                 if item.column is not None:
+                    period = _fixed_cell_anchor_period(model, item)
                     rendered = _render_fixed_cell(model, item, compiler)
                     column = item.column.upper()
+                    if (
+                        (rendered is None or rendered == "")
+                        and period is not None
+                        and annual_context is not None
+                        and (item.id, period) in annual_context.required_unavailable
+                    ):
+                        rendered = "=NA()"
                     if rendered is None or rendered == "":
                         if item.item_type == ItemType.input and _fixed_cell_is_user_input(model, item):
                             row_cell_types[int(item.row)][column] = False
@@ -205,10 +219,30 @@ def render_model(
                         )
                     )
                     row_cell_types[int(item.row)][column] = isinstance(rendered, str) and rendered.startswith("=")
+                    if period is not None and item.id != _YEAR_HEADER_ID:
+                        plan.semantic_cells.append(
+                            _semantic_cell_render(
+                                model,
+                                sheet_name,
+                                f"{column}{item.row}",
+                                item,
+                                period,
+                                rendered,
+                                typed_values,
+                                formatter,
+                                annual_context,
+                            )
+                        )
                     continue
                 for period in mapper.all_periods():
                     rendered = _render_cell_value(model, item, period, compiler)
                     column = mapper.col_for_period(period)
+                    if (
+                        (rendered is None or rendered == "")
+                        and annual_context is not None
+                        and (item.id, period) in annual_context.required_unavailable
+                    ):
+                        rendered = "=NA()"
                     if rendered is None or rendered == "":
                         if item.item_type == ItemType.input and _period_cell_is_user_input(model, item, period):
                             row_cell_types[int(item.row)][column] = False
@@ -221,6 +255,20 @@ def render_model(
                         )
                     )
                     row_cell_types[int(item.row)][column] = isinstance(rendered, str) and rendered.startswith("=")
+                    if item.id != _YEAR_HEADER_ID:
+                        plan.semantic_cells.append(
+                            _semantic_cell_render(
+                                model,
+                                sheet_name,
+                                f"{column}{item.row}",
+                                item,
+                                period,
+                                rendered,
+                                typed_values,
+                                formatter,
+                                annual_context,
+                            )
+                        )
 
             plan.writes.extend(label_writes)
             plan.writes.extend(metadata_writes)
@@ -299,9 +347,294 @@ def render_model(
                     )
 
     if formatter.summary_sheet_enabled:
-        _append_summary_sheet(model, plan, mappers, formatter)
+        _renderer_summary._append_summary_sheet(
+            model,
+            plan,
+            mappers,
+            formatter,
+            annual_context=annual_context,
+        )
 
+    finalize_render_contract(plan)
     return plan
+
+
+def finalize_render_contract(plan: RenderPlan) -> None:
+    """Complete presentation-cell entries after all existing plan writers run."""
+
+    semantic = {
+        (entry.sheet, entry.cell): entry
+        for entry in plan.semantic_cells
+        if entry.cell_kind != "presentation"
+        or entry.semantic_item_id != "presentation"
+    }
+    final_writes = {
+        (write.sheet, write.cell.upper()): write for write in plan.writes
+    }
+    presentations = [
+        SemanticCellRender(
+            sheet=sheet,
+            cell=cell,
+            semantic_item_id="presentation",
+            semantic_label=(
+                str(write.value)
+                if isinstance(write.value, str) and not write.value.startswith("=")
+                else "Presentation cell"
+            ),
+            period=0,
+            cell_kind="presentation",
+            expected_state="known",
+            expected_value=write.value,
+            origin="presentation",
+            dependencies=(),
+            unit=None,
+            scale="units",
+            sign="natural",
+            style=None,
+            tolerance=0.0,
+            number_format=None,
+        )
+        for (sheet, cell), write in final_writes.items()
+        if (sheet, cell) not in semantic
+    ]
+    plan.semantic_cells = [*semantic.values(), *presentations]
+
+
+def reconcile_render_contract(
+    model: FinancialModel,
+    plan: RenderPlan,
+    *,
+    formatter: ModelFormatter,
+    annual_context: AnnualRenderContext | None,
+) -> None:
+    """Add semantic metadata for late writes made by existing render helpers."""
+
+    final_writes = {
+        (write.sheet, write.cell.upper()): write.value for write in plan.writes
+    }
+    existing = {
+        (entry.sheet, entry.cell)
+        for entry in plan.semantic_cells
+        if entry.cell_kind != "presentation"
+        or entry.semantic_item_id != "presentation"
+    }
+    graph = DependencyGraph()
+    graph.build(model)
+    typed_values = graph.compute_typed(
+        {},
+        recompute=formula_owned_recompute_ids(model),
+        propagate_roots=set(),
+    )
+    for sheet_name, sheet in model.sheets.items():
+        layout = sheet.layout or SheetLayout(
+            label_column="A",
+            first_data_column="B",
+        )
+        mapper = AbsoluteColumnMapper(
+            model.time_structure,
+            layout.first_data_column or "B",
+            period_scope=layout.period_scope,
+        )
+        for section in sheet.sections:
+            for item in section.line_items:
+                if item.item_type is ItemType.header or item.id == _YEAR_HEADER_ID:
+                    continue
+                periods = tuple(mapper.all_periods())
+                if item.column is not None:
+                    periods = (
+                        tuple(item.formula_periods or ())
+                        or tuple(model.time_structure.projection_periods)
+                        or periods
+                    )[:1]
+                for period in periods:
+                    cell = (
+                        f"{item.column}{item.row}"
+                        if item.column is not None
+                        else f"{mapper.col_for_period(period)}{item.row}"
+                    ).upper()
+                    identity = (sheet_name, cell)
+                    if identity in existing or identity not in final_writes:
+                        continue
+                    plan.semantic_cells.append(
+                        _semantic_cell_render(
+                            model,
+                            sheet_name,
+                            cell,
+                            item,
+                            int(period),
+                            final_writes[identity],
+                            typed_values,
+                            formatter,
+                            annual_context,
+                        )
+                    )
+                    existing.add(identity)
+    finalize_render_contract(plan)
+
+
+def _semantic_cell_render(
+    model: FinancialModel,
+    sheet: str,
+    cell: str,
+    item: LineItem,
+    period: int,
+    rendered: Any,
+    typed_values: dict[str, dict[int, Any]],
+    formatter: ModelFormatter,
+    annual_context: AnnualRenderContext | None,
+) -> SemanticCellRender:
+    spec = _spec_for_period(model, item, period)
+    if item.id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS:
+        dependencies = (
+            tuple(sorted(_extract_ref_ids(spec.params))) if spec is not None else ()
+        )
+        return SemanticCellRender(
+            sheet=sheet,
+            cell=cell.upper(),
+            semantic_item_id=item.id,
+            semantic_label=item.label,
+            period=int(period),
+            cell_kind="presentation",
+            expected_state="known",
+            expected_value=rendered,
+            origin=(
+                "compiled_formula"
+                if isinstance(rendered, str) and rendered.startswith("=")
+                else "compiled_literal"
+            ),
+            dependencies=dependencies,
+            unit=item.unit.value if item.unit is not None else None,
+            scale=item.model_scale,
+            sign="natural",
+            style=item.style.model_dump_json() if item.style is not None else None,
+            tolerance=0.0,
+            number_format=formatter.number_format_for(item),
+        )
+    typed = typed_values.get(item.id, {}).get(period)
+    expected_state = str(getattr(typed, "state", "known"))
+    expected_value = getattr(typed, "value", rendered)
+    required_unavailable = (
+        annual_context is not None
+        and (item.id, period) in annual_context.required_unavailable
+    )
+    if (
+        required_unavailable
+        and expected_state != "known"
+        and not item_renders_text(item.id, lambda item_id: _spec_for_period(model, model.get_item(item_id), period))
+    ):
+        cell_kind = "unavailable"
+    elif isinstance(rendered, str) and rendered.startswith("="):
+        cell_kind = "formula"
+    else:
+        cell_kind = "hardcode"
+    if spec is not None:
+        dependencies = tuple(sorted(_extract_ref_ids(spec.params)))
+        origin = "compiled_formula" if cell_kind != "hardcode" else "compiled_literal"
+    else:
+        dependencies = ()
+        origin = "observed_or_analyst_input"
+    return SemanticCellRender(
+        sheet=sheet,
+        cell=cell.upper(),
+        semantic_item_id=item.id,
+        semantic_label=item.label,
+        period=int(period),
+        cell_kind=cell_kind,
+        expected_state=expected_state,
+        expected_value=expected_value,
+        origin=origin,
+        dependencies=dependencies,
+        unit=item.unit.value if item.unit is not None else None,
+        scale=item.model_scale,
+        sign="natural",
+        style=item.style.model_dump_json() if item.style is not None else None,
+        tolerance=WRITER_NUMERIC_TOLERANCE,
+        number_format=formatter.number_format_for(item),
+    )
+
+
+def _is_presentation_caption_spec(spec: FormulaSpec) -> bool:
+    if spec.type is FormulaType.constant:
+        return isinstance(spec.params.get("value"), str)
+    if spec.type is not FormulaType.ref:
+        return False
+    source = spec.params.get("source")
+    return (
+        isinstance(source, LineItemRef)
+        and source.id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS
+        and source.t == 0
+        and source.period_anchor == "first"
+        and spec.params.get("adjustment") is None
+        and not spec.params.get("negate")
+    )
+
+
+def _is_legacy_presentation_caption_spec(item: LineItem, spec: FormulaSpec) -> bool:
+    if spec.type is not FormulaType.ref or spec.subtype != "ref_with_adjustment":
+        return False
+    if set(spec.params) != {"source", "adjustment"}:
+        return False
+    source = spec.params.get("source")
+    adjustment = spec.params.get("adjustment")
+    return (
+        isinstance(source, LineItemRef)
+        and source.id == item.id
+        and source.t == -1
+        and source.resolved is True
+        and source.period_anchor == "first"
+        and isinstance(adjustment, (int, float))
+        and not isinstance(adjustment, bool)
+        and adjustment == 1.0
+    )
+
+
+def _validate_presentation_caption_specs(model: FinancialModel) -> None:
+    for sheet in model.sheets.values():
+        layout = sheet.layout or SheetLayout(
+            label_column="A",
+            first_data_column="B",
+        )
+        mapper = AbsoluteColumnMapper(
+            model.time_structure,
+            layout.first_data_column or "B",
+            period_scope=layout.period_scope,
+        )
+        for section in sheet.sections:
+            for item in section.line_items:
+                if item.id not in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS:
+                    continue
+                if item.values is not None and any(
+                    value.value is not None for value in item.values.values.values()
+                ):
+                    raise PresentationCaptionSpecError(
+                        "presentation_caption_spec_violation: caption "
+                        f"{item.id!r} must not carry values"
+                    )
+                for period, override in (item.overrides or {}).items():
+                    if not _is_presentation_caption_spec(override):
+                        raise PresentationCaptionSpecError(
+                            "presentation_caption_spec_violation: caption "
+                            f"{item.id!r} override for {period} violates P"
+                        )
+                periods = tuple(mapper.all_periods())
+                if item.column is not None:
+                    periods = (
+                        tuple(item.formula_periods or ())
+                        or tuple(model.time_structure.projection_periods)
+                        or periods
+                    )[:1]
+                for period in periods:
+                    spec = _spec_for_period(model, item, int(period))
+                    if spec is None:
+                        continue
+                    if not (
+                        _is_presentation_caption_spec(spec)
+                        or _is_legacy_presentation_caption_spec(item, spec)
+                    ):
+                        raise PresentationCaptionSpecError(
+                            "presentation_caption_spec_violation: active caption "
+                            f"spec for {item.id!r} period {period} violates P or L"
+                        )
 
 
 def _build_sheet_setup(
@@ -371,22 +704,56 @@ def _fixed_cell_writes_label_text(item: LineItem) -> bool:
     return False
 
 
+def cell_render_input(
+    model: FinancialModel,
+    item: LineItem,
+    period: int,
+) -> FormulaSpec | float | str | None:
+    """Select the renderer's input without compiling formulas or computing values.
+
+    Fixed-column items always select at their anchor, irrespective of ``period``,
+    and fall back to the earliest stored non-null value only when no spec or
+    anchor value exists. A selected spec wins over stored values, including a
+    constant whose compiler-normalized value is ``None`` or ``""``. Those blank
+    constants return the blank itself; all other specs are returned uncompiled.
+    """
+    if item.column is not None:
+        anchor = _fixed_cell_anchor_period(model, item)
+        if anchor is None:
+            return None
+        period = anchor
+
+    spec = _spec_for_period(model, item, period)
+    if spec is not None:
+        if spec.type is FormulaType.constant:
+            literal = _normalize_literal((spec.params or {}).get("value"))
+            if literal is None or literal == "":
+                return literal
+        return spec
+
+    if item.values is not None:
+        value_cell = item.values.values.get(int(period))
+        if value_cell is not None and value_cell.value is not None:
+            return float(value_cell.value)
+        if item.column is not None:
+            for value_period in sorted(item.values.values):
+                value_cell = item.values.values[value_period]
+                if value_cell.value is not None:
+                    return float(value_cell.value)
+
+    return None
+
+
 def _render_cell_value(
     model: FinancialModel,
     item: LineItem,
     period: int,
     compiler: ExcelFormulaCompiler,
 ) -> Any:
-    spec = _spec_for_period(model, item, period)
-    if spec is not None:
-        return compiler.compile_formula(spec, period=period, item_id=item.id)
-
-    if item.values is not None:
-        value_cell = item.values.values.get(int(period))
-        if value_cell is not None and value_cell.value is not None:
-            return float(value_cell.value)
-
-    return None
+    selected = cell_render_input(model, item, period)
+    if isinstance(selected, FormulaSpec):
+        return compiler.compile_formula(selected, period=period, item_id=item.id)
+    return selected
 
 
 def _render_fixed_cell(
@@ -398,30 +765,7 @@ def _render_fixed_cell(
     if period is None:
         return None
 
-    spec = _spec_for_period(model, item, period)
-    if spec is not None:
-        return compiler.compile_formula(spec, period=period, item_id=item.id)
-
-    if item.values is not None:
-        value_cell = item.values.values.get(int(period))
-        if value_cell is not None and value_cell.value is not None:
-            return float(value_cell.value)
-        for value_period in sorted(item.values.values):
-            value_cell = item.values.values[value_period]
-            if value_cell.value is not None:
-                return float(value_cell.value)
-
-    return None
-
-
-def _fixed_cell_anchor_period(model: FinancialModel, item: LineItem) -> Optional[int]:
-    if item.formula_periods:
-        return int(item.formula_periods[0])
-    projection_periods = _projection_periods(model.time_structure)
-    if projection_periods:
-        return int(projection_periods[0])
-    periods = _time_order(model.time_structure)
-    return int(periods[0]) if periods else None
+    return _render_cell_value(model, item, period, compiler)
 
 
 def _item_bold(item: LineItem) -> Optional[bool]:
@@ -467,14 +811,13 @@ def _data_color_formats(
         )
         return formats
 
-    run_start: Optional[str] = None
-    run_end: Optional[str] = None
-    run_type: Optional[bool] = None
+    run: Optional[tuple[str, str, bool]] = None
 
     def flush() -> None:
-        nonlocal run_start, run_end, run_type
-        if run_start is None or run_end is None or run_type is None:
+        nonlocal run
+        if run is None:
             return
+        run_start, run_end, run_type = run
         formats.append(
             CellFormat(
                 sheet=sheet_name,
@@ -482,9 +825,7 @@ def _data_color_formats(
                 font_color=formatter.data_color_for(run_type, item),
             )
         )
-        run_start = None
-        run_end = None
-        run_type = None
+        run = None
 
     for period in mapper.all_periods():
         column = mapper.col_for_period(period)
@@ -493,20 +834,17 @@ def _data_color_formats(
             flush()
             continue
 
-        if run_start is None:
-            run_start = column
-            run_end = column
-            run_type = cell_type
+        if run is None:
+            run = (column, column, cell_type)
             continue
 
+        run_start, run_end, run_type = run
         if run_type == cell_type and _col_to_index(column) == _col_to_index(run_end) + 1:
-            run_end = column
+            run = (run_start, column, run_type)
             continue
 
         flush()
-        run_start = column
-        run_end = column
-        run_type = cell_type
+        run = (column, column, cell_type)
 
     flush()
     return formats
@@ -540,13 +878,13 @@ def _input_fill_formats(
             )
         return formats
 
-    run_start: Optional[str] = None
-    run_end: Optional[str] = None
+    run: Optional[tuple[str, str]] = None
 
     def flush() -> None:
-        nonlocal run_start, run_end
-        if run_start is None or run_end is None:
+        nonlocal run
+        if run is None:
             return
+        run_start, run_end = run
         formats.append(
             CellFormat(
                 sheet=sheet_name,
@@ -554,8 +892,7 @@ def _input_fill_formats(
                 fill_color=formatter.input_fill_color,
             )
         )
-        run_start = None
-        run_end = None
+        run = None
 
     for period in mapper.all_periods():
         column = mapper.col_for_period(period)
@@ -564,18 +901,17 @@ def _input_fill_formats(
             flush()
             continue
 
-        if run_start is None:
-            run_start = column
-            run_end = column
+        if run is None:
+            run = (column, column)
             continue
 
+        run_start, run_end = run
         if _col_to_index(column) == _col_to_index(run_end) + 1:
-            run_end = column
+            run = (run_start, column)
             continue
 
         flush()
-        run_start = column
-        run_end = column
+        run = (column, column)
 
     flush()
     return formats
@@ -677,7 +1013,9 @@ __all__ = [
     "ExcelFormulaCompiler",
     "RenderPlan",
     "SheetSetup",
+    "finalize_render_contract",
     "plan_to_mcp_calls",
     "render_plan_to_addin_payload",
+    "reconcile_render_contract",
     "render_model",
 ]

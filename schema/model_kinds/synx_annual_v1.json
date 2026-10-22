@@ -1,0 +1,564 @@
+{
+  "profile_id": "synx_annual_v1",
+  "profile_version": "1",
+  "focal_ticker": "SYNX",
+  "peer_tickers": [
+    "SYNY"
+  ],
+  "minimum_covered_peer_count": 1,
+  "historical_windows": [
+    {
+      "family_id": "core_statements",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ]
+    }
+  ],
+  "projection_period_ids": [
+    "FY2026E",
+    "FY2027E",
+    "FY2028E"
+  ],
+  "rate_cycle_period_ids": [
+    "FY2023",
+    "FY2024",
+    "FY2025"
+  ],
+  "annual_requirements": [
+    {
+      "requirement_id": "synx_annual_v1.statement.revenue",
+      "family": "statement",
+      "required_role": "statement.is.revenue",
+      "model_item": "statement.is.revenue",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.cost_of_revenue",
+      "family": "statement",
+      "required_role": "statement.is.cost_of_revenue",
+      "model_item": "statement.is.cost_of_revenue",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.gross_profit",
+      "family": "statement",
+      "required_role": "statement.is.gross_profit",
+      "model_item": "statement.is.gross_profit",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.research_and_development",
+      "family": "statement",
+      "required_role": "statement.is.research_and_development",
+      "model_item": "statement.is.research_and_development",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.general_and_administrative",
+      "family": "statement",
+      "required_role": "statement.is.general_and_administrative",
+      "model_item": "statement.is.general_and_administrative",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.sales_and_marketing",
+      "family": "statement",
+      "required_role": "statement.is.sales_and_marketing",
+      "model_item": "statement.is.sales_and_marketing",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.operating_income",
+      "family": "statement",
+      "required_role": "statement.is.operating_income",
+      "model_item": "statement.is.operating_income",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.interest_income",
+      "family": "statement",
+      "required_role": "statement.is.interest_income",
+      "model_item": "statement.is.interest_income",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.pretax_income",
+      "family": "statement",
+      "required_role": "statement.is.pretax_income",
+      "model_item": "statement.is.pretax_income",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.income_tax",
+      "family": "statement",
+      "required_role": "statement.is.income_tax",
+      "model_item": "statement.is.income_tax",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "tax_schedule"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.net_income",
+      "family": "statement",
+      "required_role": "statement.is.net_income",
+      "model_item": "statement.is.net_income",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.total_assets",
+      "family": "statement",
+      "required_role": "statement.bs.total_assets",
+      "model_item": "statement.bs.total_assets",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.total_liabilities",
+      "family": "statement",
+      "required_role": "statement.bs.total_liabilities",
+      "model_item": "statement.bs.total_liabilities",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.cash_and_equivalents",
+      "family": "statement",
+      "required_role": "statement.bs.cash_and_equivalents",
+      "model_item": "statement.bs.cash_and_equivalents",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "cash_debt_schedule"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.accounts_receivable",
+      "family": "statement",
+      "required_role": "statement.bs.accounts_receivable",
+      "model_item": "statement.bs.accounts_receivable",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "working_capital"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.total_equity",
+      "family": "statement",
+      "required_role": "statement.bs.total_equity",
+      "model_item": "statement.bs.total_equity",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "equity_rollforward"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.operating_cash_flow",
+      "family": "statement",
+      "required_role": "statement.cf.operating_cash_flow",
+      "model_item": "statement.cf.operating_cash_flow",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.capital_expenditures",
+      "family": "statement",
+      "required_role": "statement.cf.capital_expenditures",
+      "model_item": "statement.cf.capital_expenditures",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.stock_based_compensation",
+      "family": "statement",
+      "required_role": "statement.cf.stock_based_compensation",
+      "model_item": "statement.cf.stock_based_compensation",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "non_gaap_bridge"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.depreciation_amortization",
+      "family": "statement",
+      "required_role": "statement.cf.depreciation_amortization",
+      "model_item": "statement.cf.depreciation_amortization",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.diluted_shares",
+      "family": "statement",
+      "required_role": "statement.is.diluted_shares",
+      "model_item": "statement.is.diluted_shares",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "shares_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "share_count_schedule"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.basic_shares",
+      "family": "statement",
+      "required_role": "statement.is.basic_shares",
+      "model_item": "statement.is.basic_shares",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "shares_millions",
+      "scale": "millions",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "share_count_schedule"
+      ]
+    },
+    {
+      "requirement_id": "synx_annual_v1.statement.eps_diluted",
+      "family": "statement",
+      "required_role": "statement.is.eps_diluted",
+      "model_item": "statement.is.eps_diluted",
+      "period_ids": [
+        "FY2023",
+        "FY2024",
+        "FY2025"
+      ],
+      "unit": "usd_per_share",
+      "scale": "units",
+      "sign": "natural",
+      "downstream_capabilities": [
+        "linked_statements"
+      ]
+    }
+  ],
+  "normalization_notes": [
+    "Synthetic model kind: every pinned value is fabricated structural test data for a fictional issuer, never an issuer disclosure."
+  ],
+  "valuation_requirements": [
+    {
+      "requirement_id": "dec08.fwd_pe.fy2026e",
+      "metric": "fwd_pe",
+      "fiscal_basis": "fy2026e",
+      "roster_rule": "focal_and_peers"
+    },
+    {
+      "requirement_id": "dec08.fwd_ev_adj_ebitda.fy2026e",
+      "metric": "fwd_ev_adj_ebitda",
+      "fiscal_basis": "fy2026e",
+      "roster_rule": "focal_and_peers"
+    },
+    {
+      "requirement_id": "dec08.quote",
+      "metric": "quote",
+      "fiscal_basis": "point_in_time",
+      "roster_rule": "single_observation",
+      "scope": "focal"
+    },
+    {
+      "requirement_id": "dec08.beta",
+      "metric": "beta",
+      "fiscal_basis": "point_in_time",
+      "roster_rule": "single_observation",
+      "scope": "focal"
+    },
+    {
+      "requirement_id": "dec08.risk_free_10y",
+      "metric": "risk_free_10y",
+      "fiscal_basis": "point_in_time",
+      "roster_rule": "single_observation",
+      "scope": "macro"
+    },
+    {
+      "requirement_id": "dec08.erp",
+      "metric": "erp",
+      "fiscal_basis": "point_in_time",
+      "roster_rule": "single_observation",
+      "scope": "macro"
+    }
+  ],
+  "valuation_fiscal_basis_ids": [
+    "fy2026e"
+  ],
+  "selected_relative_fiscal_basis": "fy2026e",
+  "valuation_period_labels": [
+    {
+      "fiscal_basis": "fy2026e",
+      "fiscal_year": 2026,
+      "period_id": "FY2026E",
+      "display_label": "FY2026E"
+    }
+  ],
+  "issuer_fiscal_calendars": [
+    {
+      "ticker": "SYNY",
+      "fiscal_year_end_month": 12,
+      "fiscal_year_end_day": 31
+    },
+    {
+      "ticker": "SYNX",
+      "fiscal_year_end_month": 12,
+      "fiscal_year_end_day": 31
+    }
+  ],
+  "semantic_target_ids": [
+    "statement.bs.accounts_receivable",
+    "statement.bs.cash",
+    "statement.bs.total_assets",
+    "statement.bs.total_equity",
+    "statement.bs.total_liabilities",
+    "statement.cf.capital_expenditures",
+    "statement.cf.depreciation_amortization",
+    "statement.cf.operating_cash_flow",
+    "statement.cf.stock_based_compensation",
+    "statement.income_statement.eps_diluted",
+    "statement.income_statement.interest_income",
+    "statement.is.basic_shares",
+    "statement.is.cost_of_revenue",
+    "statement.is.diluted_shares",
+    "statement.is.g_and_a",
+    "statement.is.gross_profit",
+    "statement.is.income_tax",
+    "statement.is.net_income",
+    "statement.is.operating_income",
+    "statement.is.pretax_income",
+    "statement.is.r_and_d",
+    "statement.is.revenue",
+    "statement.is.sales_and_marketing"
+  ],
+  "valuation_control_ids": [
+    "synx.driver.customer_count",
+    "synx.driver.revenue_per_customer",
+    "synx.valuation.terminal_growth",
+    "synx.valuation.wacc"
+  ],
+  "output_binding_ids": [
+    "synx.output.dcf_equity_value_per_diluted_share",
+    "synx.output.revenue"
+  ],
+  "capabilities": {
+    "sensitivity_bindings": [
+      {
+        "selector_id": "synx.driver.customer_count",
+        "role": "control",
+        "node_item_paths": [
+          "subscription.customer_count"
+        ]
+      },
+      {
+        "selector_id": "synx.driver.revenue_per_customer",
+        "role": "control",
+        "node_item_paths": [
+          "subscription.revenue_per_customer"
+        ]
+      },
+      {
+        "selector_id": "synx.output.dcf_equity_value_per_diluted_share",
+        "role": "output",
+        "item_id": "tpl.v.dcf.equity_value_per_share"
+      },
+      {
+        "selector_id": "synx.output.revenue",
+        "role": "output",
+        "item_id": "tpl.fm.income_statement.total_revenue"
+      },
+      {
+        "selector_id": "synx.valuation.terminal_growth",
+        "role": "control",
+        "item_id": "tpl.v.dcf.terminal_growth_rate"
+      },
+      {
+        "selector_id": "synx.valuation.wacc",
+        "role": "control",
+        "item_id": "tpl.v.wacc.wacc"
+      }
+    ]
+  }
+}

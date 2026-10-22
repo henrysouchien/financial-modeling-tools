@@ -1,19 +1,13 @@
-"""Excel → Schema reader utilities.
+"""Interpret XLSX workbooks as schema-owned financial-model structures.
 
-Purpose:
-- Parse .xlsx files and build a minimal FinancialModel.
-- Extract labels, formulas, values, and time structure from sheet XML.
-- Classify formulas using FormulaPatternMatcher and attach FormulaSpecs.
+``read_model`` delegates raw XML, cell, formula, and period work to the
+``reader_*.py`` helpers and ``FormulaPatternMatcher``. Full mode returns a
+``FinancialModel``; quick mode returns a summary mapping. This is a heuristic
+reader, not a durable-state owner: year headers are inferred, labels are
+slugified into line-item ids, shared-formula expansion is opt-in, and named
+ranges or structured references are not resolved.
 
-The reader is intentionally heuristic:
-- Year headers are inferred from the densest row of year-like values.
-- Column A labels are slugified into line_item_ids.
-- Shared formulas can be expanded in opt-in mode; default mode uses cached values.
-- Named ranges and structured references are not resolved.
-
-Example:
-Row label: "Gross Profit" (row 9) → line_item_id: "gross_profit"
-Cell H9 formula: =Assumptions!H34 → FormulaSpec(type=ref, source=LineItemRef("gross_profit", t=0))
+Owner and reader guide: ``schema/README.md``.
 """
 
 from __future__ import annotations
@@ -25,8 +19,9 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Literal, Optional, overload, Set, Tuple
 
+from . import reader_periods
 from .models import (
     CompanyInfo,
     FinancialModel,
@@ -39,24 +34,19 @@ from .models import (
     ScenarioInputs,  # noqa: F401 - compatibility alias for schema.reader imports
     Section,
     Sheet,
-    TimeStructure,  # noqa: F401 - compatibility alias for schema.reader imports
-    Unit,
     ValueCell,
     ValueProvenance,
     ValueSeries,
     PERIOD_MODE_QUARTERLY5,
     PERIOD_MODE_YEARLY,
-    encode_period,  # noqa: F401 - compatibility alias for schema.reader imports
-    period_year,  # noqa: F401 - compatibility alias for schema.reader imports
 )
+from industry_slice_core.industry_types import Unit
 from .pattern_matcher import CellContext, FormulaPatternMatcher
 from .reader_cells import (
     _coerce_number,
     _col_to_index,
     _get_cell_value,
     _index_to_col,
-    _normalize_year_token,  # noqa: F401 - compatibility alias for schema.reader imports
-    _parse_period_token,  # noqa: F401 - compatibility alias for schema.reader imports
     _slugify,
     _split_cell,
 )
@@ -69,18 +59,7 @@ from .reader_formula import (
     _param_shape,
     _shape_sort_key,  # noqa: F401 - compatibility alias for schema.reader imports
 )
-from .reader_periods import (
-    _QUARTERLY_AUTO_THRESHOLD as _QUARTERLY_AUTO_THRESHOLD,
-    _QUARTERLY_RE as _QUARTERLY_RE,
-    _build_time_structure as _build_time_structure,
-    _expand_date_header_periods as _expand_date_header_periods,
-    _find_period_header as _find_period_header,
-    _is_weak_annual_period_header as _is_weak_annual_period_header,
-    _parse_excel_date_period_token as _parse_excel_date_period_token,
-    _row_is_date_period_header as _row_is_date_period_header,
-    _sheet_has_quarterly_tokens as _sheet_has_quarterly_tokens,
-    _sheet_uses_period_columns as _sheet_uses_period_columns,
-)
+from .templates.model_scale import apply_template_semantic_units
 
 
 _PARSER_MANIFEST: list[str] = [
@@ -91,6 +70,7 @@ _PARSER_MANIFEST: list[str] = [
     "pattern_matcher.py",
     "formula_ast.py",
     "models.py",
+    "templates/model_scale.py",
 ]
 _PARSER_DIR = pathlib.Path(__file__).resolve().parent
 
@@ -151,14 +131,49 @@ class ExcelWorkbookReader:
         return data
 
 
+@overload
+def read_model(
+    file_path: str,
+    mode: Literal["full"],
+    historical_cutoff_year: Optional[int] = None,
+    quarterly_mode: str = "auto",
+    expand_shared: bool = False,
+) -> FinancialModel: ...
+
+
+@overload
+def read_model(
+    file_path: str,
+    mode: Literal["quick"] = "quick",
+    historical_cutoff_year: Optional[int] = None,
+    quarterly_mode: str = "auto",
+    expand_shared: bool = False,
+) -> Dict: ...
+
+
+@overload
+def read_model(
+    file_path: str,
+    mode: str,
+    historical_cutoff_year: Optional[int] = None,
+    quarterly_mode: str = "auto",
+    expand_shared: bool = False,
+) -> Dict | FinancialModel: ...
+
+
 def read_model(
     file_path: str,
     mode: str = "quick",
     historical_cutoff_year: Optional[int] = None,
     quarterly_mode: str = "auto",
     expand_shared: bool = False,
-) -> Dict:
-    """Parse an Excel model into a schema (quick summary or full model)."""
+) -> Dict | FinancialModel:
+    """Parse an XLSX model into a quick summary or full ``FinancialModel``.
+
+    Invalid mode options or malformed workbook content raise; callers that
+    need additional formula semantics should extend the focused reader and
+    pattern-matcher owners rather than post-processing this result.
+    """
     reader = ExcelWorkbookReader(file_path)
     workbook = reader.read() if not expand_shared else reader.read(expand_shared=True)
     matcher = FormulaPatternMatcher()
@@ -166,7 +181,9 @@ def read_model(
     if quarterly_mode not in {"yearly", "auto", "quarterly_native"}:
         raise ValueError("quarterly_mode must be one of: yearly, auto, quarterly_native")
 
-    workbook_has_quarterly = any(_sheet_has_quarterly_tokens(cells) for cells in workbook.values())
+    workbook_has_quarterly = any(
+        reader_periods._sheet_has_quarterly_tokens(cells) for cells in workbook.values()
+    )
     if quarterly_mode == "yearly":
         period_mode = PERIOD_MODE_YEARLY
     elif quarterly_mode == "quarterly_native":
@@ -183,7 +200,10 @@ def read_model(
     for sheet_name, cells in workbook.items():
         row_to_item, label_rows = _extract_line_items(sheet_name, cells)
         sheet_row_to_item[sheet_name] = row_to_item
-        col_to_period, quarterly_cols, annual_cols = _find_period_header(cells, period_mode)
+        col_to_period, quarterly_cols, annual_cols = reader_periods._find_period_header(
+            cells,
+            period_mode,
+        )
         sheet_col_to_period[sheet_name] = col_to_period
         sheet_quarterly_cols[sheet_name] = quarterly_cols
         sheet_annual_cols[sheet_name] = annual_cols
@@ -199,7 +219,9 @@ def read_model(
     if fallback_col_to_period:
         for sheet_name, cells in workbook.items():
             existing_col_to_period = sheet_col_to_period.get(sheet_name, {})
-            existing_is_weak = bool(existing_col_to_period) and _is_weak_annual_period_header(
+            existing_is_weak = bool(
+                existing_col_to_period
+            ) and reader_periods._is_weak_annual_period_header(
                 cells,
                 existing_col_to_period,
                 sheet_quarterly_cols.get(sheet_name, set()),
@@ -210,7 +232,7 @@ def read_model(
                 continue
             if "financial" not in _slugify(sheet_name):
                 continue
-            if _sheet_uses_period_columns(cells, fallback_col_to_period):
+            if reader_periods._sheet_uses_period_columns(cells, fallback_col_to_period):
                 sheet_col_to_period[sheet_name] = dict(fallback_col_to_period)
                 sheet_annual_cols[sheet_name] = set(fallback_annual_cols or fallback_col_to_period)
                 sheet_quarterly_cols[sheet_name] = set()
@@ -309,7 +331,7 @@ def read_model(
                     sig = (spec.type, spec.subtype, _param_shape(spec.params))
                     sig_counts[sig] = sig_counts.get(sig, 0) + 1
                     sig_to_spec.setdefault(sig, spec)
-                best_sig = max(sig_counts, key=sig_counts.get)
+                best_sig = max(sig_counts, key=lambda sig: sig_counts[sig])
                 spec = sig_to_spec[best_sig]
                 if spec.type == FormulaType.raw:
                     cached = values.values.get(period) if values else None
@@ -341,7 +363,7 @@ def read_model(
             if values.values:
                 values_by_row[(sheet_name, row)] = values
 
-    time_structure = _build_time_structure(
+    time_structure = reader_periods._build_time_structure(
         time_order,
         period_mode=period_mode,
         historical_cutoff_year=historical_cutoff_year,
@@ -428,6 +450,8 @@ def read_model(
         section = Section(id="main", label="Main", line_items=line_items)
         model.sheets[sheet_name] = Sheet(name=sheet_name, sections=[section])
 
+    apply_template_semantic_units(model)
+
     if mode == "full":
         return model
 
@@ -465,7 +489,9 @@ def _load_sheets(zf: zipfile.ZipFile) -> Dict[str, str]:
     """Map sheet names to worksheet XML paths in the xlsx zip."""
     workbook = ET.fromstring(zf.read("xl/workbook.xml"))
     rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
-    rel_map = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
+    rel_map: Dict[Optional[str], str] = {
+        rel.attrib["Id"]: rel.attrib["Target"] for rel in rels
+    }
 
     sheets: Dict[str, str] = {}
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -531,15 +557,22 @@ def _parse_sheet(
                     texts = [t.text for t in inline.findall(f".//{ns}t") if t.text]
                     value = "".join(texts)
 
-            formula_text = formula_node.text if formula_node is not None else None
-            formula_type = formula_node.get("t") if formula_node is not None else None
-            si = formula_node.get("si") if formula_node is not None else None
+            if formula_node is not None:
+                formula_text = formula_node.text
+                formula_type = formula_node.get("t")
+                si = formula_node.get("si")
+                ref_range = formula_node.get("ref")
+            else:
+                formula_text = None
+                formula_type = None
+                si = None
+                ref_range = None
             if formula_type == "shared" and formula_text and si is not None:
                 shared_masters[si] = SharedFormulaMaster(
                     formula=formula_text,
                     row=row_num,
                     col=col_idx,
-                    ref_range=formula_node.get("ref"),
+                    ref_range=ref_range,
                 )
                 formula = formula_text
             elif formula_type == "shared" and si is not None and not formula_text:

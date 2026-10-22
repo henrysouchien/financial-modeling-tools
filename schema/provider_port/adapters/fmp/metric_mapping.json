@@ -1,0 +1,130 @@
+[
+  {
+    "metric_id": "pe_ratio",
+    "annual_endpoint": "key_metrics",
+    "ttm_endpoint": "key_metrics_ttm",
+    "native_fields": ["peRatio", "peRatioTTM", "priceEarningsRatio", "priceToEarningsRatio"]
+  },
+  {
+    "metric_id": "reported_pe_ratio",
+    "annual_endpoint": "ratios",
+    "ttm_endpoint": "ratios_ttm",
+    "native_fields": ["peRatio", "peRatioTTM", "priceEarningsRatio", "priceToEarningsRatio"]
+  },
+  {
+    "metric_id": "earnings_yield",
+    "annual_endpoint": "key_metrics",
+    "ttm_endpoint": "key_metrics_ttm",
+    "native_fields": ["earningsYield", "earningsYieldTTM"]
+  },
+  {
+    "metric_id": "peg_ratio",
+    "annual_endpoint": "ratios",
+    "ttm_endpoint": "ratios_ttm",
+    "native_fields": ["pegRatio", "pegRatioTTM", "priceToEarningsGrowthRatio", "priceToEarningsGrowthRatioTTM"]
+  },
+  {
+    "metric_id": "ev_ebitda",
+    "annual_endpoint": "ratios",
+    "ttm_endpoint": "ratios_ttm",
+    "native_fields": ["evToEbitda", "evEbitda", "enterpriseValueOverEBITDA", "enterpriseValueOverEbitda", "enterpriseValueMultiple", "enterpriseValueMultipleTTM", "evToEBITDA"]
+  },
+  {
+    "metric_id": "eps_avg",
+    "capability": "estimates",
+    "annual_endpoint": null,
+    "ttm_endpoint": null,
+    "native_fields": ["epsAvg", "epsavg", "estimatedEpsAvg"]
+  },
+  {
+    "metric_id": "revenue_growth",
+    "annual_endpoint": "income_statement",
+    "ttm_endpoint": null,
+    "native_fields": ["revenue"],
+    "calculation": "growth"
+  },
+  {
+    "metric_id": "capex_to_revenue",
+    "annual_endpoint": "key_metrics",
+    "ttm_endpoint": "key_metrics_ttm",
+    "native_fields": ["capexToRevenue", "capexToRevenueTTM"]
+  },
+  {
+    "metric_id": "dividend_per_share",
+    "annual_endpoint": "ratios",
+    "ttm_endpoint": "ratios_ttm",
+    "native_fields": ["dividendPerShare", "dividendPerShareTTM"]
+  },
+  {
+    "metric_id": "dividend_yield",
+    "annual_endpoint": "ratios",
+    "ttm_endpoint": "ratios_ttm",
+    "native_fields": ["dividendYield", "dividendYieldTTM"]
+  },
+  {
+    "metric_id": "ebit",
+    "annual_endpoint": "income_statement",
+    "ttm_endpoint": null,
+    "native_fields": ["ebit"],
+    "scale_divisor": 1000000
+  },
+  {
+    "metric_id": "ebitda_estimate_avg",
+    "capability": "estimates",
+    "annual_endpoint": null,
+    "ttm_endpoint": null,
+    "native_fields": ["ebitdaAvg", "estimatedEbitdaAvg"],
+    "scale_divisor": 1000000
+  },
+  {
+    "metric_id": "ebitda_margin",
+    "annual_endpoint": "ratios",
+    "ttm_endpoint": "ratios_ttm",
+    "native_fields": ["ebitdaMargin", "ebitdaMarginTTM"]
+  },
+  {
+    "metric_id": "ev_revenue",
+    "annual_endpoint": "key_metrics",
+    "ttm_endpoint": "key_metrics_ttm",
+    "native_fields": ["evToSales", "evToSalesTTM", "enterpriseValueToRevenue"]
+  },
+  {
+    "metric_id": "fcf_conversion",
+    "annual_endpoint": "cash_flow",
+    "ttm_endpoint": null,
+    "native_fields": ["freeCashFlow"],
+    "calculation": "ratio",
+    "denominator_endpoint": "income_statement",
+    "denominator_fields": ["ebitda"]
+  },
+  {
+    "metric_id": "fcf_margin",
+    "annual_endpoint": "cash_flow",
+    "ttm_endpoint": null,
+    "native_fields": ["freeCashFlow"],
+    "calculation": "ratio",
+    "denominator_endpoint": "income_statement",
+    "denominator_fields": ["revenue"]
+  },
+  {
+    "metric_id": "net_debt",
+    "annual_endpoint": "balance_sheet",
+    "ttm_endpoint": null,
+    "native_fields": ["netDebt"],
+    "scale_divisor": 1000000
+  },
+  {
+    "metric_id": "return_on_equity",
+    "annual_endpoint": "key_metrics",
+    "ttm_endpoint": "key_metrics_ttm",
+    "native_fields": ["returnOnEquity", "returnOnEquityTTM"]
+  },
+  {
+    "metric_id": "revenue_estimate_avg",
+    "capability": "estimates",
+    "annual_endpoint": null,
+    "ttm_endpoint": null,
+    "native_fields": ["revenueAvg", "estimatedRevenueAvg"],
+    "scale_divisor": 1000000
+  }
+]

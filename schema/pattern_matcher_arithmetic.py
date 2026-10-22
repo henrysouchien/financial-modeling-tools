@@ -57,7 +57,7 @@ def match_arithmetic(
         subtype = binary_arithmetic_subtype_fn(ast, context)
         values = flatten_binary_fn(ast, ast.op)
         if values is not None:
-            operands = [ast.op]
+            operands: list[str | LineItemRef] = [ast.op]
             ok = True
             for node in values:
                 ref = to_line_item_ref_fn(node, context)

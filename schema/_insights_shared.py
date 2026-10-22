@@ -23,7 +23,7 @@ DriverCategory = Literal[
     "valuation",
     "other",
 ]
-DriverUnit = Literal["dollars", "percentage", "ratio", "count", "per_share", "days", "multiple"]
+DriverUnit = Literal["dollars", "percentage", "ratio", "count", "per_count", "per_day", "per_share", "days", "multiple"]
 
 
 __all__ = [

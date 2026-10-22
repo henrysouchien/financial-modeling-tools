@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .methodology import MethodologyUnit, WikiArticle
+
+
+class _FrontmatterLoader(yaml.SafeLoader):
+    """SafeLoader with YAML 1.2 booleans: only true/false, so `ticker: ON` stays text.
+
+    YAML 1.1 (PyYAML's default) also reads yes/no/on/off/y/n as booleans, which turns
+    real tickers (ON, NO, Y) into `True`/`False` before any caller sees them.
+    """
+
+
+_FrontmatterLoader.yaml_implicit_resolvers = {
+    first: [
+        (tag, regexp)
+        for tag, regexp in resolvers
+        if tag != "tag:yaml.org,2002:bool"
+    ]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_FrontmatterLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -17,7 +41,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     if len(parts) < 3:
         raise ValueError("frontmatter not terminated")
 
-    frontmatter = yaml.safe_load(parts[1])
+    frontmatter = yaml.load(parts[1], Loader=_FrontmatterLoader)
     if frontmatter is None:
         frontmatter = {}
     if not isinstance(frontmatter, dict):

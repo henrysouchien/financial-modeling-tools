@@ -29,7 +29,7 @@ def _active_adjs_for_period(self: Any, period: int) -> Tuple[Dict[str, Set[str]]
         spec = self._spec_for_period(item, period)
         if spec is None:
             continue
-        for ref in self._extract_refs(spec.params):
+        for _carrier, ref in self._read_refs(spec):
             if ref.id not in self.nodes:
                 continue
             if ref.t != 0:
@@ -56,7 +56,7 @@ def _active_adjs_for_period_subset(
         spec = self._spec_for_period(item, period)
         if spec is None:
             continue
-        for ref in self._extract_refs(spec.params):
+        for _carrier, ref in self._read_refs(spec):
             if ref.id not in node_set or ref.t != 0:
                 continue
             order_adj[ref.id].add(node)
@@ -100,7 +100,7 @@ def active_adjacency_for_periods(self: Any, periods: Iterable[int]) -> Dict[str,
             spec = self._static_spec_for_period(item, period)
             if spec is None:
                 continue
-            for ref in self._extract_refs(spec.params):
+            for _carrier, ref in self._read_refs(spec):
                 if ref.id not in self.nodes:
                     continue
                 adj[ref.id].add(item.id)

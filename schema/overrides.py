@@ -2,28 +2,33 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 import json
-import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .model_writer_lock import model_writer_lock
-from .models import DataSourceMapping
+from .multi_basis_window import MultiBasisWindow
+from .statement_windows import (
+    parse_statement_windows,
+    serialize_statement_windows,
+)
+from .required_role_catalog import _ROLE_RE, load_required_role_catalog
+
+if TYPE_CHECKING:
+    from .provider_port.registry import ProviderRegistry
 
 
 DEFAULT_OVERRIDES_DIR = Path(__file__).with_name("overrides")
 MODEL_ENGINE_OVERRIDES_DIR_ENV = "MODEL_ENGINE_OVERRIDES_DIR"
-_DSM_FIELD_NAMES = set(DataSourceMapping.model_fields.keys())
-_CUSTOM_CONCEPT_DSM_FIELD_NAMES = _DSM_FIELD_NAMES - {"notes"}
-_CUSTOM_CONCEPT_EXTRA_FIELDS = frozenset({"axis_key", "inline_values"})
 
 
 class GuardConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     growth_carry_forward_max: float | None = None
     growth_carry_forward_min_periods: int | None = None
@@ -39,19 +44,209 @@ class GuardConfig(BaseModel):
         return self
 
 
+
+
 @dataclass
 class TickerOverrides:
     ticker: str
     overrides: dict[str, dict]
-    custom_concepts: dict[str, dict]
     file_meta: dict = field(default_factory=dict)
-    projections: dict[str, dict] = field(default_factory=dict)
     semantic_rows: dict[str, dict] = field(default_factory=dict)
     valuation: dict[str, Any] = field(default_factory=dict)
     guards: GuardConfig | None = None
+    statement_windows: dict[str, MultiBasisWindow] = field(default_factory=dict)
+    needs_re_emission: bool = False
+    provider_registry: ProviderRegistry | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        self.statement_windows = parse_statement_windows(
+            self.statement_windows,
+            provider_registry=self.provider_registry,
+        )
 
 
-_SCHEMA_VERSION_RANK = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5}
+@dataclass(frozen=True)
+class TickerOverridesSnapshot:
+    ticker: str
+    overrides: TickerOverrides | None
+    store_hash: str
+    payload_hash: str
+    path: Path
+    provider_registry: ProviderRegistry | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+
+def _runtime_provider_registry(
+    instance: TickerOverrides | TickerOverridesSnapshot,
+) -> ProviderRegistry | None:
+    return instance.provider_registry
+
+
+_RETIRED_SECTION_REPAIRS = {
+    "projections": (
+        "forecast authoring lane: remove the retired section and author forecast "
+        "controls through the FMS model-update path"
+    ),
+    "statement_mappings": (
+        "statement-window authoring lane: author a statement_windows section "
+        "through the isolated hash-verified preview"
+    ),
+    "custom_concepts": (
+        "required-role authoring lane: replace the house-id mint with a catalog "
+        "required_role semantic row and a producer-side filing-line binding"
+    ),
+}
+_RETIRED_SECTION_ERROR_CODES = {
+    "projections": "projections_section_retired",
+    "statement_mappings": "statement_mappings_section_retired",
+    "custom_concepts": "custom_concepts_section_retired",
+}
+
+
+class RetiredOverridesSectionError(ValueError):
+    """A stored override still carries a section retired by the clean cut."""
+
+    def __init__(self, *, path: str, section: str) -> None:
+        self.path = path
+        self.section = section
+        self.error_code = _RETIRED_SECTION_ERROR_CODES[section]
+        self.repair_target = _RETIRED_SECTION_REPAIRS[section]
+        super().__init__(
+            f"{path}: the {section!r} overrides section is retired; "
+            f"repair: {self.repair_target}"
+        )
+
+
+class UnknownOverrideRequiredRoleError(ValueError):
+    """A binding patch names no admitted required role for this build."""
+
+    error_code = "override_required_role_unknown"
+
+    def __init__(
+        self,
+        *,
+        ticker: str,
+        required_role: str,
+        repair_target: str,
+    ) -> None:
+        self.ticker = ticker
+        self.required_role = required_role
+        self.repair_target = repair_target
+        super().__init__(
+            f"override for ticker {ticker!r} names unknown required_role "
+            f"{required_role!r}; repair: {repair_target}"
+        )
+
+
+class OverrideBindingPatchInvalid(ValueError):
+    """A surviving producer binding patch is not filing-line keyed."""
+
+    error_code = "override_binding_patch_invalid"
+
+    def __init__(self, *, required_role: str, missing: set[str]) -> None:
+        self.required_role = required_role
+        self.missing = frozenset(missing)
+        self.repair_target = (
+            "adapter binding authoring lane: provide statement_role, tag, and "
+            "provider_binding for the required role"
+        )
+        super().__init__(
+            f"override binding patch {required_role!r} is missing "
+            f"{sorted(missing)}; repair: {self.repair_target}"
+        )
+
+
+class TickerOverridesSnapshotConflictError(RuntimeError):
+    error_code = "statement_window_override_snapshot_conflict"
+
+
+def load_ticker_overrides_snapshot(
+    ticker: str,
+    overrides_dir: Path | None = None,
+    *,
+    max_attempts: int = 3,
+    load_fn=None,
+    provider_registry: ProviderRegistry | None = None,
+) -> TickerOverridesSnapshot:
+    """Load one stable override snapshot and its matching whole-store hash."""
+
+    from .cas import ABSENT_STORE, overrides_payload_hash, overrides_store_hash
+
+    ticker_upper = _normalize_ticker(ticker)
+    path = overrides_lock_target(ticker_upper, overrides_dir)
+    loader = load_ticker_overrides if load_fn is None else load_fn
+    for _attempt in range(max(1, int(max_attempts))):
+        before_hash = overrides_store_hash(path)
+        load_kwargs: dict[str, Any] = {"overrides_dir": overrides_dir}
+        if provider_registry is not None:
+            load_kwargs["provider_registry"] = provider_registry
+        overrides = loader(ticker_upper, **load_kwargs)
+        after_hash = overrides_store_hash(path)
+        if before_hash == after_hash:
+            return TickerOverridesSnapshot(
+                ticker=ticker_upper,
+                overrides=overrides,
+                store_hash=after_hash,
+                payload_hash=(
+                    ABSENT_STORE
+                    if overrides is None
+                    else overrides_payload_hash(
+                        overrides,
+                        provider_registry=provider_registry,
+                    )
+                ),
+                path=path,
+                provider_registry=provider_registry,
+            )
+    raise TickerOverridesSnapshotConflictError(
+        f"Ticker override store changed while loading snapshot for {ticker_upper}"
+    )
+
+
+def assert_ticker_overrides_snapshot_current(
+    snapshot: TickerOverridesSnapshot,
+) -> None:
+    from .cas import ABSENT_STORE, overrides_payload_hash, overrides_store_hash
+
+    current_hash = overrides_store_hash(snapshot.path)
+    if current_hash != snapshot.store_hash:
+        raise TickerOverridesSnapshotConflictError(
+            f"Ticker override store changed after preflight for {snapshot.ticker}: "
+            f"expected {snapshot.store_hash}, got {current_hash}"
+        )
+    current_payload_hash = (
+        ABSENT_STORE
+        if snapshot.overrides is None
+        else overrides_payload_hash(
+            snapshot.overrides,
+            provider_registry=_runtime_provider_registry(snapshot),
+        )
+    )
+    if current_payload_hash != snapshot.payload_hash:
+        raise TickerOverridesSnapshotConflictError(
+            f"Ticker override snapshot mutated in memory after preflight for "
+            f"{snapshot.ticker}: expected payload {snapshot.payload_hash}, got "
+            f"{current_payload_hash}"
+        )
+
+
+_SCHEMA_VERSION_RANK = {
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+}
 
 
 def _normalize_ticker(ticker: str) -> str:
@@ -168,6 +363,17 @@ def _coerce_guards_section(data: Any) -> GuardConfig | None:
     return GuardConfig.model_validate(data)
 
 
+def _coerce_statement_windows_section(
+    data: Any,
+    *,
+    provider_registry: ProviderRegistry | None = None,
+) -> dict[str, MultiBasisWindow]:
+    return parse_statement_windows(
+        data,
+        provider_registry=provider_registry,
+    )
+
+
 def overrides_schema_version_rank(schema_version: Any) -> int:
     text = str(schema_version or "1")
     if text not in _SCHEMA_VERSION_RANK:
@@ -184,19 +390,26 @@ def _schema_version_for_rank(rank: int) -> str:
 
 def required_overrides_schema_version(
     *,
-    projections: dict[str, Any] | None = None,
+    overrides: dict[str, Any] | None = None,
     semantic_rows: dict[str, Any] | None = None,
     valuation: dict[str, Any] | None = None,
     guards: GuardConfig | dict[str, Any] | None = None,
+    statement_windows: dict[str, MultiBasisWindow] | dict[str, Any] | None = None,
 ) -> str:
+    if statement_windows:
+        return "8"
+    if any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("provider_binding"), dict)
+        for entry in (overrides or {}).values()
+    ):
+        return "7"
     if guards is not None:
         return "5"
     if valuation:
         return "4"
     if semantic_rows:
         return "3"
-    if projections:
-        return "2"
     return "1"
 
 
@@ -204,26 +417,28 @@ def derive_overrides_file_meta(
     file_meta: dict[str, Any] | None,
     *,
     ticker: str | None = None,
-    projections: dict[str, Any] | None = None,
+    overrides: dict[str, Any] | None = None,
     semantic_rows: dict[str, Any] | None = None,
     valuation: dict[str, Any] | None = None,
     guards: GuardConfig | dict[str, Any] | None = None,
+    statement_windows: dict[str, MultiBasisWindow] | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     meta = dict(file_meta or {})
     if ticker:
         meta.setdefault("ticker", _normalize_ticker(ticker))
     existing_version = str(meta.get("schema_version", "1") or "1")
     required_version = required_overrides_schema_version(
-        projections=projections,
+        overrides=overrides,
         semantic_rows=semantic_rows,
         valuation=valuation,
         guards=guards,
+        statement_windows=statement_windows,
     )
     existing_rank = overrides_schema_version_rank(existing_version)
     required_rank = overrides_schema_version_rank(required_version)
     target_rank = max(existing_rank, required_rank)
     meta["schema_version"] = _schema_version_for_rank(target_rank)
-    if existing_rank < 2 <= target_rank:
+    if existing_rank == 1 and target_rank > 1:
         meta.setdefault("migrated_from_v1", True)
     return meta
 
@@ -232,16 +447,19 @@ def derive_ticker_overrides_schema_version(overrides: TickerOverrides) -> str:
     return derive_overrides_file_meta(
         overrides.file_meta,
         ticker=overrides.ticker,
-        projections=overrides.projections,
+        overrides=overrides.overrides,
         semantic_rows=overrides.semantic_rows,
         valuation=overrides.valuation,
         guards=overrides.guards,
+        statement_windows=overrides.statement_windows,
     )["schema_version"]
 
 
 def load_ticker_overrides(
     ticker: str,
     overrides_dir: Path | None = None,
+    *,
+    provider_registry: ProviderRegistry | None = None,
 ) -> TickerOverrides | None:
     """Load side-effect-free per-ticker overrides, if present."""
 
@@ -254,47 +472,78 @@ def load_ticker_overrides(
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Override file {path} must contain a JSON object")
+    for retired_section in _RETIRED_SECTION_REPAIRS:
+        if retired_section in payload:
+            raise RetiredOverridesSectionError(
+                path=str(path),
+                section=retired_section,
+            )
 
+    from .provider_port.adapters.fmp.overlay import canonicalize_override_payload
+
+    payload, needs_re_emission = canonicalize_override_payload(
+        payload,
+        provider_registry=provider_registry,
+    )
     file_meta = _coerce_meta(payload.get("_meta"))
     schema_version = str(file_meta.get("schema_version", "1"))
-    if schema_version not in ("1", "2", "3", "4", "5"):
+    if schema_version not in _SCHEMA_VERSION_RANK:
         raise ValueError(f"unsupported overrides schema_version: {schema_version!r}")
 
     return TickerOverrides(
         ticker=ticker_upper,
         overrides=_coerce_dict_section(payload.get("overrides"), "overrides"),
-        custom_concepts=_coerce_dict_section(payload.get("custom_concepts"), "custom_concepts"),
         file_meta=file_meta,
-        projections=_coerce_dict_section(payload.get("projections"), "projections"),
-        semantic_rows=_coerce_dict_section(payload.get("semantic_rows"), "semantic_rows"),
+        semantic_rows=_coerce_semantic_rows_section(payload.get("semantic_rows")),
         valuation=_coerce_valuation_section(payload.get("valuation")),
         guards=_coerce_guards_section(payload.get("guards")),
+        statement_windows=_coerce_statement_windows_section(
+            payload.get("statement_windows"),
+            provider_registry=provider_registry,
+        ),
+        needs_re_emission=needs_re_emission,
+        provider_registry=provider_registry,
     )
 
 
-def overrides_payload(overrides: TickerOverrides) -> dict[str, Any]:
+def overrides_payload(
+    overrides: TickerOverrides,
+    *,
+    provider_registry: ProviderRegistry | None = None,
+) -> dict[str, Any]:
     """Return the JSON payload saved by ``save_ticker_overrides``."""
 
+    from .provider_port.adapters.fmp.overlay import canonicalize_override_payload
+
+    active_registry = (
+        provider_registry
+        if provider_registry is not None
+        else _runtime_provider_registry(overrides)
+    )
     ticker_upper = _normalize_ticker(overrides.ticker)
     valuation = _coerce_valuation_section(overrides.valuation)
+    canonical_sections, _binding_changed = canonicalize_override_payload(
+        {"overrides": dict(overrides.overrides)},
+        provider_registry=provider_registry,
+    )
+    canonical_overrides = canonical_sections["overrides"]
+    canonical_semantic_rows = dict(overrides.semantic_rows)
     file_meta = derive_overrides_file_meta(
         overrides.file_meta,
         ticker=ticker_upper,
-        projections=overrides.projections,
-        semantic_rows=overrides.semantic_rows,
+        overrides=canonical_overrides,
+        semantic_rows=canonical_semantic_rows,
         valuation=valuation,
         guards=overrides.guards,
+        statement_windows=overrides.statement_windows,
     )
     schema_rank = overrides_schema_version_rank(file_meta.get("schema_version"))
     payload: dict[str, Any] = {
         "_meta": file_meta,
-        "overrides": dict(overrides.overrides),
-        "custom_concepts": dict(overrides.custom_concepts),
+        "overrides": canonical_overrides,
     }
-    if overrides.semantic_rows or schema_rank >= 3:
-        payload["semantic_rows"] = dict(overrides.semantic_rows)
-    if overrides.projections or schema_rank >= 2:
-        payload["projections"] = dict(overrides.projections)
+    if canonical_semantic_rows or schema_rank >= 3:
+        payload["semantic_rows"] = canonical_semantic_rows
     if valuation or schema_rank >= 4:
         payload["valuation"] = valuation
     if overrides.guards is not None or schema_rank >= 5:
@@ -303,97 +552,112 @@ def overrides_payload(overrides: TickerOverrides) -> dict[str, Any]:
             if overrides.guards is not None
             else {}
         )
+    if overrides.statement_windows or schema_rank >= 8:
+        payload["statement_windows"] = serialize_statement_windows(
+            overrides.statement_windows,
+            provider_registry=active_registry,
+        )
     return payload
 
 
-def _merge_mapping(
-    concept_id: str,
-    base: DataSourceMapping,
-    override_fields: dict[str, Any],
-) -> DataSourceMapping:
-    update = {
-        key: value
-        for key, value in override_fields.items()
-        if key in _DSM_FIELD_NAMES and key != "concept_id"
-    }
-    payload = base.model_dump()
-    payload.update(update)
-    payload["concept_id"] = concept_id
-    return DataSourceMapping.model_validate(payload)
+def replace_ticker_overrides(
+    existing: TickerOverrides,
+    **changes: Any,
+) -> TickerOverrides:
+    """Replace fields while copying mutable sections and sharing frozen guards."""
+
+    registry = _runtime_provider_registry(existing)
+    copied = copy.deepcopy(
+        existing,
+        memo=({id(registry): registry} if registry is not None else None),
+    )
+    copied.guards = existing.guards
+    return replace(copied, **changes)
+
+
+_BINDING_PATCH_FIELDS = frozenset({"statement_role", "tag", "provider_binding"})
+
+
+def _coerce_semantic_rows_section(data: Any) -> dict[str, dict]:
+    rows = _coerce_dict_section(data, "semantic_rows")
+    catalog = load_required_role_catalog()
+    for required_role in rows:
+        if _ROLE_RE.fullmatch(required_role):
+            catalog.role(required_role)
+    return rows
+
+
+def _validate_binding_patch(
+    required_role: str,
+    patch: dict[str, Any],
+) -> None:
+    if not isinstance(patch, dict):
+        raise TypeError(f"override binding patch {required_role!r} must be an object")
+    missing = set(_BINDING_PATCH_FIELDS - set(patch))
+    if missing:
+        raise OverrideBindingPatchInvalid(
+            required_role=required_role,
+            missing=missing,
+        )
+    if not all(
+        isinstance(patch[field], str) and patch[field].strip()
+        for field in ("statement_role", "tag")
+    ):
+        raise ValueError(
+            f"override binding patch {required_role!r} requires non-empty "
+            "statement_role and tag"
+        )
+    if not isinstance(patch["provider_binding"], dict):
+        raise ValueError(
+            f"override binding patch {required_role!r} provider_binding "
+            "must be an object"
+        )
 
 
 def merge_overrides(
-    taxonomy: dict[str, DataSourceMapping],
+    bindings: dict[str, dict[str, Any]],
     overrides: TickerOverrides,
-) -> tuple[dict[str, DataSourceMapping], int]:
-    """Return (merged_taxonomy, count_of_base_overrides_applied)."""
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """Apply per-issuer filing-line binding patches by required role."""
 
-    merged = dict(taxonomy)
+    merged = copy.deepcopy(bindings)
     applied_count = 0
-
-    for concept_id, override_fields in sorted(overrides.overrides.items()):
-        base = merged.get(concept_id)
+    catalog = load_required_role_catalog()
+    admitted_roles = frozenset(catalog.role_ids())
+    for required_role, patch in sorted(overrides.overrides.items()):
+        if required_role not in admitted_roles:
+            raise UnknownOverrideRequiredRoleError(
+                ticker=overrides.ticker,
+                required_role=required_role,
+                repair_target="required-role catalog authoring lane",
+            )
+        base = merged.get(required_role)
         if base is None:
-            logging.warning(
-                "Override for unknown base taxonomy concept %r skipped",
-                concept_id,
+            raise UnknownOverrideRequiredRoleError(
+                ticker=overrides.ticker,
+                required_role=required_role,
+                repair_target=(
+                    "pin-construction policy authoring lane: bind the required "
+                    "role before applying a per-issuer patch"
+                ),
             )
-            continue
-        merged[concept_id] = _merge_mapping(concept_id, base, override_fields)
+        if not isinstance(base, dict):
+            raise TypeError(
+                f"base binding {required_role!r} must be an object"
+            )
+        _validate_binding_patch(required_role, patch)
+        updated = dict(base)
+        updated.update(patch)
+        merged[required_role] = updated
         applied_count += 1
-
-    base_ids = set(taxonomy)
-    override_ids = set(overrides.overrides)
-    semantic_row_ids = set(overrides.semantic_rows or {})
-    for concept_id, entry in sorted(overrides.custom_concepts.items()):
-        if concept_id in base_ids or concept_id in override_ids or concept_id in semantic_row_ids:
-            raise ValueError(
-                f"custom_concept {concept_id!r} collides with base taxonomy "
-                "or overrides/semantic_rows section"
-            )
-        dsm_fields = {
-            key: value
-            for key, value in entry.items()
-            if key in _CUSTOM_CONCEPT_DSM_FIELD_NAMES and key != "concept_id"
-        }
-        dsm_fields["concept_id"] = concept_id
-        merged[concept_id] = DataSourceMapping.model_validate(dsm_fields)
-
-    for concept_id, entry in sorted((overrides.semantic_rows or {}).items()):
-        if concept_id in base_ids or concept_id in override_ids:
-            raise ValueError(
-                f"semantic_row {concept_id!r} collides with base taxonomy "
-                "or overrides section"
-            )
-        source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
-        dsm_fields = {
-            key: value
-            for key, value in entry.items()
-            if key in _CUSTOM_CONCEPT_DSM_FIELD_NAMES and key != "concept_id"
-        }
-        if isinstance(source, dict):
-            if "preferred_source" in source:
-                dsm_fields["preferred_source"] = source["preferred_source"]
-            tags = source.get("xbrl_tags") or source.get("edgar_tags")
-            if tags is not None:
-                dsm_fields["edgar_tags"] = tags
-            if "registry_group_id" in source:
-                dsm_fields["registry_group_id"] = source["registry_group_id"]
-            if "canonical_tag" in source:
-                dsm_fields["canonical_tag"] = source["canonical_tag"]
-            if "fmp_endpoint" in source:
-                dsm_fields["fmp_endpoint"] = source["fmp_endpoint"]
-            if "fmp_field" in source:
-                dsm_fields["fmp_field"] = source["fmp_field"]
-        dsm_fields["concept_id"] = concept_id
-        merged[concept_id] = DataSourceMapping.model_validate(dsm_fields)
-
     return merged, applied_count
 
 
 def save_ticker_overrides(
     overrides: TickerOverrides,
     overrides_dir: Path | None = None,
+    *,
+    provider_registry: ProviderRegistry | None = None,
 ) -> Path:
     """Write per-ticker overrides to the uppercase ticker JSON path."""
 
@@ -403,7 +667,10 @@ def save_ticker_overrides(
     path = overrides_lock_target(ticker_upper, directory)
 
     with model_writer_lock(path, ticker=ticker_upper):
-        payload = overrides_payload(overrides)
+        payload = overrides_payload(
+            overrides,
+            provider_registry=provider_registry,
+        )
         text = json.dumps(
             payload,
             sort_keys=True,
@@ -448,7 +715,10 @@ def list_ticker_overrides(overrides_dir: Path | None = None) -> list[str]:
 
 __all__ = [
     "GuardConfig",
+    "OverrideBindingPatchInvalid",
+    "RetiredOverridesSectionError",
     "TickerOverrides",
+    "UnknownOverrideRequiredRoleError",
     "MODEL_ENGINE_OVERRIDES_DIR_ENV",
     "configured_overrides_dir",
     "derive_overrides_file_meta",

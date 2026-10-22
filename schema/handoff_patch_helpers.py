@@ -133,6 +133,8 @@ _VALUATION_NUMERIC_FIELDS = frozenset(
         "current_multiple",
         "wacc",
         "risk_free_rate",
+        "sofr_rate",
+        "credit_spread",
         "equity_risk_premium",
         "cost_of_equity",
         "raw_beta",
@@ -146,6 +148,8 @@ _VALUATION_RATE_FIELDS = frozenset(
     {
         "wacc",
         "risk_free_rate",
+        "sofr_rate",
+        "credit_spread",
         "equity_risk_premium",
         "cost_of_equity",
         "terminal_growth_rate",

@@ -115,12 +115,9 @@ def _sheet_item_ids(sheet: Any | None) -> list[str]:
 
 
 def _template_path() -> Path:
-    try:
-        from .templates.template_builder_config import SIA_GENERIC_TEMPLATE_PATH
+    from .templates.template_builder_config import SIA_GENERIC_TEMPLATE_PATH
 
-        return Path(SIA_GENERIC_TEMPLATE_PATH).resolve(strict=False)
-    except Exception:
-        return Path(__file__).resolve().parent / "templates" / "sia_generic.json"
+    return Path(SIA_GENERIC_TEMPLATE_PATH).resolve(strict=False)
 
 
 def _optional_path(path: str | Path | None) -> Path | None:

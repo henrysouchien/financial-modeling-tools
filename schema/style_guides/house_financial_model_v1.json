@@ -1,0 +1,8 @@
+{
+  "schema_version": "style-guide.v1",
+  "style_guide_id": "house_financial_model_v1",
+  "library_default": true,
+  "source_reference": "House financial model benchmark workbook inspected 2026-06-03",
+  "provenance": "docs/design/issuer-generic-build-implementation-plan-2026-08-19.md §7 IG-5 family 5 / §13 item 7 (ratified 2026-08-20). The house style rows and their benchmark citation were `schema/formatter.py:98-99` defaults; the identity and the citation are authored data here, and the mechanism carries neither. The id and the citation name the house style, not the issuer workbook it was first benchmarked on (rulings-index NEVER-ISSUER-SPECIFIC).",
+  "rules": {}
+}

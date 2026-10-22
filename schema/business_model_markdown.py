@@ -17,6 +17,7 @@ _SECTION_TITLES = {
     "segments": "Segments",
     "consolidated": "Consolidated",
     "profitability_targets": "Profitability Targets",
+    "declined_series": "Declined Series",
     "change_triggers": "Change Triggers",
     "source_materials": "Source Materials",
     "decisions_log": "Decisions Log",
@@ -62,6 +63,11 @@ def render(model: BusinessModel) -> str:
             lines,
             _render_yaml_section(_SECTION_TITLES["profitability_targets"], normalized["profitability_targets"]),
         )
+    if "declined_series" in normalized:
+        _append_block(
+            lines,
+            _render_yaml_section(_SECTION_TITLES["declined_series"], normalized["declined_series"]),
+        )
 
     metadata = normalized.get("metadata", {})
     _append_block(lines, _render_bullet_section(_SECTION_TITLES["change_triggers"], metadata.get("change_triggers", [])))
@@ -88,6 +94,9 @@ def parse(text: str) -> BusinessModel:
             continue
         if section_key == "profitability_targets":
             payload["profitability_targets"] = _parse_yaml_section(section.body_lines, default={})
+            continue
+        if section_key == "declined_series":
+            payload["declined_series"] = _parse_yaml_section(section.body_lines, default=[])
             continue
         if section_key == "change_triggers":
             payload.setdefault("metadata", {})["change_triggers"] = _parse_bullet_section(section.body_lines)

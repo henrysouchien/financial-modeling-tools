@@ -5,7 +5,7 @@ from __future__ import annotations
 import calendar
 import re
 from datetime import date
-from typing import Mapping
+from typing import Literal, Mapping
 
 from .models import (
     PERIOD_MODE_QUARTERLY5,
@@ -130,7 +130,9 @@ def build_period_metadata(
     return metadata
 
 
-def _period_type(period_mode: str, fiscal_slot: int) -> str:
+def _period_type(
+    period_mode: str, fiscal_slot: int
+) -> Literal["quarter", "annual"]:
     if period_mode == PERIOD_MODE_YEARLY or fiscal_slot == 5:
         return "annual"
     if period_mode == PERIOD_MODE_QUARTERLY5:
@@ -150,7 +152,7 @@ def _derived_fiscal_period_end(
     fiscal_year: int,
     fiscal_slot: int,
     fiscal_year_end_month: int,
-    period_type: str,
+    period_type: Literal["quarter", "annual"],
 ) -> date:
     if period_type == "annual":
         month = fiscal_year_end_month

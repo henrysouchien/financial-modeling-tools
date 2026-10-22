@@ -213,7 +213,8 @@ class FormulaParser:
                         if self._match("RPAREN"):
                             break
                         if self._match("COMMA"):
-                            if self._peek() and self._peek().type == "RPAREN":
+                            next_token = self._peek()
+                            if next_token is not None and next_token.type == "RPAREN":
                                 self._advance()
                                 args.append(Empty())
                                 break

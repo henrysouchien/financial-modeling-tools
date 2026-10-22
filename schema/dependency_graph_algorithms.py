@@ -80,8 +80,7 @@ def _downstream_of(self, start_ids: Set[str]) -> Set[str]:
 
 
 def _tarjan_sccs(self, adj: Optional[Dict[str, Set[str]]] = None) -> List[List[str]]:
-    if adj is None:
-        adj = self.adj
+    active_adj = self.adj if adj is None else adj
     index = 0
     stack: List[str] = []
     indices: Dict[str, int] = {}
@@ -97,7 +96,7 @@ def _tarjan_sccs(self, adj: Optional[Dict[str, Set[str]]] = None) -> List[List[s
         stack.append(node)
         onstack.add(node)
 
-        for neighbor in adj.get(node, set()):
+        for neighbor in active_adj.get(node, set()):
             if neighbor not in indices:
                 strongconnect(neighbor)
                 lowlinks[node] = min(lowlinks[node], lowlinks[neighbor])

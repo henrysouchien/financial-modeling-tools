@@ -3,24 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .business_model import BusinessModel, DriverNode, derive_driver_assumption_plan
+from .business_model import (
+    BusinessModel,
+    DriverAssumptionPlan,
+    DriverNode,
+    NodeMeasure,
+    expr_is_input_row,
+    Segment,
+    node_measure,
+)
 from .business_model_compiler_errors import BusinessModelCompileError
 from .business_model_compiler_formula import _compile_formula, _node_expr
 from .business_model_compiler_nodes import (
-    _build_node_lookup as _build_node_lookup,  # noqa: F401 - compatibility alias
-    _consolidation_dependency_node_ids as _consolidation_dependency_node_ids,  # noqa: F401 - compatibility alias
+    _build_node_lookup,
     _count_bm_rows,
-    _count_tree_rows as _count_tree_rows,  # noqa: F401 - compatibility alias
     _direct_consolidation_growth_node_ids,
-    _driver_expr_node_refs as _driver_expr_node_refs,  # noqa: F401 - compatibility alias
-    _iter_driver_nodes as _iter_driver_nodes,  # noqa: F401 - compatibility alias
+    _driver_expr_node_refs,
+    _iter_driver_nodes,
     _primary_scenario_growth_node_id,
     _primary_scenario_owner_rate_id,
+    _product_measure_exponent,
+    _ratio_projection_terms,
 )
 from .business_model_compiler_plans import _SegmentCompilePlan, _reconcile_segments
 from .driver_resolver import resolve_driver_key
-from .model_build_context import ModelBuildContext, SegmentProfileSnapshot
-from .models import FinancialModel, FormulaSpec, ItemType, LineItem, LineItemRef, ModelScale, Unit
+from .model_input_errors import InvalidDriverKey
+from .model_build_context import SegmentProfileSnapshot
+from .models import FinancialModel, FormulaSpec, ItemType, LineItem, LineItemRef, ModelScale
+from industry_slice_core.industry_types import Unit
 from .segments import (
     SegmentInfo as SegmentInfo,
     SegmentProfile,
@@ -36,11 +46,11 @@ from .segments import (
     _remove_existing_segment_items,
     _rewire_scenario_table_refs,
     _shift_rows,
+    _shift_rows_below_fm_segment_blocks,
     _sum_or_ref_formula,
     _yoy_formula,
     segment_revenue_observations_from_snapshot as segment_revenue_observations_from_snapshot,
 )
-from .templates import load_sia_generic_template
 
 
 _SCENARIO_TABLE_INTERMEDIATE_GROWTH_ID = "tpl.a.revenue_drivers.business_segment_1_growth"
@@ -85,9 +95,7 @@ def compile_business_model(
 
     fm_delta = max(0, len(plans) - fm_rows["freed"])
     if fm_delta:
-        _shift_rows(_iter_sheet_items(model, "Financial_model"), 55, fm_delta)
-        _shift_rows(_iter_sheet_items(model, "Financial_model"), 43, fm_delta)
-        _shift_rows(_iter_sheet_items(model, "Financial_model"), 7, fm_delta)
+        _shift_rows_below_fm_segment_blocks(model, fm_rows, fm_delta)
 
     fm_base_rows = {
         "income_statement": fm_rows["income_statement"],
@@ -116,7 +124,7 @@ def compile_business_model(
     segment_fm_revenue_ids: list[str] = []
 
     current_row = assumptions_rows["start"]
-    primary_plan: _SegmentCompilePlan | None = None
+    primary_segment: Segment | None = None
 
     for plan in plans:
         if plan.segment is None:
@@ -159,7 +167,7 @@ def compile_business_model(
             continue
 
         if plan.segment_index == 1:
-            primary_plan = plan
+            primary_segment = plan.segment
 
         revenue_id = f"bm.{plan.segment.id}.__rev"
         growth_id = f"bm.{plan.segment.id}.__growth"
@@ -180,8 +188,13 @@ def compile_business_model(
             if len(direct_consolidation_node_ids) == 1
             else set()
         )
+        nodes_by_id = {
+            node.id: node
+            for node in _iter_driver_nodes(plan.segment.revenue_model.decomposition)
+        }
         current_row = _materialize_segment_tree(
             segment=plan.segment,
+            nodes_by_id=nodes_by_id,
             node_lookup=node_lookup,
             non_materialized=non_materialized,
             prototypes=prototypes,
@@ -206,6 +219,14 @@ def compile_business_model(
             node_lookup=node_lookup,
             non_materialized=non_materialized,
             current_item_id=revenue_id,
+            output_measure=None,
+            nodes_by_id=nodes_by_id,
+            product_scale_multiplier=10 ** _product_measure_exponent(
+                plan.segment.revenue_model.consolidation_formula,
+                output=NodeMeasure(Unit.dollars, "millions", "flow"),
+                output_node_id=f"{plan.segment.id}.__rev",
+                nodes_by_id=nodes_by_id,
+            ),
         )
 
         segment_revenue = prototypes["segment_revenue"].model_copy(
@@ -215,7 +236,18 @@ def compile_business_model(
                 "label": plan.segment.label,
                 "row": current_row,
                 "item_type": ItemType.derived,
-                "historical": _ref_formula(revenue_fm_id),
+                # Snapshot-backed compilation imports exact member revenue into
+                # the Financial_model row below, so that row remains historical
+                # authority. Artifact-backed ModelSpec builds intentionally do
+                # not carry the old segment snapshot; in that lane the natural
+                # BusinessModel graph (including exact HFF opening seeds) is the
+                # only executable historical authority. Pointing both lanes at
+                # the Financial_model row left the typed lane unrooted.
+                "historical": (
+                    _ref_formula(revenue_fm_id)
+                    if plan.info.revenue_observations
+                    else consolidation_formula
+                ),
                 "projected": consolidation_formula,
                 "formula_periods": list(all_periods),
                 "overrides": None,
@@ -240,7 +272,7 @@ def compile_business_model(
                     if scenario_growth_node_id is not None
                     else _offset_scenario_formula(anchor_id=_SCENARIO_LABEL_ID)
                     if plan.segment_index == 1
-                    else _carry_forward_formula(growth_id)
+                    else _yoy_formula(revenue_id)
                 ),
                 "formula_periods": list(all_periods),
                 "overrides": None,
@@ -253,6 +285,10 @@ def compile_business_model(
         current_row += 1
 
         fallback_single = len(plans) == 1 and not plan.info.revenue_observations
+        # Authored segments with no observations: `revenue_id` computes
+        # historical segment revenue, so the FM face row reads it in every
+        # period it computes.
+        bm_sourced = not plan.info.revenue_observations and not fallback_single
         fm_rows_for_segment = {
             "income_statement": fm_base_rows["income_statement"] + plan.segment_index - 1,
             "margins": fm_base_rows["margins"] + plan.segment_index - 1,
@@ -267,10 +303,16 @@ def compile_business_model(
                     "label": f" {plan.segment.label}",
                     "row": fm_rows_for_segment["income_statement"],
                     "item_type": ItemType.derived,
-                    "historical": _ref_formula("tpl.fm.income_statement.total_revenue") if fallback_single else None,
+                    "historical": (
+                        _ref_formula("tpl.fm.income_statement.total_revenue")
+                        if fallback_single
+                        else _ref_formula(revenue_id)
+                        if bm_sourced
+                        else None
+                    ),
                     "projected": _ref_formula(revenue_id),
-                    "formula_periods": list(all_periods if fallback_single else projection_periods),
-                    "data_concept_id": None,
+                    "formula_periods": list(all_periods if fallback_single or bm_sourced else projection_periods),
+                    "required_role": None,
                     "overrides": None,
                     "values": None,
                     "template_token": None,
@@ -323,7 +365,7 @@ def compile_business_model(
             "growth_fm": growth_fm_id,
         }
 
-    if primary_plan is None:
+    if primary_segment is None:
         raise BusinessModelCompileError("compiled segments must include a primary segment with segment_index == 1")
 
     assumptions_section.line_items.extend(assumptions_items)
@@ -347,38 +389,48 @@ def compile_business_model(
     fm_total.formula_periods = list(all_periods)
 
     primary_growth_id = (
-        _primary_scenario_owner_rate_id(primary_plan.segment)
-        or f"bm.{primary_plan.segment.id}.__growth"
+        _primary_scenario_owner_rate_id(primary_segment)
+        or f"bm.{primary_segment.id}.__growth"
     )
     _rewire_scenario_table_refs(
         model,
         old_id=_SCENARIO_TABLE_INTERMEDIATE_GROWTH_ID,
         new_id=primary_growth_id,
     )
-    model.get_item(_SCENARIO_LABEL_ID).label = _scenario_label(primary_plan.segment.label)
+    model.get_item(_SCENARIO_LABEL_ID).label = _scenario_label(primary_segment.label)
 
     _assert_rows_unique(model)
     _assert_no_duplicate_ids(model)
     registry.validation_model = model
     registry.segment_profile = segment_profile
-    _register_driver_assumption_plan_keys(registry, business_model)
     return registry
 
 
-def compile_bm_for_validation(
-    business_model: BusinessModel,
-    mbc: ModelBuildContext,
+def bind_driver_assumption_plan(
+    registry: CompiledDriverRegistry,
+    plan: DriverAssumptionPlan,
 ) -> CompiledDriverRegistry:
-    """Compile BM against a validation-only template for MBC validation."""
+    """Bind durable driver IDs to the compiler's concrete input rows.
 
-    model = load_sia_generic_template()
-    registry = compile_business_model(
-        model,
-        business_model,
-        edgar_snapshot=mbc.segment_config.segment_profile_snapshot if mbc.segment_config else None,
-    )
-    model.build_index()
-    registry.validation_model = model
+    An entry binds to the row the compile lowered its node to, else to the
+    template row its existing driver key names.  An entry with neither is a
+    row the compiled BusinessModel no longer derives (a plan stored before
+    its driver was retired) and binds to nothing; the forecast derivation
+    reports it as ``forecast_driver_plan_row_retired``
+    (``api/research/forecast_driver_value_contracts.py``).
+    """
+
+    bindings: dict[str, str] = {}
+    for entry in plan.entries:
+        target = registry.driver_keys.get(f"{entry.segment_id}.{entry.driver_node_id}")
+        if target is None and entry.existing_driver_key:
+            try:
+                target = resolve_driver_key(entry.existing_driver_key)
+            except InvalidDriverKey:
+                target = None
+        if target is not None:
+            bindings[entry.driver_id] = target
+    registry.driver_keys.update(bindings)
     return registry
 
 
@@ -475,7 +527,7 @@ def _materialize_unmanaged_snapshot_segment(
                 "historical": None,
                 "projected": _ref_formula(revenue_id),
                 "formula_periods": list(projection_periods),
-                "data_concept_id": None,
+                "required_role": None,
                 "overrides": None,
                 "values": None,
                 "template_token": None,
@@ -522,80 +574,10 @@ def _materialize_unmanaged_snapshot_segment(
     return current_row
 
 
-def _register_driver_assumption_plan_keys(
-    registry: CompiledDriverRegistry,
-    business_model: BusinessModel,
-) -> None:
-    try:
-        driver_plan = derive_driver_assumption_plan(business_model)
-    except ValueError:
-        return
-
-    for entry in driver_plan.entries:
-        primary_item_id = _resolve_driver_plan_alias_item_id(
-            registry,
-            f"{entry.segment_id}.{entry.driver_node_id}",
-        )
-        if primary_item_id is None and entry.existing_driver_key:
-            # Consolidated-opex drivers (and any entry whose namespaced
-            # `{segment_id}.{driver_node_id}` identity has no independent
-            # resolution path) bind to their declared `existing_driver_key`.
-            # Falling back to it lets the alias loop below register the
-            # `consolidated.<node>` / `bm.consolidated.<node>` forms the
-            # model-engine looks drivers up by. Conservative: only fires when
-            # the declared binding itself resolves, so a genuinely-unmapped
-            # driver still leaves the namespaced key unregistered (fails loud).
-            primary_item_id = _resolve_driver_plan_alias_item_id(
-                registry,
-                entry.existing_driver_key,
-            )
-        if primary_item_id is not None:
-            registry.driver_keys.setdefault(entry.driver_key, primary_item_id)
-        for alias in entry.aliases:
-            item_id = _resolve_driver_plan_alias_item_id(registry, alias)
-            if item_id is not None:
-                registry.driver_keys.setdefault(alias, item_id)
-            elif primary_item_id is not None:
-                registry.driver_keys.setdefault(alias, primary_item_id)
-
-
-def _resolve_driver_plan_alias_item_id(
-    registry: CompiledDriverRegistry,
-    alias: str | None,
-) -> str | None:
-    normalized = str(alias or "").strip()
-    if not normalized:
-        return None
-
-    item_id = registry.driver_keys.get(normalized)
-    if item_id is not None:
-        return item_id
-
-    direct_item_id = _compiled_input_item_id(registry, normalized)
-    if direct_item_id is not None:
-        return direct_item_id
-
-    try:
-        resolved_item_id = resolve_driver_key(normalized, compiled_registry=registry)
-    except Exception:
-        return None
-    return _compiled_input_item_id(registry, resolved_item_id)
-
-
-def _compiled_input_item_id(
-    registry: CompiledDriverRegistry,
-    item_id: str,
-) -> str | None:
-    try:
-        item = registry.validation_model.get_item(str(item_id))
-    except KeyError:
-        return None
-    return item.id if item.item_type is ItemType.input else None
-
-
 def _materialize_segment_tree(
     *,
     segment: Any,
+    nodes_by_id: dict[str, DriverNode],
     node_lookup: dict[str, str],
     non_materialized: dict[str, str],
     prototypes: dict[str, LineItem],
@@ -613,6 +595,7 @@ def _materialize_segment_tree(
         current_row = _materialize_node(
             segment=segment,
             node=node,
+            nodes_by_id=nodes_by_id,
             node_lookup=node_lookup,
             non_materialized=non_materialized,
             prototypes=prototypes,
@@ -633,6 +616,7 @@ def _materialize_node(
     *,
     segment: Any,
     node: DriverNode,
+    nodes_by_id: dict[str, DriverNode],
     node_lookup: dict[str, str],
     non_materialized: dict[str, str],
     prototypes: dict[str, LineItem],
@@ -650,6 +634,7 @@ def _materialize_node(
         current_row = _materialize_node(
             segment=segment,
             node=child,
+            nodes_by_id=nodes_by_id,
             node_lookup=node_lookup,
             non_materialized=non_materialized,
             prototypes=prototypes,
@@ -686,17 +671,17 @@ def _materialize_node(
     item_id = node_lookup[node.id]
     registry.node_items[registry_key] = item_id
 
-    if expr.type == "external":
+    if expr_is_input_row(expr, target.target_type):
         if target.target_type != "assumption_row":
-            raise BusinessModelCompileError(f"external node {registry_key!r} must compile to assumption_row")
+            raise BusinessModelCompileError(f"{expr.type} node {registry_key!r} must compile to assumption_row")
         assumptions_items.append(
             _node_item(
                 prototypes["input_row"],
                 item_id=item_id,
                 label=node.label,
                 row=current_row,
-                unit=node.unit,
-                model_scale=_node_model_scale(node),
+                unit=node_measure(node).unit,
+                model_scale=node_measure(node).model_scale,
                 item_type=ItemType.input,
                 historical=None,
                 projected=None,
@@ -726,8 +711,8 @@ def _materialize_node(
                 item_id=item_id,
                 label=node.label,
                 row=current_row,
-                unit=node.unit,
-                model_scale=_node_model_scale(node),
+                unit=node_measure(node).unit,
+                model_scale=node_measure(node).model_scale,
                 item_type=ItemType.input,
                 historical=historical,
                 projected=_growth_formula(item_id, rate_id),
@@ -743,19 +728,30 @@ def _materialize_node(
                 unit=prototypes["rate_row"].unit,
                 model_scale=None,
                 item_type=ItemType.input,
-                historical=None,
+                # The rate row is the observed y/y change of its own driver row:
+                # authored here, so a missing operand stays a missing operand.
+                historical=_yoy_formula(item_id),
                 projected=(
                     _offset_scenario_formula(anchor_id=_SCENARIO_LABEL_ID)
                     if node.id == scenario_growth_node_id
                     else None
                 ),
-                formula_periods=list(all_periods) if node.id == scenario_growth_node_id else None,
+                # Explicit periods let remap_time_structure prune the first
+                # historical period, whose yoy denominator (t=-1) does not exist.
+                formula_periods=list(all_periods),
             )
         )
         registry.driver_keys[registry_key] = item_id
         registry.driver_keys[f"{registry_key}.{expr.params.rate_key}"] = rate_id
         return current_row + 2
 
+    ratio_scale_multiplier, ratio_averages_denominator = _ratio_projection_terms(
+        expr,
+        output=node_measure(node),
+        output_node_id=f"{segment.id}.{node.id}",
+        nodes_by_id=nodes_by_id,
+        current_node=node,
+    )
     formula = _compile_formula(
         expr,
         segment_id=segment.id,
@@ -763,6 +759,17 @@ def _materialize_node(
         node_lookup=node_lookup,
         non_materialized=non_materialized,
         current_item_id=item_id,
+        output_measure=node_measure(node),
+        nodes_by_id=nodes_by_id,
+        product_scale_multiplier=10 ** _product_measure_exponent(
+            expr,
+            output=node_measure(node),
+            output_node_id=f"{segment.id}.{node.id}",
+            nodes_by_id=nodes_by_id,
+            current_node=node,
+        ),
+        ratio_scale_multiplier=ratio_scale_multiplier,
+        ratio_averages_denominator=ratio_averages_denominator,
     )
 
     if target.target_type == "derived_row":
@@ -772,8 +779,8 @@ def _materialize_node(
                 item_id=item_id,
                 label=node.label,
                 row=current_row,
-                unit=node.unit,
-                model_scale=_node_model_scale(node),
+                unit=node_measure(node).unit,
+                model_scale=node_measure(node).model_scale,
                 item_type=ItemType.derived,
                 historical=formula,
                 projected=formula,
@@ -788,8 +795,8 @@ def _materialize_node(
             item_id=item_id,
             label=node.label,
             row=current_row,
-            unit=node.unit,
-            model_scale=_node_model_scale(node),
+            unit=node_measure(node).unit,
+            model_scale=node_measure(node).model_scale,
             item_type=ItemType.derived,
             historical=None,
             projected=formula,
@@ -833,16 +840,6 @@ def _node_item(
     return prototype.model_copy(deep=True, update=updates)
 
 
-def _node_model_scale(node: DriverNode) -> ModelScale:
-    if node.model_scale is not None:
-        return node.model_scale
-    if node.unit is not Unit.dollars:
-        return "units"
-    if node.driver is not None and node.driver.type == "external" and set(node.factors) == {"price"}:
-        return "units"
-    return "millions"
-
-
 def _scenario_label(segment_name: str) -> str:
     return "Revenue growth %" if segment_name == "Total Revenue" else f"{segment_name} revenue growth %"
 
@@ -854,6 +851,6 @@ def _sort_section_items(section: Any) -> None:
 __all__ = [
     "BusinessModelCompileError",
     "CompiledDriverRegistry",
-    "compile_bm_for_validation",
+    "bind_driver_assumption_plan",
     "compile_business_model",
 ]

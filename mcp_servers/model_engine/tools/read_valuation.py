@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import logging
 from typing import Any
+
+
+_logger = logging.getLogger(__name__)
 
 
 def model_quality_readiness_for_valuation_summary(
@@ -116,8 +120,11 @@ def merge_valuation_input_readiness(
 
   status = str(result.get("status") or "unknown")
   if status not in {"ready", "incomplete", "blocked", "unknown"}:
-    status = status_fn(issues, fallback="unknown")
-    result["status"] = status
+    _logger.warning(
+      "model_quality_readiness status %r is outside the known vocabulary; "
+      "carrying the producer's status as-is",
+      status,
+    )
   if not isinstance(result.get("summary"), str) or not result.get("summary"):
     result["summary"] = summary_fn(status, domains)
   return result

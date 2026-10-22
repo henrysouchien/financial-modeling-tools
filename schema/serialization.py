@@ -11,12 +11,16 @@ import shutil
 import struct
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TypeAlias
 
 import pydantic
 
 from .models import MODELS_SCHEMA_VERSION, FinancialModel
 from .reader import READER_VERSION
+from .templates.model_scale import (
+    TEMPLATE_SEMANTIC_UNIT_REGISTRY_SHA256,
+    assert_template_semantic_units,
+)
 from .valuation_schema_invariant import (
     assert_valuation_template_schema,
     should_enforce_valuation_template_schema,
@@ -26,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 _MAGIC = b"FMC2"
 _SIDECAR_KIND = "financial_model_schema_sidecar"
-_SIDECAR_VERSION = 1
+_SIDECAR_VERSION = 2
 _HEADER_FMT = "<4s16s16s16s"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 _MODELS_V_BYTES = MODELS_SCHEMA_VERSION.encode("ascii").ljust(16, b" ")
@@ -38,7 +42,7 @@ _SCHEMA_DIR = Path(__file__).resolve().parent
 
 def _compute_engine_version() -> str:
     h = hashlib.sha1()
-    for name in ("dependency_graph.py",):
+    for name in ("dependency_graph.py", "templates/model_scale.py"):
         h.update(name.encode("utf-8"))
         h.update(b"\0")
         h.update((_SCHEMA_DIR / name).read_bytes())
@@ -49,15 +53,44 @@ def _compute_engine_version() -> str:
 COMPUTE_ENGINE_VERSION = _compute_engine_version()
 
 
+class ModelBundleRebuildRequired(RuntimeError):
+    """Persisted bundle is outside the sole semantic-unit contract."""
+
+    error_code = "REBUILD_REQUIRED_MODEL_BUNDLE_SEMANTIC_UNITS"
+
+
+class ModelBundleSidecarRequired(ValueError):
+    """The workbook lacks its exact current canonical schema sidecar."""
+
+    error_code = "REBUILD_REQUIRED_MODEL_BUNDLE_SIDECAR"
+
+
+def canonical_financial_model_payload(model: FinancialModel) -> Dict:
+    """Return the sole fully revalidated JSON form used for exact bundle checks."""
+
+    return FinancialModel.model_validate(
+        model.model_dump(mode="json")
+    ).model_dump(mode="json")
+
+
+def _require_current_semantic_units(
+    model: FinancialModel,
+    *,
+    origin: str,
+) -> None:
+    try:
+        assert_template_semantic_units(model, origin=origin)
+    except ValueError as exc:
+        raise ModelBundleRebuildRequired(str(exc)) from exc
+
+
 def _cache_root() -> Path:
+    version_dir = f"v{MODELS_SCHEMA_VERSION}_{READER_VERSION}_{COMPUTE_ENGINE_VERSION}"
+    configured = os.getenv("SCHEMA_SERIALIZATION_CACHE_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser() / version_dir
     here = Path(__file__).resolve().parent
-    return (
-        here.parent
-        / "data"
-        / "cache"
-        / "schema"
-        / f"v{MODELS_SCHEMA_VERSION}_{READER_VERSION}_{COMPUTE_ENGINE_VERSION}"
-    )
+    return here.parent / "data" / "cache" / "schema" / version_dir
 
 
 def _sha256_file(path: str) -> str:
@@ -81,7 +114,9 @@ def _path_for(key: str) -> Path:
     return _cache_root() / key[:2] / f"{key}.pkl"
 
 
-_BaseResults = Dict[str, Dict[int, Optional[float]]]
+# None is a persisted computed-but-unavailable value. A cold or stale cache is
+# represented separately by the absence of BaseResults at the load boundary.
+BaseResults: TypeAlias = Dict[str, Dict[int, Optional[float]]]
 
 
 def sidecar_path(file_path: str) -> Path:
@@ -89,18 +124,18 @@ def sidecar_path(file_path: str) -> Path:
     return Path(os.path.abspath(file_path)).with_name(f"{Path(file_path).name}.schema.json")
 
 
-def _base_results_to_json(base_results: _BaseResults) -> Dict[str, Dict[str, Optional[float]]]:
+def _base_results_to_json(base_results: BaseResults) -> Dict[str, Dict[str, Optional[float]]]:
     return {
         item_id: {str(period): value for period, value in values.items()}
         for item_id, values in base_results.items()
     }
 
 
-def _base_results_from_json(raw: object) -> _BaseResults:
+def _base_results_from_json(raw: object) -> BaseResults:
     if not isinstance(raw, dict):
         raise ValueError("base_results must be a mapping")
 
-    decoded: _BaseResults = {}
+    decoded: BaseResults = {}
     for item_id, values in raw.items():
         if not isinstance(item_id, str) or not isinstance(values, dict):
             raise ValueError("base_results entries must be item-id mappings")
@@ -110,7 +145,7 @@ def _base_results_from_json(raw: object) -> _BaseResults:
     return decoded
 
 
-def try_load(file_path: str, cutoff: int) -> Optional[Tuple[FinancialModel, _BaseResults]]:
+def try_load(file_path: str, cutoff: int) -> Optional[Tuple[FinancialModel, BaseResults]]:
     """Load (FinancialModel, base_results) from disk cache, or None on any miss/failure."""
     try:
         key = _key(file_path, cutoff)
@@ -146,6 +181,7 @@ def try_load(file_path: str, cutoff: int) -> Optional[Tuple[FinancialModel, _Bas
             return None
 
         model = FinancialModel.model_validate(model.model_dump())
+        _require_current_semantic_units(model, origin="serialization.disk_cache")
         model._index = {}
         return model, base_results
     except (
@@ -161,20 +197,12 @@ def try_load(file_path: str, cutoff: int) -> Optional[Tuple[FinancialModel, _Bas
         return None
 
 
-def try_load_sidecar(file_path: str) -> Optional[Tuple[FinancialModel, Optional[_BaseResults]]]:
-    """Load canonical schema state adjacent to a workbook, or None on miss/staleness.
-
-    Sidecars are allowed to survive a models-schema version bump when the
-    workbook bytes and compute engine still match and the embedded payload
-    validates under the current Pydantic contract. This keeps existing built
-    workbooks usable after additive model-schema changes instead of falling
-    back to the lossy Excel reader.
-    """
+def try_load_sidecar(file_path: str) -> Optional[Tuple[FinancialModel, Optional[BaseResults]]]:
+    """Load only the exact current canonical sidecar, or None on absence/staleness."""
     try:
         current_hash = _sha256_file(os.path.abspath(file_path))
     except OSError:
         return None
-
     schema_path = sidecar_path(file_path)
     if not schema_path.exists():
         return None
@@ -184,23 +212,34 @@ def try_load_sidecar(file_path: str) -> Optional[Tuple[FinancialModel, Optional[
             obj = json.load(f)
         if not isinstance(obj, dict):
             return None
-        if obj.get("kind") != _SIDECAR_KIND or obj.get("version") != _SIDECAR_VERSION:
-            return None
+        if obj.get("kind") != _SIDECAR_KIND:
+            raise ModelBundleRebuildRequired(
+                "schema sidecar kind is outside the canonical bundle contract"
+            )
+        if obj.get("version") != _SIDECAR_VERSION:
+            raise ModelBundleRebuildRequired(
+                "schema sidecar version requires offline semantic-unit rebuild"
+            )
         sidecar_schema_version = obj.get("models_schema_version")
+        if sidecar_schema_version != MODELS_SCHEMA_VERSION:
+            raise ModelBundleRebuildRequired(
+                "models schema version requires offline semantic-unit rebuild"
+            )
+        if (
+            obj.get("template_semantic_unit_registry_sha256")
+            != TEMPLATE_SEMANTIC_UNIT_REGISTRY_SHA256
+        ):
+            raise ModelBundleRebuildRequired(
+                "semantic-unit registry identity is missing or stale"
+            )
         if obj.get("source_sha256") != current_hash:
             return None
         compute_engine_matches = obj.get("compute_engine_version") == COMPUTE_ENGINE_VERSION
 
         model = FinancialModel.model_validate(obj.get("model"))
+        _require_current_semantic_units(model, origin="serialization.sidecar")
         base_results = _base_results_from_json(obj.get("base_results")) if compute_engine_matches else None
         model._index = {}
-        if sidecar_schema_version != MODELS_SCHEMA_VERSION:
-            logger.warning(
-                "Loading compatible legacy schema sidecar for %s: models_schema_version=%r current=%r",
-                schema_path,
-                sidecar_schema_version,
-                MODELS_SCHEMA_VERSION,
-            )
         if not compute_engine_matches:
             logger.warning(
                 "Loading schema sidecar for %s with stale compute_engine_version=%r current=%r; recomputing base results",
@@ -221,11 +260,35 @@ def try_load_sidecar(file_path: str) -> Optional[Tuple[FinancialModel, Optional[
         return None
 
 
+def require_current_sidecar(
+    file_path: str,
+    *,
+    expected_model: FinancialModel | None = None,
+) -> Tuple[FinancialModel, Optional[BaseResults]]:
+    """Require the exact current v2 sidecar bound to these workbook bytes."""
+
+    loaded = try_load_sidecar(file_path)
+    if loaded is None:
+        raise ModelBundleSidecarRequired(
+            "workbook requires an exact current v2 schema sidecar"
+        )
+    model, base_results = loaded
+    if (
+        expected_model is not None
+        and model.model_dump(mode="json")
+        != canonical_financial_model_payload(expected_model)
+    ):
+        raise ModelBundleSidecarRequired(
+            "schema sidecar model does not match the expected canonical model"
+        )
+    return model, base_results
+
+
 def save(
     file_path: str,
     cutoff: int,
     model: FinancialModel,
-    base_results: _BaseResults,
+    base_results: BaseResults,
 ) -> None:
     """Best-effort write; never raises to callers."""
     try:
@@ -276,19 +339,25 @@ def save(
 def save_sidecar(
     file_path: str,
     model: FinancialModel,
-    base_results: _BaseResults,
+    base_results: BaseResults,
 ) -> None:
     """Best-effort write of canonical schema state next to the workbook."""
+    canonical_payload = canonical_financial_model_payload(model)
+    canonical_model = FinancialModel.model_validate(canonical_payload)
+    _require_current_semantic_units(
+        canonical_model,
+        origin="serialization.save_sidecar",
+    )
     try:
         source_hash = _sha256_file(os.path.abspath(file_path))
         schema_path = sidecar_path(file_path)
         enforce_valuation_schema = should_enforce_valuation_template_schema(
-            model,
+            canonical_model,
             workbook_path=file_path,
         )
         if enforce_valuation_schema:
             assert_valuation_template_schema(
-                model,
+                canonical_model,
                 origin="serialization.save_sidecar.pre",
                 workbook_path=file_path,
                 sidecar_path=schema_path,
@@ -299,9 +368,12 @@ def save_sidecar(
             "kind": _SIDECAR_KIND,
             "version": _SIDECAR_VERSION,
             "models_schema_version": MODELS_SCHEMA_VERSION,
+            "template_semantic_unit_registry_sha256": (
+                TEMPLATE_SEMANTIC_UNIT_REGISTRY_SHA256
+            ),
             "source_sha256": source_hash,
             "compute_engine_version": COMPUTE_ENGINE_VERSION,
-            "model": model.model_dump(mode="json"),
+            "model": canonical_payload,
             "base_results": _base_results_to_json(base_results),
         }
 
@@ -333,7 +405,7 @@ def save_sidecar(
             logger.debug("Parent-dir fsync skipped for %s: %s", schema_path.parent, exc)
         if enforce_valuation_schema:
             assert_valuation_template_schema(
-                model,
+                canonical_model,
                 origin="serialization.save_sidecar.post",
                 workbook_path=file_path,
                 sidecar_path=schema_path,

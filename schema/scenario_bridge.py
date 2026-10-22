@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
+from functools import cache
 import re
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, TypeGuard
 
-from schema.build import _find_scenario_value_row
+from schema.scenario_rows import find_scenario_value_row
 from schema.dependency_graph import DependencyGraph
 from schema.formatter import SIA_FORMATTER
-from schema.models import FinancialModel, FormulaType, LineItem, Unit
-from schema.modify import Operation, OperationType
+from schema.models import FinancialModel, FormulaType, LineItem
+from industry_slice_core.industry_types import Unit
+from schema.modify import (
+    FixedCellValueOperation,
+    Operation,
+    OperationType,
+    PeriodValueOperation,
+)
 from schema.refs import line_item_ref_from_obj
 from schema.scenario_ordering import scenario_ordering_issues
 
@@ -31,7 +38,7 @@ class AnchorResolution:
         "invalid_hint",
     ]
     score: Optional[float] = None
-    candidates: list[str] = field(default_factory=list)
+    candidates: list[str] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -40,8 +47,6 @@ class BridgeWarning:
         "unresolved_factor",
         "low_confidence_factor",
         "invalid_hint",
-        "missing_snapshot_field",
-        "non_numeric_snapshot_field",
         "non_numeric_factor_value",
         "missing_factor_curve",
         "period_coverage_gap",
@@ -52,7 +57,7 @@ class BridgeWarning:
     factor: Optional[str]
     field: Optional[str]
     detail: str
-    candidates: list[str] = field(default_factory=list)
+    candidates: list[str] = dataclass_field(default_factory=list)
 
 
 _STOPWORDS = {"pct", "yoy", "chg", "change"}
@@ -69,13 +74,6 @@ _ID_NOISE_TOKENS = {
     "drivers",
     "driver",
 }
-_SNAPSHOT_FIELDS: tuple[tuple[str, str], ...] = (
-    ("adj_eps", "adj_eps"),
-    ("revenue_m", "revenue_m"),
-    ("op_margin_pct", "op_margin_pct"),
-    ("ebitda_margin_pct", "ebitda_margin_pct"),
-    ("fcf_per_share", "fcf_per_share"),
-)
 _BPS_FACTOR_PATTERNS = (
     re.compile(r"(?:^|_)bps(?:_|$)"),
     re.compile(r"(?:^|_)bp_per(?:_|$)"),
@@ -83,7 +81,6 @@ _BPS_FACTOR_PATTERNS = (
 )
 _INTENTIONAL_FORMULA_OVERRIDE_PREFIXES = (
     "tpl.a.scenario_tables.",
-    "tpl.s.thesis_snapshot.",
 )
 _SCENARIO_ORDERING_EPS = 1e-12
 
@@ -92,16 +89,27 @@ def _is_intentional_formula_override(item_id: str) -> bool:
     return str(item_id).startswith(_INTENTIONAL_FORMULA_OVERRIDE_PREFIXES)
 
 
-def _bridge_set_value_operation(
+def _bridge_fixed_value_operation(
     *,
     item_id: str,
-    value: float | None = None,
-    values: dict[int, float] | None = None,
-) -> Operation:
-    return Operation(
+    value: float,
+) -> FixedCellValueOperation:
+    return FixedCellValueOperation(
         type=OperationType.set_value,
         item_id=item_id,
         value=value,
+        force_set_value_on_derived=_is_intentional_formula_override(item_id),
+    )
+
+
+def _bridge_period_value_operation(
+    *,
+    item_id: str,
+    values: dict[int, float],
+) -> PeriodValueOperation:
+    return PeriodValueOperation(
+        type=OperationType.set_value,
+        item_id=item_id,
         values=values,
         force_set_value_on_derived=_is_intentional_formula_override(item_id),
     )
@@ -162,7 +170,9 @@ def _scenario_owners(model: FinancialModel) -> list[LineItem]:
     return owners
 
 
-def _score_candidate(factor_tokens: set[str], owner: LineItem, anchor: LineItem) -> float:
+def _score_candidate(
+    factor_tokens: set[str], owner: LineItem, anchor: LineItem
+) -> float:
     return (
         1.0 * _jaccard(_tokens(anchor.label), factor_tokens)
         + 0.5 * _jaccard(_id_tokens(anchor.id), factor_tokens)
@@ -170,7 +180,9 @@ def _score_candidate(factor_tokens: set[str], owner: LineItem, anchor: LineItem)
     )
 
 
-def _candidate_scores(model: FinancialModel, factor: str) -> list[tuple[LineItem, str, float]]:
+def _candidate_scores(
+    model: FinancialModel, factor: str
+) -> list[tuple[LineItem, str, float]]:
     factor_tokens = _tokens(factor)
     candidates: list[tuple[LineItem, str, float]] = []
     for owner in _scenario_owners(model):
@@ -181,13 +193,20 @@ def _candidate_scores(model: FinancialModel, factor: str) -> list[tuple[LineItem
             anchor = model.get_item(anchor_id)
         except KeyError:
             continue
-        candidates.append((owner, anchor_id, _score_candidate(factor_tokens, owner, anchor)))
+        candidates.append(
+            (owner, anchor_id, _score_candidate(factor_tokens, owner, anchor))
+        )
     candidates.sort(key=lambda entry: (-entry[2], entry[0].id))
     return candidates
 
 
-def _top_candidate_owner_ids(model: FinancialModel, factor: str, limit: int = 5) -> list[str]:
-    return [owner.id for owner, _anchor_id, _score in _candidate_scores(model, factor)[:limit]]
+def _top_candidate_owner_ids(
+    model: FinancialModel, factor: str, limit: int = 5
+) -> list[str]:
+    return [
+        owner.id
+        for owner, _anchor_id, _score in _candidate_scores(model, factor)[:limit]
+    ]
 
 
 def _owner_from_hint(model: FinancialModel, hint: str) -> LineItem | None:
@@ -203,16 +222,20 @@ def _owner_from_hint(model: FinancialModel, hint: str) -> LineItem | None:
             continue
         if hint == anchor_id:
             return owner
-        if hint in {row_id for row_id in _case_row_ids(model, anchor_id) if row_id is not None}:
+        if hint in {
+            row_id for row_id in _case_row_ids(model, anchor_id) if row_id is not None
+        }:
             return owner
     return None
 
 
-def _case_row_ids(model: FinancialModel, anchor_id: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+def _case_row_ids(
+    model: FinancialModel, anchor_id: str
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
     return (
-        _find_scenario_value_row(model, anchor_id, "bull"),
-        _find_scenario_value_row(model, anchor_id, "base"),
-        _find_scenario_value_row(model, anchor_id, "bear"),
+        find_scenario_value_row(model, anchor_id, "bull"),
+        find_scenario_value_row(model, anchor_id, "base"),
+        find_scenario_value_row(model, anchor_id, "bear"),
     )
 
 
@@ -228,8 +251,7 @@ def find_scenario_anchor(
     factor_name = str(factor or "").strip()
     if hint:
         owner = _owner_from_hint(model, str(hint))
-        anchor_id = _anchor_id_for_owner(owner) if owner is not None else None
-        if anchor_id is None:
+        if owner is None or (anchor_id := _anchor_id_for_owner(owner)) is None:
             return AnchorResolution(
                 factor=factor_name,
                 owner_id=str(hint),
@@ -286,7 +308,12 @@ def find_scenario_anchor(
             bear_id=None,
             match_reason="unresolved",
             score=score,
-            candidates=[candidate_owner.id for candidate_owner, _candidate_anchor, _candidate_score in candidates[:5]],
+            candidates=[
+                candidate_owner.id
+                for candidate_owner, _candidate_anchor, _candidate_score in candidates[
+                    :5
+                ]
+            ],
         )
 
     bull_id, base_id, bear_id = _case_row_ids(model, anchor_id)
@@ -300,7 +327,12 @@ def find_scenario_anchor(
             bear_id=None,
             match_reason="unresolved",
             score=score,
-            candidates=[candidate_owner.id for candidate_owner, _candidate_anchor, _candidate_score in candidates[:5]],
+            candidates=[
+                candidate_owner.id
+                for candidate_owner, _candidate_anchor, _candidate_score in candidates[
+                    :5
+                ]
+            ],
         )
     return AnchorResolution(
         factor=factor_name,
@@ -311,8 +343,44 @@ def find_scenario_anchor(
         bear_id=bear_id,
         match_reason="label_match_low_confidence",
         score=score,
-        candidates=[candidate_owner.id for candidate_owner, _candidate_anchor, _candidate_score in candidates[:5]],
+        candidates=[
+            candidate_owner.id
+            for candidate_owner, _candidate_anchor, _candidate_score in candidates[:5]
+        ],
     )
+
+
+@cache
+def _cash_flow_magnitude_inputs() -> frozenset[str]:
+    """Schedule amounts whose compiled cash-flow consumer negates them."""
+
+    from .build_financial_schedules import _complete_financial_schedules
+    from .templates import load_sia_generic_template
+
+    # FAS lowering precedes schedule construction on the document path. Read
+    # the canonical completed formulas, not that still-uncompiled document.
+    template = load_sia_generic_template()
+    _complete_financial_schedules(template)
+    targets: set[str] = set()
+    for consumer in template._index.values():
+        if not (consumer.required_role or "").startswith("statement.cf."):
+            continue
+        spec = consumer.projected
+        if spec is None or spec.type is not FormulaType.ref:
+            continue
+        if spec.params.get("negate") is not True:
+            continue
+        source = line_item_ref_from_obj(spec.params.get("source"))
+        if source is not None and source.t == 0:
+            targets.add(source.id)
+    return frozenset(targets)
+
+
+def normalize_control_magnitude(target_item_id: str, value: float) -> float:
+    """Keep filed/authored outflows in their compiled schedule's magnitude space."""
+
+    numeric = float(value)
+    return abs(numeric) if target_item_id in _cash_flow_magnitude_inputs() else numeric
 
 
 def normalize_value_for_model(
@@ -324,10 +392,10 @@ def normalize_value_for_model(
     value_scale_explicit: bool,
     pct_decimal_passthrough: bool = False,
 ) -> float:
-    """Normalize an authored value into model storage scale."""
+    """Normalize an authored value into model storage scale and sign."""
 
     target = model.get_item(target_item_id)
-    numeric = float(value)
+    numeric = normalize_control_magnitude(target_item_id, value)
     if value_scale == "model":
         return numeric
 
@@ -376,7 +444,7 @@ def _is_bps_shaped_factor_name(factor_name: str) -> bool:
     return any(pattern.search(normalized) for pattern in _BPS_FACTOR_PATTERNS)
 
 
-def _is_numeric(value: Any) -> bool:
+def _is_numeric(value: object) -> TypeGuard[int | float]:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
@@ -465,7 +533,11 @@ def factor_values_by_period(
             values: dict[int, float] = {}
             for raw_period, raw_value in candidate.items():
                 period_key = _period_key(raw_period)
-                if period_key is None or period_key not in period_set or not _is_numeric(raw_value):
+                if (
+                    period_key is None
+                    or period_key not in period_set
+                    or not _is_numeric(raw_value)
+                ):
                     continue
                 values[period_key] = float(raw_value)
             if values:
@@ -485,142 +557,14 @@ def factor_values_by_period(
     return None
 
 
-def _read_field(payload: Any, field_name: str) -> Any:
-    if isinstance(payload, dict):
-        return payload.get(field_name)
-    return getattr(payload, field_name, None)
-
-
-def _append_snapshot_ops(
-    model: FinancialModel,
-    scenarios_typed_output: dict,
-    terminal_year: int,
-    ops: list[Operation],
-    warnings: list[BridgeWarning],
-    *,
-    normalize_percent_values: bool = True,
-) -> None:
-    for case in ("bull", "base", "bear"):
-        case_payload = _read_field(scenarios_typed_output, case)
-        if case_payload is None:
-            for field_name, _item_suffix in _SNAPSHOT_FIELDS:
-                warnings.append(
-                    BridgeWarning(
-                        kind="missing_snapshot_field",
-                        factor=None,
-                        field=f"{case}.{field_name}",
-                        detail="value_was_null",
-                    )
-                )
-            continue
-        for field_name, item_suffix in _SNAPSHOT_FIELDS:
-            item_id = f"tpl.s.thesis_snapshot.{case}_{item_suffix}"
-            value = _read_field(case_payload, field_name)
-            if value is None:
-                warnings.append(
-                    BridgeWarning(
-                        kind="missing_snapshot_field",
-                        factor=None,
-                        field=f"{case}.{field_name}",
-                        detail="value_was_null",
-                    )
-                )
-                continue
-            if not _is_numeric(value):
-                reason = "value_was_bool" if isinstance(value, bool) else "value_was_string"
-                warnings.append(
-                    BridgeWarning(
-                        kind="non_numeric_snapshot_field",
-                        factor=None,
-                        field=f"{case}.{field_name}",
-                        detail=reason,
-                    )
-                )
-                continue
-            try:
-                normalized = (
-                    percent_normalize_via_formatter(model, item_id, float(value))
-                    if normalize_percent_values
-                    else float(value)
-                )
-                model.get_item(item_id)
-            except KeyError:
-                warnings.append(
-                    BridgeWarning(
-                        kind="missing_snapshot_field",
-                        factor=None,
-                        field=f"{case}.{field_name}",
-                        detail="target_item_not_found",
-                    )
-                )
-                continue
-            ops.append(_bridge_set_value_operation(item_id=item_id, value=normalized))
-
-    terminal_item_id = "tpl.s.thesis_snapshot.terminal_year"
-    try:
-        model.get_item(terminal_item_id)
-    except KeyError:
-        warnings.append(
-            BridgeWarning(
-                kind="missing_snapshot_field",
-                factor=None,
-                field="terminal_year",
-                detail="target_item_not_found",
-            )
-        )
-    else:
-        ops.append(_bridge_set_value_operation(item_id=terminal_item_id, value=float(terminal_year)))
-
-
-def _scenario_output_value_for_terminal_year(values: Any, terminal_year: int) -> Any:
-    if not isinstance(values, dict):
-        return values
-    return values.get(int(terminal_year), values.get(str(int(terminal_year))))
-
-
-def build_snapshot_operations(
-    model: FinancialModel,
-    scenario_outputs: dict,
-    terminal_year: int,
-) -> tuple[list[Operation], list[BridgeWarning]]:
-    """Build Thesis Snapshot operations from schema/model-graph scenario outputs."""
-
-    snapshot_payload: dict[str, dict[str, Any]] = {}
-    for case in ("bull", "base", "bear"):
-        case_outputs = _read_field(scenario_outputs, case)
-        if case_outputs is None:
-            continue
-        case_payload: dict[str, Any] = {}
-        for field_name, _item_suffix in _SNAPSHOT_FIELDS:
-            case_payload[field_name] = _scenario_output_value_for_terminal_year(
-                _read_field(case_outputs, field_name),
-                int(terminal_year),
-            )
-        snapshot_payload[case] = case_payload
-
-    ops: list[Operation] = []
-    warnings: list[BridgeWarning] = []
-    _append_snapshot_ops(
-        model,
-        snapshot_payload,
-        terminal_year,
-        ops,
-        warnings,
-        normalize_percent_values=False,
-    )
-    return ops, warnings
-
-
 def build_bridge_operations(
     model: FinancialModel,
     assumptions_by_factor: list[dict],
-    scenarios_typed_output: dict,
     terminal_year: int,
     projection_periods: list[int],
     factor_anchor_hints: Optional[dict[str, str]] = None,
-    include_snapshot_ops: bool = True,
 ) -> tuple[list[Operation], list[AnchorResolution], list[BridgeWarning]]:
-    """Build model_modify operations for flex inputs and Thesis Snapshot cells."""
+    """Build in-memory workbook operations for scenario flex inputs."""
 
     ops: list[Operation] = []
     resolutions: list[AnchorResolution] = []
@@ -661,7 +605,9 @@ def build_bridge_operations(
                     kind="low_confidence_factor",
                     factor=factor_name,
                     field=None,
-                    detail=f"score={resolution.score:.4f}" if resolution.score is not None else "score=None",
+                    detail=f"score={resolution.score:.4f}"
+                    if resolution.score is not None
+                    else "score=None",
                     candidates=list(resolution.candidates),
                 )
             )
@@ -684,7 +630,8 @@ def build_bridge_operations(
             "bear": resolution.bear_id,
         }
         if _is_bps_shaped_factor_name(factor_name) and any(
-            target_item_id is not None and _is_pct_or_ratio_target(model, target_item_id)
+            target_item_id is not None
+            and _is_pct_or_ratio_target(model, target_item_id)
             for target_item_id in case_row_ids.values()
         ):
             warnings.append(
@@ -704,7 +651,11 @@ def build_bridge_operations(
             values_by_period = factor_values_by_period(factor_payload, case, periods)
             if not values_by_period:
                 scalar_value = factor_payload.get(case)
-                detail = "scalar_requires_period_curve" if _is_numeric(scalar_value) else "missing_or_non_numeric_curve"
+                detail = (
+                    "scalar_requires_period_curve"
+                    if _is_numeric(scalar_value)
+                    else "missing_or_non_numeric_curve"
+                )
                 warnings.append(
                     BridgeWarning(
                         kind="missing_factor_curve",
@@ -714,7 +665,9 @@ def build_bridge_operations(
                     )
                 )
                 continue
-            missing_periods = [period for period in periods if period not in values_by_period]
+            missing_periods = [
+                period for period in periods if period not in values_by_period
+            ]
             if missing_periods:
                 warnings.append(
                     BridgeWarning(
@@ -735,12 +688,14 @@ def build_bridge_operations(
                 for period, value in values_by_period.items()
             }
             normalized_case_values[case] = normalized_values
-            candidate_ops[case] = _bridge_set_value_operation(
+            candidate_ops[case] = _bridge_period_value_operation(
                 item_id=target_item_id,
                 values=normalized_values,
             )
         if {"bull", "bear"} <= set(normalized_case_values):
-            base_values = _base_values_by_period(model, factor_payload, resolution.base_id, periods)
+            base_values = _base_values_by_period(
+                model, factor_payload, resolution.base_id, periods
+            )
             ordering_issues = _scenario_ordering_issues(
                 bull_values=normalized_case_values["bull"],
                 base_values=base_values,
@@ -757,8 +712,7 @@ def build_bridge_operations(
                     )
                 )
                 continue
-        ops.extend(candidate_ops[case] for case in ("bull", "bear") if case in candidate_ops)
-
-    if include_snapshot_ops:
-        _append_snapshot_ops(model, scenarios_typed_output, terminal_year, ops, warnings)
+        ops.extend(
+            candidate_ops[case] for case in ("bull", "bear") if case in candidate_ops
+        )
     return ops, resolutions, warnings

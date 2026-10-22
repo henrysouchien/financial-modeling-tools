@@ -2,208 +2,72 @@
 
 from __future__ import annotations
 
-import logging
 import math
-import sys
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+import logging
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Mapping, TypeGuard, assert_never
 
-from .build_source_arbitration import SourceArbitrationMode
-from .driver_resolver import load_scale_correction_rules
-from .model_build_context import Driver, HistoricalSources, ModelBuildContext, SegmentConfig
+from .business_model import (
+    BusinessModel,
+    _iter_decomposition_nodes,
+    assumption_unit_matches,
+)
+from .driver_resolver import load_scale_correction_rules, resolve_driver_key
+from .forecast_control_profile import disclosed_mix_methods_by_projection_key
+from .model_build_context import MbcDriverSpec
+from industry_slice_core.thesis_shared_sources import ScalarValue
 from .models import (
     FinancialModel,
+    FormulaSpec,
+    FormulaType,
     ValueCell,
     ValueProvenance,
     ValueSeries,
 )
-from .source_routing import (
-    ConceptSourceRoute,
-    validate_route_eligibility as validate_route_eligibility_fallback,
-)
-from .valuation_schema_invariant import assert_valuation_template_schema
-
 if TYPE_CHECKING:
-    from .business_model import BusinessModel
     from .business_model_compiler import CompiledDriverRegistry
-    from .build import BuildResult, ValuationCompsPayload
-    from .segments import SegmentProfile
+    from .model_kind_capabilities import EquationOwnedControlTreatment
 
 
 _SCALE_CORRECTION_MIN_RATIO = 1_000.0
 _SCALE_CORRECTION_MIN_COMPARATOR_ABS = 1.0
 
 
-def _parent_attr(name: str, default: Any) -> Any:
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    if parent is None:
-        return default
-    return getattr(parent, name, default)
+def _all_driver_values_present(
+    values: tuple[ScalarValue | None, ...],
+) -> TypeGuard[tuple[ScalarValue, ...]]:
+    return all(value is not None for value in values)
 
 
-def _required_parent_attr(name: str) -> Any:
-    helper = _parent_attr(name, None)
-    if helper is None:
-        raise RuntimeError(f"schema.build helper '{name}' is unavailable")
-    return helper
-
-
-def _segment_profile_from_snapshot(
-    ticker: str,
-    segment_config: SegmentConfig,
-) -> SegmentProfile:
-    segment_info_type = _required_parent_attr("SegmentInfo")
-    segment_profile_type = _required_parent_attr("SegmentProfile")
-    observations_from_snapshot = _required_parent_attr(
-        "segment_revenue_observations_from_snapshot"
-    )
-
-    snapshot = segment_config.segment_profile_snapshot
-    sorted_snapshot_segments = sorted(
-        snapshot.segments,
-        key=lambda segment: segment.segment_index,
-    )
-    return segment_profile_type(
-        ticker=ticker,
-        segments=[
-            segment_info_type(
-                name=segment.name,
-                edgar_member=segment.edgar_member,
-                revenue_observations=observations_from_snapshot(segment),
-                volume_label=segment.volume_label,
-                price_label=segment.price_label,
-            )
-            for segment in sorted_snapshot_segments
-        ],
-        source=snapshot.source,
-        axis_used=snapshot.axis_used,
-        total_revenue_check=(
-            dict(snapshot.total_revenue_check)
-            if snapshot.total_revenue_check is not None
-            else None
-        ),
-    )
-
-
-def build_model_from_mbc(
-    mbc: ModelBuildContext,
-    *,
-    output_path: str | None = None,
-    formatter: Any | None = None,
-    edgar_fetcher: Callable | None = None,
-    edgar_financials_fetcher: Any | None = None,
-    fmp_data: dict | None = None,
-    business_model: "BusinessModel | None" = None,
-    valuation_comps: "ValuationCompsPayload | dict[str, Any] | None" = None,
-    validation_mode: bool = False,
-    source_arbitration_mode: SourceArbitrationMode = "off",
-    run_diagnostics: bool = False,
-    overrides_dir: Path | None = None,
-    enforce_model_quality_status_block: bool = False,
-) -> BuildResult:
-    """Build a model using ModelBuildContext as the authoritative scalar input source."""
-
-    build_model = _required_parent_attr("build_model")
-    is_default_historical_sources = _parent_attr(
-        "_is_default_historical_sources",
-        _is_default_historical_sources,
-    )
-    load_data_taxonomy = _required_parent_attr("load_data_taxonomy")
-    concept_source_route = _parent_attr("ConceptSourceRoute", ConceptSourceRoute)
-    validate_route_eligibility = _parent_attr(
-        "validate_route_eligibility",
-        validate_route_eligibility_fallback,
-    )
-
-    is_default_hs = (
-        "historical_sources" not in mbc.model_fields_set
-        or is_default_historical_sources(mbc.historical_sources)
-    )
-    historical_sources = None
-    if not is_default_hs:
-        taxonomy = load_data_taxonomy()
-        for override in mbc.historical_sources.overrides:
-            route = concept_source_route(
-                concept_id=override.concept_id,
-                primary=override.preferred,
-                fallback_order=list(override.fallback_order),
-                layer_decided="mbc_override",
-            )
-            validate_route_eligibility(
-                route,
-                taxonomy.get(override.concept_id),
-                is_explicit_override=True,
-            )
-        historical_sources = mbc.historical_sources
-
-    result = build_model(
-        ticker=mbc.company.ticker,
-        company_name=mbc.company.name,
-        fiscal_year_end=mbc.company.fiscal_year_end,
-        most_recent_fy=mbc.company.most_recent_fy,
-        output_path=output_path,
-        source=mbc.source,
-        fmp_data=fmp_data,
-        sector=mbc.sector,
-        n_historical=mbc.n_historical,
-        n_projection=mbc.n_projection,
-        formatter=formatter,
-        edgar_fetcher=edgar_fetcher,
-        segment_mapping=None,
-        edgar_financials_fetcher=edgar_financials_fetcher,
-        axis=None,
-        formula_first=mbc.formula_first,
-        mbc_segment_config=mbc.segment_config,
-        business_model=business_model,
-        mbc_drivers=mbc.drivers if business_model else None,
-        historical_sources=historical_sources,
-        validation_mode=validation_mode,
-        source_arbitration_mode=source_arbitration_mode,
-        run_diagnostics=run_diagnostics,
-        equity_risk_premium=mbc.valuation.inputs.equity_risk_premium,
-        equity_risk_premium_source=mbc.valuation.inputs.equity_risk_premium_source,
-        equity_risk_premium_rationale=mbc.valuation.inputs.equity_risk_premium_rationale,
-        equity_risk_premium_as_of=mbc.valuation.inputs.equity_risk_premium_as_of,
-        valuation_comps=valuation_comps,
-        overrides_dir=overrides_dir,
-        enforce_model_quality_status_block=enforce_model_quality_status_block,
-    )
-    result_model = getattr(result, "model", None)
-    if isinstance(result_model, FinancialModel):
-        assert_valuation_template_schema(
-            result_model,
-            origin="build_model_from_mbc",
-            workbook_path=output_path,
-            module_path=__file__,
-        )
-    return result
-
-
-def _is_default_historical_sources(historical_sources: HistoricalSources) -> bool:
-    # Persisted MBC JSON includes schema defaults; after reload Pydantic marks
-    # them as supplied even though callers intended the legacy source path.
-    return (
-        historical_sources.default_source == "fmp"
-        and not historical_sources.default_fallback_enabled
-        and not historical_sources.overrides
-    )
-
-
-def _apply_mbc_seeds(
+def _apply_model_spec_assumptions(
     model: FinancialModel,
-    mbc_drivers: dict[str, Driver],
-    compiled_registry: "CompiledDriverRegistry",
-) -> None:
-    """Write MBC driver values into ValueSeries before formula-first derivation."""
+    assumptions: dict[str, MbcDriverSpec],
+    compiled_registry: "CompiledDriverRegistry | None",
+    business_model: BusinessModel | None,
+    *,
+    equation_owned_controls: Mapping[
+        str, EquationOwnedControlTreatment
+    ] = MappingProxyType({}),
+) -> list[dict[str, Any]]:
+    """Write every MBC driver into canonical model state before rendering.
 
-    is_business_model_rate_driver_key = _parent_attr(
-        "_is_business_model_rate_driver_key",
-        _is_business_model_rate_driver_key,
-    )
-    value_cell_type = _parent_attr("ValueCell", ValueCell)
-    value_provenance = _parent_attr("ValueProvenance", ValueProvenance)
-    value_series_type = _parent_attr("ValueSeries", ValueSeries)
+    The authored business model supplies each compiled node's stored unit;
+    registry ``node_items`` binds that declaration to its resolved model row.
+
+    ``equation_owned_controls`` is the model kind's declared control-key to
+    lowering-treatment map (plan §3 row A10): the values of those controls are
+    owned by equations, so lowering keeps their typed assumption/driver chain
+    in the coverage manifest without replacing the computed row with a
+    constant input. A model kind that declares none lowers every control the
+    ordinary way.
+
+    A key on a disclosed-mix row (stock-based compensation) records the SBC
+    forecast method it carries in the row's lineage (``aggregate_scale`` or
+    ``per_line``), so the compile reads the method from the row and scales
+    only the ``aggregate_scale`` rows by the disclosed mix. The compiler
+    projection sends at most one key per row.
+    """
+
     from .scenario_bridge import normalize_value_for_model
 
     historical_periods = (
@@ -216,38 +80,121 @@ def _apply_mbc_seeds(
         or model.time_structure.projection_years
         or []
     )
-    historical_set = {int(period) for period in historical_periods}
 
-    for driver_key, driver in mbc_drivers.items():
+    coverage: list[dict[str, Any]] = []
+    mix_methods = disclosed_mix_methods_by_projection_key()
+    for driver_key, driver in assumptions.items():
         normalized_driver_key = str(driver_key or "").strip()
-        item_id = compiled_registry.driver_keys.get(normalized_driver_key)
-        if item_id is None:
-            continue
-        try:
-            item = model.get_item(item_id)
-        except KeyError:
-            continue
+        item_id = resolve_driver_key(
+            normalized_driver_key,
+            compiled_registry=compiled_registry,
+        )
+        item = model.get_item(item_id)
+
+        if item.unit is None:
+            raise ValueError(
+                "incomplete_model_spec: resolved assumption target "
+                f"{item_id!r} has no canonical unit"
+            )
+        node = (
+            next(
+                (
+                    node
+                    for segment in business_model.segments
+                    for node in _iter_decomposition_nodes(
+                        segment.revenue_model.decomposition
+                    )
+                    if compiled_registry.node_items.get(
+                        f"{segment.id}.{node.id}"
+                    ) == item_id
+                ),
+                None,
+            )
+            if compiled_registry is not None and business_model is not None
+            else None
+        )
+        # Only an originating BM node can authorize its stored legacy spelling.
+        unit_matches = (
+            assumption_unit_matches(driver.unit, node)
+            if node is not None
+            else driver.unit == item.unit
+        )
+        if not unit_matches:
+            raise ValueError(
+                "incomplete_model_spec: assumption unit conflict for "
+                f"{normalized_driver_key!r}: declared {driver.unit.value!r}, "
+                f"target {item_id!r} requires {item.unit.value!r}"
+            )
 
         if item.values is None:
-            item.values = value_series_type()
+            item.values = ValueSeries()
 
-        has_formula = item.projected is not None
-        is_bm_rate_row = is_business_model_rate_driver_key(
-            normalized_driver_key,
-            item_id,
-        )
         requested = [int(period) for period in (driver.periods or [])]
         if not requested:
-            if has_formula and not is_bm_rate_row:
-                historical_years = sorted(historical_set)
-                requested = [historical_years[-1]] if historical_years else []
+            requested = [int(period) for period in projection_periods]
+
+        # Declared equation-owned controls: their values are owned by
+        # equations, so keep the typed assumption/driver chain in the coverage
+        # manifest without replacing the computed row with a constant input.
+        # Integrity: an equation-owned control is never written as a constant
+        # input. This dispatch owns that — every EquationOwnedControlTreatment
+        # member has an arm and ``assert_never`` closes it, so a new member
+        # without one is a pyright error here and raises before any write,
+        # never falling through to the constant lowering below.
+        equation_owned_treatment = equation_owned_controls.get(
+            normalized_driver_key
+        )
+        if equation_owned_treatment is not None:
+            if equation_owned_treatment == "coverage_only":
+                pass
+            elif equation_owned_treatment == "carry_forward_basis":
+                raw_values = tuple(
+                    driver.period_values.get(period)
+                    if driver.period_values is not None
+                    else driver.value
+                    for period in requested
+                )
+                if not raw_values or not _all_driver_values_present(raw_values):
+                    raise ValueError(
+                        "equation-owned carry-forward assumption "
+                        f"{normalized_driver_key!r} requires every period"
+                    )
+                normalized_values = tuple(float(value) for value in raw_values)
+                if len(set(normalized_values)) != 1:
+                    raise ValueError(
+                        "equation-owned carry-forward assumption "
+                        f"{normalized_driver_key!r} requires a flat authored curve"
+                    )
+                basis_period = min(requested) - 1
+                item.values.values[basis_period] = ValueCell(
+                    period=basis_period,
+                    value=normalized_values[0],
+                    provenance=ValueProvenance.computed,
+                )
+                if item.overrides is None:
+                    item.overrides = {}
+                item.overrides[basis_period] = FormulaSpec(
+                    type=FormulaType.constant,
+                    params={"value": normalized_values[0]},
+                    note="filing_ratio_basis_for_equation_owned_control",
+                )
+                for period in requested:
+                    item.values.values.pop(period, None)
+                    item.overrides.pop(period, None)
             else:
-                requested = [int(period) for period in projection_periods]
+                assert_never(equation_owned_treatment)
+            coverage.append(
+                {
+                    "canonical_driver_key": normalized_driver_key,
+                    "resolved_item_id": item_id,
+                    "periods": sorted(set(requested)),
+                    "source_kind": "model_spec_assumption",
+                    "assumption_id": driver.assumption_id,
+                }
+            )
+            continue
 
-        if has_formula and not is_bm_rate_row:
-            requested = [period for period in requested if period in historical_set]
-
-        value_scale = getattr(driver, "value_scale", "model")
+        value_scale = driver.value_scale
         fields_set = (
             getattr(driver, "model_fields_set", None)
             or getattr(driver, "__fields_set__", set())
@@ -255,29 +202,64 @@ def _apply_mbc_seeds(
         )
         value_scale_field_present = "value_scale" in fields_set
         value_scale_explicit = value_scale == "display" and value_scale_field_present
-        normalized_value = normalize_value_for_model(
-            model,
-            item_id,
-            driver.value,
-            value_scale=value_scale,
-            value_scale_explicit=value_scale_explicit,
-            pct_decimal_passthrough=False,
-        )
-        normalized_value = _maybe_auto_correct_mbc_seed_scale(
-            model,
-            item,
-            driver_key=normalized_driver_key,
-            item_id=item_id,
-            value=normalized_value,
-            value_scale_field_present=value_scale_field_present,
-            historical_periods=historical_periods,
-        )
         for period in requested:
-            item.values.values[period] = value_cell_type(
+            raw_value = (
+                driver.period_values.get(period)
+                if driver.period_values is not None
+                else driver.value
+            )
+            if raw_value is None:
+                raise ValueError(
+                    f"driver {normalized_driver_key!r} has no value for FY{period}"
+                )
+            normalized_value = normalize_value_for_model(
+                model,
+                item_id,
+                float(raw_value),
+                value_scale=value_scale,
+                value_scale_explicit=value_scale_explicit,
+                pct_decimal_passthrough=False,
+            )
+            normalized_value = _maybe_auto_correct_mbc_seed_scale(
+                model,
+                item,
+                driver_key=normalized_driver_key,
+                item_id=item_id,
+                value=normalized_value,
+                value_scale_field_present=value_scale_field_present,
+                historical_periods=historical_periods,
+            )
+            item.values.values[period] = ValueCell(
                 period=period,
                 value=normalized_value,
-                provenance=value_provenance.input,
+                provenance=ValueProvenance.input,
             )
+            if item.overrides is None:
+                item.overrides = {}
+            params: dict[str, Any] = {"value": normalized_value}
+            mix_method = mix_methods.get(normalized_driver_key)
+            if mix_method is not None:
+                control_id, method = mix_method
+                params["lineage"] = {
+                    "forecast_method": method,
+                    "control": control_id,
+                }
+            item.overrides[period] = FormulaSpec(
+                type=FormulaType.constant,
+                params=params,
+                note="model_spec_assumption",
+            )
+        if requested:
+            coverage.append(
+                {
+                    "canonical_driver_key": normalized_driver_key,
+                    "resolved_item_id": item_id,
+                    "periods": sorted(set(requested)),
+                    "source_kind": "model_spec_assumption",
+                    "assumption_id": driver.assumption_id,
+                }
+            )
+    return coverage
 
 
 def _maybe_auto_correct_mbc_seed_scale(
@@ -345,17 +327,13 @@ def _latest_historical_value(
         item = model.get_item(item_id)
     except KeyError:
         return None
-    values = getattr(getattr(item, "values", None), "values", None)
-    if not isinstance(values, dict):
+    values = item.values
+    if values is None:
         return None
-    for period in sorted({int(period) for period in historical_periods}, reverse=True):
-        cell = values.get(period)
-        raw = getattr(cell, "value", cell)
-        try:
-            numeric = float(raw)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(numeric):
+    available_periods = set(historical_periods).intersection(values.values)
+    for period in sorted(available_periods, reverse=True):
+        numeric = values.values[period].value
+        if numeric is not None and math.isfinite(numeric):
             return numeric
     return None
 
@@ -364,18 +342,4 @@ def _unit_text(value: Any) -> str:
     return str(getattr(value, "value", value) or "").strip()
 
 
-def _is_business_model_rate_driver_key(driver_key: str, item_id: str) -> bool:
-    if not item_id.startswith("bm.") or "__" not in item_id:
-        return False
-    rate_key = item_id.rsplit("__", 1)[-1]
-    normalized = str(driver_key or "").strip()
-    return normalized.endswith(f".{rate_key}") or normalized.endswith(f"__{rate_key}")
-
-
-__all__ = [
-    "_apply_mbc_seeds",
-    "_is_business_model_rate_driver_key",
-    "_is_default_historical_sources",
-    "_segment_profile_from_snapshot",
-    "build_model_from_mbc",
-]
+__all__ = ["_apply_model_spec_assumptions"]

@@ -11,7 +11,6 @@ from .thesis import (
     QuantitativeFraming as QuantitativeFraming,
     ThesisFromIdea as ThesisFromIdea,
     ThesisLink as ThesisLink,
-    ThesisModelRef as ThesisModelRef,
     UnknownSection,
 )
 from .thesis_shared_slice import (
@@ -66,6 +65,9 @@ from .thesis_markdown_parse_support import (  # noqa: F401
     ParsedThesis,
     PriorNormalizedEntry,
     PriorThesisIndex,
+    VersionMarkerAbsent,
+    VersionMarkerPresent,
+    discriminate_version_marker,
     _ANCHOR_TO_HEADER,
     _CANONICAL_ANCHORS,
     _HEADER_TO_ANCHOR,
@@ -261,11 +263,15 @@ def _parse_thesis_metadata(body_lines: list[str], state: _ParseState) -> dict[st
 
 def _parse_consensus_view(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
     basis: str | None = None
+    claim_id: str | None = None
     narrative_lines: list[str] = []
     for line in body_lines:
         match = _LABELED_LINE_RE.match(line)
         if match is not None and _normalize_label_key(match.group("label")) == "basis":
             basis = match.group("value").strip() or None
+            continue
+        if match is not None and _normalize_label_key(match.group("label")) == "claim_id":
+            claim_id = match.group("value").strip() or None
             continue
         narrative_lines.append(line)
     text = "\n".join(narrative_lines).strip()
@@ -274,7 +280,7 @@ def _parse_consensus_view(body_lines: list[str], state: _ParseState) -> dict[str
         state.referenced_source_ids.add(source_id)
     if not narrative and not citations and basis is None:
         return {}
-    return {"consensus_view": ConsensusView.model_validate({"narrative": narrative, "basis": basis, "citations": citations})}
+    return {"consensus_view": ConsensusView.model_validate({"claim_id": claim_id, "narrative": narrative, "basis": basis, "citations": citations})}
 
 
 def _parse_materiality(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
@@ -333,7 +339,9 @@ def _parse_invalidation_triggers(body_lines: list[str], state: _ParseState) -> d
         payload = {
             "description": match.group("description").strip(),
             "metric": metadata.get("metric"),
+            "metric_label": metadata.get("metric_label"),
             "threshold": threshold,
+            "threshold_display": _parse_jsonish_value(metadata.get("threshold_display", "")),
             "threshold_direction": metadata.get("threshold_direction"),
             "direction": metadata.get("direction"),
             "source_refs": _parse_source_token_list(
@@ -380,7 +388,7 @@ def _parse_catalysts(body_lines: list[str], state: _ParseState) -> dict[str, Any
             continue
         labeled = _collect_labeled_lines(subsection_lines)
         refs = _parse_source_token_list(labeled.get("source", ""), state)
-        payload = {"description": labeled.get("description"), "expected_date": labeled.get("expected_date"), "severity": labeled.get("severity"), "source_ref": refs[0] if refs else None}
+        payload: dict[str, str | int | None] = {"description": labeled.get("description"), "expected_date": labeled.get("expected_date"), "severity": labeled.get("severity"), "source_ref": refs[0] if refs else None}
         payload["catalyst_id"] = _resolve_item_id("catalysts", title, payload, state)
         validated = _safe_validate(Catalyst, payload, state, "catalysts")
         if validated is not None:
@@ -395,7 +403,7 @@ def _parse_risks(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
             continue
         labeled = _collect_labeled_lines(subsection_lines)
         refs = _parse_source_token_list(labeled.get("source", ""), state)
-        payload = {"description": labeled.get("description"), "severity": labeled.get("severity"), "type": labeled.get("type"), "source_ref": refs[0] if refs else None}
+        payload: dict[str, str | int | None] = {"description": labeled.get("description"), "severity": labeled.get("severity"), "type": labeled.get("type"), "source_ref": refs[0] if refs else None}
         payload["risk_id"] = _resolve_item_id("risks", title, payload, state)
         validated = _safe_validate(Risk, payload, state, "risks")
         if validated is not None:
@@ -414,6 +422,8 @@ def _parse_valuation(body_lines: list[str], state: _ParseState) -> dict[str, Any
         "current_multiple": labeled.get("current_multiple"),
         "wacc": labeled.get("wacc"),
         "risk_free_rate": labeled.get("risk_free_rate"),
+        "sofr_rate": labeled.get("sofr_rate"),
+        "credit_spread": labeled.get("credit_spread"),
         "equity_risk_premium": labeled.get("equity_risk_premium"),
         "cost_of_equity": labeled.get("cost_of_equity"),
         "raw_beta": labeled.get("raw_beta"),
@@ -444,7 +454,35 @@ def _parse_assumptions(body_lines: list[str], state: _ParseState) -> dict[str, A
         if not title:
             continue
         labeled = _collect_labeled_lines(subsection_lines)
-        payload = {"driver": labeled.get("driver"), "value": _parse_jsonish_value(labeled.get("value", "")), "unit": labeled.get("unit"), "rationale": labeled.get("rationale"), "driver_category": labeled.get("driver_category"), "confidence": labeled.get("confidence"), "held_at_base": _parse_boolish(labeled.get("held_at_base")) if "held_at_base" in labeled else False, "source_refs": _parse_source_token_list(labeled.get("sources", ""), state)}
+        payload = {
+            "driver": labeled.get("driver"),
+            "driver_label": labeled.get("driver_label"),
+            "value": _parse_jsonish_value(labeled.get("value", "")),
+            "period_values": _parse_jsonish_value(
+                labeled.get("period_values", "")
+            ),
+            "unit": labeled.get("unit"),
+            "value_display": _parse_jsonish_value(labeled.get("value_display", "")),
+            "rationale": labeled.get("rationale"),
+            "driver_category": labeled.get("driver_category"),
+            "confidence": labeled.get("confidence"),
+            "held_at_base": _parse_boolish(labeled.get("held_at_base")) if "held_at_base" in labeled else False,
+            "source_refs": _parse_source_token_list(labeled.get("sources", ""), state),
+            "source_refs_by_period": _parse_jsonish_value(
+                labeled.get("sources_by_period", "")
+            ) or {},
+            "extension_basis_by_period": _parse_jsonish_value(
+                labeled.get("extension_basis_by_period", "")
+            ) or {},
+            "confidence_by_period": _parse_jsonish_value(
+                labeled.get("confidence_by_period", "")
+            ) or {},
+            "source_notes_by_period": _parse_jsonish_value(
+                labeled.get("source_notes_by_period", "")
+            ) or {},
+        }
+        if payload["period_values"] is not None:
+            payload["value"] = None
         payload["assumption_id"] = _resolve_item_id("assumptions", title, payload, state)
         validated = _safe_validate(Assumption, payload, state, "assumptions")
         if validated is not None:
@@ -528,16 +566,24 @@ def _parse_monitoring(body_lines: list[str], state: _ParseState) -> dict[str, An
         if not line.startswith("- "):
             continue
         content = line[2:].strip()
-        segments = _parse_key_value_segments(content)
+        string_segments = _parse_key_value_segments(content)
+        segments: dict[str, object] = {
+            key: value for key, value in string_segments.items()
+        }
         if not segments:
             segments = {"description": content}
         if "sources" in segments and "source_refs" not in segments:
-            segments["source_refs"] = _parse_source_token_list(segments["sources"], state)
+            segments["source_refs"] = _parse_source_token_list(
+                string_segments["sources"],
+                state,
+            )
             segments.pop("sources", None)
         if "source_refs" in segments and isinstance(segments["source_refs"], str):
             segments["source_refs"] = _parse_source_refs_cell(segments["source_refs"], state)
         if "threshold" in segments:
-            segments["threshold"] = _parse_jsonish_value(segments["threshold"])
+            segments["threshold"] = _parse_jsonish_value(
+                string_segments["threshold"]
+            )
         watch_item = _safe_validate(WatchItem, segments, state, "monitoring")
         if watch_item is not None:
             payload["watch_list"].append(watch_item)
@@ -549,19 +595,35 @@ def _parse_industry_analysis(body_lines: list[str], state: _ParseState) -> dict[
     sections = _split_subsections(body_lines)
     payload: dict[str, Any] = {}
     if "Landscape" in sections:
-        text = "\n".join(_trim_blank_edges(sections["Landscape"])).strip()
+        labeled = _collect_labeled_lines(sections["Landscape"])
+        narrative_lines = [
+            line for line in sections["Landscape"]
+            if not (
+                (match := _LABELED_LINE_RE.match(line)) is not None
+                and _normalize_label_key(match.group("label")) == "claim_id"
+            )
+        ]
+        text = "\n".join(_trim_blank_edges(narrative_lines)).strip()
         narrative, citations = _extract_source_tokens(text)
         for source_id in citations:
             state.referenced_source_ids.add(source_id)
-        payload["landscape"] = {"narrative": narrative, "citations": citations}
+        payload["landscape"] = {"claim_id": labeled.get("claim_id"), "narrative": narrative, "citations": citations}
     if "Comps Narrative" in sections:
-        text = "\n".join(_trim_blank_edges(sections["Comps Narrative"])).strip()
+        labeled = _collect_labeled_lines(sections["Comps Narrative"])
+        narrative_lines = [
+            line for line in sections["Comps Narrative"]
+            if not (
+                (match := _LABELED_LINE_RE.match(line)) is not None
+                and _normalize_label_key(match.group("label")) == "claim_id"
+            )
+        ]
+        text = "\n".join(_trim_blank_edges(narrative_lines)).strip()
         narrative, citations = _extract_source_tokens(text)
         for source_id in citations:
             state.referenced_source_ids.add(source_id)
         comps_narrative = _safe_validate(
             CompsNarrative,
-            {"narrative": narrative, "citations": citations},
+            {"claim_id": labeled.get("claim_id"), "narrative": narrative, "citations": citations},
             state,
             "industry_analysis.comps_narrative",
         )

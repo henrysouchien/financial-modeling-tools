@@ -5,110 +5,42 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date, datetime
 import logging
-import sys
 from typing import Any
 
-from .periods import build_period_metadata as _periods_build_period_metadata
-
-
-def _parent_attr(name: str, fallback):
-    parent_name = f"{__name__.rsplit('.', 1)[0]}.build"
-    parent = sys.modules.get(parent_name)
-    return getattr(parent, name, fallback) if parent is not None else fallback
+from .periods import build_period_metadata
+from .provider_port.contracts import ReportedPeriod
 
 
 def _refresh_period_metadata(
     model: Any,
     reported_period_ends: dict[int, str],
 ) -> None:
-    build_period_metadata = _parent_attr(
-        "build_period_metadata",
-        _periods_build_period_metadata,
-    )
     model.time_structure.period_metadata = build_period_metadata(
         model.time_structure,
         reported_period_ends=reported_period_ends,
     )
 
 
-def _collect_fmp_reported_period_ends_from_lookup(
-    fmp_lookup: dict[str, dict[int, dict[str, Any]]],
+def _collect_reported_period_ends(
+    reported_periods: Iterable[ReportedPeriod],
     historical_periods: Iterable[int],
 ) -> dict[int, str]:
+    """Collect provider-neutral filing period ends for the workbook axis."""
+
     reported: dict[int, str] = {}
     period_set = {int(period) for period in historical_periods}
-    record_reported_period_end = _parent_attr(
-        "_record_reported_period_end",
-        _record_reported_period_end,
-    )
-    for endpoint in sorted(fmp_lookup):
-        records_by_year = fmp_lookup.get(endpoint, {})
-        for period in sorted(period_set):
-            record = records_by_year.get(period)
-            if record is None:
-                continue
-            record_reported_period_end(
-                reported,
-                period,
-                record.get("date"),
-                source=f"fmp:{endpoint}",
-            )
+    for period in reported_periods:
+        if int(period.fiscal_year) not in period_set:
+            continue
+        _record_reported_period_end(
+            reported,
+            int(period.fiscal_year),
+            period.period_end,
+            source=f"{period.source_provider or 'provider'}:statement_facts",
+        )
     return reported
 
 
-def _collect_edgar_reported_period_ends(
-    results: Iterable[Any],
-    historical_periods: Iterable[int],
-) -> dict[int, str]:
-    reported: dict[int, str] = {}
-    period_set = {int(period) for period in historical_periods}
-    record_reported_period_end = _parent_attr(
-        "_record_reported_period_end",
-        _record_reported_period_end,
-    )
-    for result in results:
-        for period, reported_period_end in result.reported_period_ends_by_year.items():
-            if int(period) not in period_set or int(period) not in result.values_dict:
-                continue
-            record_reported_period_end(
-                reported,
-                int(period),
-                reported_period_end,
-                source="edgar",
-            )
-    return reported
-
-
-def _collect_routed_reported_period_ends(
-    fmp_buffer: dict[str, Any],
-    edgar_buffer: dict[str, Any],
-    source_by_concept_year: dict[str, dict[int, str | None]],
-    historical_periods: Iterable[int],
-) -> dict[int, str]:
-    reported: dict[int, str] = {}
-    period_set = {int(period) for period in historical_periods}
-    record_reported_period_end = _parent_attr(
-        "_record_reported_period_end",
-        _record_reported_period_end,
-    )
-    for concept_id, source_by_year in source_by_concept_year.items():
-        for period, source in source_by_year.items():
-            period = int(period)
-            if period not in period_set or source is None:
-                continue
-            if source == "fmp":
-                result = fmp_buffer.get(concept_id)
-            else:
-                result = edgar_buffer.get(concept_id)
-            if result is None:
-                continue
-            record_reported_period_end(
-                reported,
-                period,
-                result.reported_period_ends_by_year.get(period),
-                source=f"{source}:{concept_id}",
-            )
-    return reported
 
 
 def _record_reported_period_end(
@@ -118,11 +50,7 @@ def _record_reported_period_end(
     *,
     source: str,
 ) -> None:
-    reported_period_end_value = _parent_attr(
-        "_reported_period_end_value",
-        _reported_period_end_value,
-    )
-    reported_period_end = reported_period_end_value(value)
+    reported_period_end = _reported_period_end_value(value)
     if reported_period_end is None:
         return
     existing = reported.get(int(period))
@@ -157,12 +85,8 @@ def _reported_period_end_value(value: object) -> str | None:
 
 
 def _entry_reported_period_end(entry: dict) -> str | None:
-    reported_period_end_value = _parent_attr(
-        "_reported_period_end_value",
-        _reported_period_end_value,
-    )
     for key in ("period_end", "calendar_end", "end_current"):
-        reported_period_end = reported_period_end_value(entry.get(key))
+        reported_period_end = _reported_period_end_value(entry.get(key))
         if reported_period_end is not None:
             return reported_period_end
     return None

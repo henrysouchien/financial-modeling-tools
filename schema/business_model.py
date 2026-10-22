@@ -1,33 +1,37 @@
 from __future__ import annotations
 
 import re
-from typing import Annotated, Literal
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Annotated, Any, Literal
 
-from pydantic import ConfigDict, Discriminator, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    ConfigDict,
+    Discriminator,
+    Field,
+    WithJsonSchema,
+    field_validator,
+    PrivateAttr,
+    model_validator,
+)
 
-from .business_model_driver_plan import (
-    _TEMPLATE_DRIVER_KEY_ALIASES,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _business_model_id,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _consolidated_driver_assumption_entries,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _driver_assumption_aliases,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _driver_assumption_entry,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _existing_driver_key_resolves_to_input,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _iter_driver_nodes,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _normal_existing_driver_key,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _plan_node_id,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _resolved_existing_driver_alias,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _template_driver_aliases,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _template_driver_assumption_entry,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _template_input_item_ids,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _unique_nonempty,
-    derive_driver_assumption_plan,
-    driver_assumption_key,
+from .business_model_driver_plan import derive_driver_assumption_plan, driver_assumption_key
+from .business_model_sufficiency import (
+    BusinessModelCapabilityProfile,
+    BusinessModelSemanticSuccessorAction,
 )
-from .business_model_driver_specs import (
-    _capital_source_driver_specs,  # noqa: F401 - compatibility alias for schema.business_model imports
-    _working_capital_driver_specs,  # noqa: F401 - compatibility alias for schema.business_model imports
+from .models import ModelScale
+from .required_role_catalog import (
+    balance_declaration_refusal,
+    balance_roles,
+    load_required_role_catalog,
 )
-from .models import ModelScale, Unit
+from industry_slice_core.industry_types import Unit
+from .stable_control_identity import BindingId, ControlId, DriverId
+from .scale_conversion import SCALE_EXPONENT
 from .thesis_shared_slice import (
     _ContractModel,
     _normalize_ticker,
@@ -38,6 +42,196 @@ Factor = Literal["volume", "price", "unit_economics", "cost_structure", "reinves
 NodeBehavior = Literal["roughly_flat", "growing", "declining", "cyclical", "step_function"]
 KpiFrequency = Literal["quarterly", "annual", "ad_hoc"]
 ChildrenRole = Literal["decomposition", "tracking"]
+ObservationBasis = Literal["period_flow", "period_end", "period_average"]
+Dimension = Literal["money", "entity", "money_per_entity", "share", "money_per_share", "dimensionless", "time", "money_per_time"]
+UNIT_DIMENSION: Mapping[Unit, Dimension] = {
+    Unit.dollars: "money",
+    Unit.item_count: "entity",
+    Unit.per_count: "money_per_entity",
+    Unit.per_day: "money_per_time",
+    Unit.share_count: "share",
+    Unit.per_share: "money_per_share",
+    Unit.percentage: "dimensionless",
+    Unit.ratio: "dimensionless",
+    Unit.multiple: "dimensionless",
+    Unit.days: "time",
+}
+_DIMENSION_UNIT = {dimension: unit for unit, dimension in UNIT_DIMENSION.items()}
+_DIMENSION_UNIT["dimensionless"] = Unit.ratio
+
+
+def product_dimension(operands: Sequence[Dimension]) -> Dimension | None:
+    """Return the expressible dimension of a product, ignoring scalar factors."""
+    dimensions: list[Dimension] = [
+        dimension for dimension in operands if dimension != "dimensionless"
+    ]
+    if not dimensions:
+        return "dimensionless"
+    if len(dimensions) == 1:
+        return dimensions[0]
+    if len(dimensions) == 2 and set(dimensions) in (
+        {"entity", "money_per_entity"},
+        {"share", "money_per_share"},
+        {"time", "money_per_time"},
+    ):
+        return "money"
+    return None
+
+
+def quotient_dimension(numerator: Dimension, denominator: Dimension) -> Dimension | None:
+    """Return an expressible quotient dimension without erasing intensity units."""
+    if denominator == "dimensionless":
+        return numerator
+    if numerator == denominator:
+        return "dimensionless"
+    if numerator == "money":
+        if denominator == "entity":
+            return "money_per_entity"
+        if denominator == "time":
+            return "money_per_time"
+        if denominator == "share":
+            return "money_per_share"
+    return None
+
+
+def unit_for_dimension(dimension: Dimension) -> Unit:
+    """Return the canonical model unit; scalar calculations use ratio, not percent."""
+    return _DIMENSION_UNIT[dimension]
+
+
+@dataclass(frozen=True)
+class NodeMeasure:
+    unit: Unit
+    model_scale: ModelScale
+    basis: Literal["flow", "balance", "average"] | None = None
+
+
+def sum_operand_matches_output(operand: NodeMeasure, output: NodeMeasure) -> bool:
+    """Unscaled sums and remainders require the node's exact unit and scale.
+
+    Observation basis is independent of this numeric compatibility rule.
+    """
+    return (operand.unit, operand.model_scale) == (output.unit, output.model_scale)
+
+
+#: Stored artifacts that predate the unit-relationship cutover named a per-count
+#: monetization level by this `kpi_source` and declared it in dollars. The stored
+#: BusinessModel decode marks such a node `DriverNode.legacy_per_count`; its stored
+#: bytes, and so the revision's content digest, are never rewritten or refused. A
+#: new judgment is validated at its own door before this decode.
+LEGACY_PER_COUNT_KPI_SOURCES = frozenset({"revenue_per_client"})
+
+
+def node_measure(node: DriverNode) -> NodeMeasure:
+    """Read the measure without rewriting legacy declarations.
+
+    Aggregate dollars default to millions; external price-only dollars and all
+    other units default to units. A node the stored decode marked
+    `legacy_per_count` and legacy unit-scale dollar prices read as per-count; a
+    per-count series is declared by its own `unit`. Observation basis is never
+    inferred.
+    """
+    scale = node.model_scale
+    if scale is None:
+        price_like = (
+            node.driver is not None
+            and node.driver.type == "external"
+            and set(node.factors) == {"price"}
+        )
+        scale = "millions" if node.unit == Unit.dollars and not price_like else "units"
+    basis: Literal["flow", "balance", "average"] | None = None
+    if node.observation_basis == "period_flow":
+        basis = "flow"
+    elif node.observation_basis == "period_end":
+        basis = "balance"
+    elif node.observation_basis == "period_average":
+        basis = "average"
+    if node.legacy_per_count:
+        return NodeMeasure(Unit.per_count, "units", basis)
+    if node.unit == Unit.dollars and set(node.factors) == {"price"} and scale == "units":
+        # This legacy interpretation is per-count only: a days counterpart does
+        # not imply per-day dollars; that intensity must remain explicit.
+        return NodeMeasure(Unit.per_count, "units", basis)
+    return NodeMeasure(node.unit, scale, basis)
+
+
+def assumption_unit_matches(declared: Unit, node: DriverNode) -> bool:
+    """Accept the originating node's stored or resolved unit declaration."""
+    return declared == node_measure(node).unit or declared == node.unit
+
+
+def product_scale_exponent(
+    operand_measures: Sequence[NodeMeasure], output: NodeMeasure
+) -> int:
+    return (
+        sum(SCALE_EXPONENT[measure.model_scale] for measure in operand_measures)
+        - SCALE_EXPONENT[output.model_scale]
+    )
+
+
+
+RevenueScope = Literal["own_revenue_stream_only", "consolidated_revenue"]
+#: The balances a business-model node may be: every catalog balance a driver
+#: may declare (`required_role_catalog.balance_roles`, derived from the
+#: catalog, never listed here). A node declaring ``balance_of`` *is* that
+#: balance, observed at its ``observation_basis`` (the period-end balance, or
+#: its period average), and the company-grounded schedule moves the reported
+#: balance with the node.
+def _declarable_balance(value: str) -> str:
+    refusal = balance_declaration_refusal(value)
+    if refusal is not None:
+        raise ValueError(
+            f"{refusal.message}; a driver may be one of {sorted(balance_roles())}"
+        )
+    return value
+
+
+def _stored_balance(value: str) -> str:
+    if load_required_role_catalog().legacy_balance_roles.get(value, value) not in balance_roles():
+        raise ValueError(
+            f"{value!r} is neither a catalog balance nor a legacy spelling of one"
+        )
+    return value
+
+
+BalanceRole = Annotated[
+    str,
+    AfterValidator(_declarable_balance),
+    WithJsonSchema({"type": "string", "enum": sorted(balance_roles())}),
+]
+#: A stored revision's balance token: a catalog balance, or the legacy spelling
+#: the catalog's ``legacy_roles`` declares for one. Never authored.
+StoredBalanceRole = Annotated[
+    str,
+    AfterValidator(_stored_balance),
+    WithJsonSchema({
+        "type": "string",
+        "enum": sorted(
+            (
+                *balance_roles(),
+                *(
+                    token
+                    for token, role in load_required_role_catalog().legacy_balance_roles.items()
+                    if role in balance_roles()
+                ),
+            )
+        ),
+    }),
+]
+
+
+def declared_balance_role(node: Any) -> str | None:
+    """The balance a driver node is: its ``balance_of``, else the balance its ``kpi_source`` names.
+
+    A node whose ``kpi_source`` is the balance role itself observes that balance, so
+    both spellings declare it and every reader of the declaration resolves the same one.
+    """
+    declared = getattr(node, "balance_of", None)
+    if declared is not None:
+        return load_required_role_catalog().legacy_balance_roles.get(declared, declared)
+    source = getattr(node, "kpi_source", None)
+    return source if source in balance_roles() else None
+
 
 RevenueModelType = Literal["volume_x_price", "market_based", "product_based", "blended"]
 
@@ -67,9 +261,11 @@ RecommendedDepth = Literal["quick_and_dirty", "advanced"]
 
 _NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _AXIS_QNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*$")
-# Revenue KPI-source local-names that seed a segment's revenue from a single EDGAR
-# concept — mirrors build_mbc_seeds._SEGMENT_REVENUE_KPI_SOURCE_TAGS. Two absorb-segment
-# nodes sharing one of these + no edgar_member both resolve the consolidated total → 2x.
+# Revenue KPI-source local-names that name a single consolidated EDGAR revenue
+# concept. Two absorb-segment nodes sharing one of these + no edgar_member would
+# both denote the consolidated total → 2x; the schema partition guard below
+# rejects that shape at authoring time (the retired inline-value seeder's
+# mirror set died with the reverse mint, Stage A step A-5).
 _SEGMENT_REVENUE_KPI_SOURCE_TAGS = frozenset({
     "revenuefromcontractwithcustomerexcludingassessedtax",
     "revenues",
@@ -77,6 +273,17 @@ _SEGMENT_REVENUE_KPI_SOURCE_TAGS = frozenset({
     "salesrevenuenet",
 })
 _RESERVED_NODE_IDS = frozenset({"self"})
+
+
+#: A statement role id (`statement.<statement>.<line>`): the one spelling of a
+#: statement-line operand. `NodeRef.node_id` names a sibling node of the same
+#: segment or, for a calculation's operand, a pinned statement role.
+STATEMENT_ROLE_PATTERN = r"^statement\.[a-z]+\.[a-z0-9_]+$"
+_STATEMENT_ROLE_RE = re.compile(STATEMENT_ROLE_PATTERN)
+
+
+def is_statement_role(value: object) -> bool:
+    return isinstance(value, str) and _STATEMENT_ROLE_RE.fullmatch(value) is not None
 
 
 class NodeRef(_ContractModel):
@@ -92,6 +299,10 @@ class NodeRef(_ContractModel):
     node_id: str = Field(min_length=1)
     t: int = 0
     sign: int = 1
+
+    @property
+    def is_statement_role(self) -> bool:
+        return is_statement_role(self.node_id)
 
     @field_validator("sign", mode="before")
     @classmethod
@@ -180,6 +391,11 @@ class CompileTarget(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_existing_row(self) -> CompileTarget:
+        if self.target_type == "commentary":
+            # Commentary has no workbook destination. Canonicalize the field
+            # so an omitted/null sheet survives markdown render/parse exactly
+            # instead of being reintroduced as the Assumptions default.
+            self.sheet = None
         if self.target_type == "existing_row":
             if not self.existing_driver_key:
                 raise ValueError("existing_driver_key required when target_type is 'existing_row'")
@@ -192,22 +408,167 @@ def _extract_node_refs(expr: DriverExpr) -> set[str]:
     """Extract all node_id references from a DriverExpr's params."""
 
     refs: set[str] = set()
-    params = expr.params
-    if hasattr(params, "operands"):
-        for ref in params.operands:
-            refs.add(ref.node_id)
-    if hasattr(params, "base"):
-        refs.add(params.base.node_id)
-    if hasattr(params, "numerator"):
-        refs.add(params.numerator.node_id)
-        refs.add(params.denominator.node_id)
-    if hasattr(params, "beginning"):
-        refs.add(params.beginning.node_id)
-        for ref in params.additions:
-            refs.add(ref.node_id)
-        for ref in params.subtractions:
-            refs.add(ref.node_id)
+    if expr.type == "product" or expr.type == "sum":
+        refs.update(ref.node_id for ref in expr.params.operands)
+    elif expr.type == "growth":
+        refs.add(expr.params.base.node_id)
+    elif expr.type == "derived":
+        refs.add(expr.params.numerator.node_id)
+        refs.add(expr.params.denominator.node_id)
+    elif expr.type == "roll_forward":
+        refs.add(expr.params.beginning.node_id)
+        refs.update(ref.node_id for ref in expr.params.additions)
+        refs.update(ref.node_id for ref in expr.params.subtractions)
     return refs
+
+
+def expr_reads_statement_role(expr: DriverExpr | None) -> bool:
+    """Whether a calculation has a statement role among its operands.
+
+    Such a node's history is the calculation over the pinned statement series
+    (`schema.build_bm_node_history`); it is no row-to-row formula, so the
+    compiler materializes it as an input row, like an external one.
+    """
+
+    return expr is not None and any(is_statement_role(ref) for ref in _extract_node_refs(expr))
+
+
+def expr_is_input_row(expr: DriverExpr | None, target_type: str) -> bool:
+    """Whether a node's forecast is an authored control on an input row.
+
+    ``external`` is one by construction. A ratio compiled to ``assumption_row``
+    is another: its history is the calculation (`schema.build_bm_node_history`)
+    and its forecast is authored, as for a calculation over a statement role,
+    so a price that is itself a factor of its own revenue stays a driver. The
+    compiler, the forecast control contracts and the forecast authority all
+    read this one rule.
+    """
+
+    if expr is None:
+        return False
+    return (
+        expr.type == "external"
+        or expr_reads_statement_role(expr)
+        or (expr.type == "derived" and target_type == "assumption_row")
+    )
+
+
+def _decimal_from_json(value: object) -> object:
+    """A JSON number is a Decimal by its printed digits, not its binary float."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+    return value
+
+
+_OBSERVATION_PERIOD_RE = re.compile(r"^FY[0-9]{4}$")
+
+
+class KpiSourceCitation(_ContractModel):
+    """One captured ``filing_text`` KPI row: ``{capture_id, row, span}`` or ``{accession, row, span}``."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", str_strip_whitespace=True, populate_by_name=True
+    )
+
+    kind: Literal["kpi"] = "kpi"
+    capture_id: str | None = Field(default=None, min_length=1)
+    accession: str | None = Field(default=None, min_length=1)
+    row: int = Field(ge=0)
+    span: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _names_its_capture(self) -> "KpiSourceCitation":
+        if self.capture_id is None and self.accession is None:
+            raise ValueError("a KPI citation names a capture_id or an accession")
+        return self
+
+    def source_key(self) -> dict[str, Any]:
+        """The key ``research.corpus_state.resolve_source`` resolves."""
+        if self.capture_id is not None:
+            return {"kind": "kpi", "capture_id": self.capture_id, "row": self.row, "span": self.span}
+        return {"accession": self.accession, "row": self.row, "span": self.span}
+
+
+class OccurrenceSourceCitation(_ContractModel):
+    """The arc a statement row cites: ``{accession, preferred_label, tree_depth, cell_locator}``."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", str_strip_whitespace=True, populate_by_name=True
+    )
+
+    accession: str = Field(min_length=1)
+    preferred_label: str = Field(min_length=1)
+    tree_depth: int = Field(ge=0)
+    cell_locator: str = Field(min_length=1)
+
+    def source_key(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+class CaptureSourceCitation(_ContractModel):
+    """A located span of a captured file: ``{capture_id, path?, start?, end?}``."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", str_strip_whitespace=True, populate_by_name=True
+    )
+
+    capture_id: str = Field(min_length=1)
+    path: str | None = Field(default=None, min_length=1)
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
+
+    def source_key(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)
+
+
+ObservationCitation = KpiSourceCitation | OccurrenceSourceCitation | CaptureSourceCitation
+
+
+class CitedObservation(_ContractModel):
+    """One value the author read for a driver node in one historical fiscal year.
+
+    The citation names where it was read; ``business_model_observation_claim_key``
+    is the claim key the stage binds its durable evidence to.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", str_strip_whitespace=True, populate_by_name=True
+    )
+
+    period_id: str
+    value: Annotated[Decimal, BeforeValidator(_decimal_from_json)]
+    unit: Unit
+    model_scale: ModelScale
+    citation: ObservationCitation
+    confidence: Literal["high", "medium", "low"] = "high"
+    note: str | None = Field(default=None, min_length=1)
+
+    @field_validator("period_id")
+    @classmethod
+    def _fiscal_year(cls, value: str) -> str:
+        if _OBSERVATION_PERIOD_RE.fullmatch(value) is None:
+            raise ValueError("observation period_id is an actual fiscal year such as 'FY2024'")
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def _finite(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("observation value must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def _scale_matches_unit(self) -> "CitedObservation":
+        if self.unit is not Unit.dollars and self.model_scale != "units":
+            raise ValueError("non-dollar observations use units scale")
+        return self
+
+
+def business_model_observation_claim_key(node_key: str, period_id: str) -> str:
+    """The claim key one node's observation of one period is bound to evidence under."""
+    return f"observation.{node_key}.{period_id}"
 
 
 class DriverNode(_ContractModel):
@@ -224,11 +585,24 @@ class DriverNode(_ContractModel):
     edgar_member: str | None = None
     edgar_axis: str | None = None
     behavior: NodeBehavior | None = None
+    observation_basis: ObservationBasis | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    revenue_scope: RevenueScope | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    balance_of: StoredBalanceRole | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     management_target: str | None = None
     note: str | None = None
     children: list[DriverNode] | None = None
     children_role: ChildrenRole | None = None
     children_formula: DriverExpr | None = None
+    historical_observations: tuple[CitedObservation, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    _legacy_per_count: bool = PrivateAttr(default=False)
 
     @field_validator("id", mode="before")
     @classmethod
@@ -241,6 +615,29 @@ class DriverNode(_ContractModel):
         if normalized in _RESERVED_NODE_IDS:
             raise ValueError(f"id {normalized!r} is reserved (used as pseudo-ref in DriverExpr)")
         return normalized
+
+    @model_validator(mode="after")
+    def _decode_legacy_per_count(self) -> DriverNode:
+        """The stored-shape decode: `LEGACY_PER_COUNT_KPI_SOURCES` names a per-count level.
+
+        The legacy reading is the shape a pre-cutover artifact needs when its own data
+        is per-count (or silent); a node whose recorded observations are not per-count
+        units declares what it observes, and that declaration stands.
+        """
+        self._legacy_per_count = (
+            self.unit == Unit.dollars
+            and self.kpi_source in LEGACY_PER_COUNT_KPI_SOURCES
+            and all(
+                (row.unit, row.model_scale) == (Unit.per_count, "units")
+                for row in self.historical_observations
+            )
+        )
+        return self
+
+    @property
+    def legacy_per_count(self) -> bool:
+        """True when the stored declaration (dollars, a legacy per-count `kpi_source`) means per-count."""
+        return self._legacy_per_count
 
     @model_validator(mode="after")
     def _validate_children_consistency(self) -> DriverNode:
@@ -278,6 +675,44 @@ class DriverNode(_ContractModel):
             if self.children_formula is not None:
                 raise ValueError("children_formula must be None when no children")
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_observations(self) -> DriverNode:
+        if not self.historical_observations:
+            return self
+        periods = [row.period_id for row in self.historical_observations]
+        if len(periods) != len(set(periods)):
+            raise ValueError(f"node {self.id!r} observes a period more than once")
+        measure = node_measure(self)
+        for row in self.historical_observations:
+            if (row.unit, row.model_scale) != (measure.unit, measure.model_scale):
+                raise ValueError(
+                    f"node {self.id!r} is ({measure.unit.value}, {measure.model_scale}); its "
+                    f"{row.period_id} observation is ({row.unit.value}, {row.model_scale})"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_balance_declaration(self) -> DriverNode:
+        balance_role = declared_balance_role(self)
+        if balance_role is None:
+            return self
+        if self.observation_basis not in ("period_end", "period_average"):
+            raise ValueError(
+                f"node {self.id!r} declares balance_of {balance_role!r} and must "
+                "observe that balance at period_end or period_average"
+            )
+        if self.unit is not Unit.dollars:
+            raise ValueError(
+                f"node {self.id!r} declares balance_of {balance_role!r} and must "
+                "be denominated in dollars"
+            )
+        if self.compile_to.target_type not in ("assumption_row", "derived_row"):
+            raise ValueError(
+                f"node {self.id!r} declares balance_of {balance_role!r} and must "
+                "compile to its own assumption_row or derived_row"
+            )
         return self
 
 
@@ -347,6 +782,20 @@ class Segment(_ContractModel):
 
     @model_validator(mode="after")
     def _validate_axis_pair(self) -> "Segment":
+        # Asymmetry, stated deliberately: axis-without-member is rejected here,
+        # but member-without-axis is TOLERATED at segment level (the node branch
+        # below requires both-or-neither). The tolerance was a migration
+        # concession for legacy bridge output (`3312ee236`); its beneficiary,
+        # the kpi_bridge family, was deleted 2026-08-19 (`eba8f5c1d`) and no
+        # Python reference to it remains. Until the tolerance is retired
+        # -- breaking: it invalidates persisted BMR artifacts, the canonical
+        # sample business models, and the FMS write-stack goldens, all of which
+        # validate today -- build-time enforcement of the both-or-neither rule
+        # lives downstream in
+        # `schema/build_bm_node_history.py::_validate_axis_binding`. Do not
+        # delete that guard on the assumption this validator has already ruled;
+        # it has not, and nothing between here and the requirement plane
+        # re-checks the pair.
         if self.edgar_axis is not None and self.edgar_member is None:
             raise ValueError(
                 "edgar_axis requires edgar_member (XBRL axis without member is undefined)"
@@ -579,6 +1028,24 @@ class BusinessModelMetadata(_ContractModel):
     source_materials: list[str] = Field(default_factory=list)
 
 
+class DeclinedSeries(_ContractModel):
+    """A pinned series the model deliberately does not carry.
+
+    The build requires every pinned operating identity series and every
+    registered formula over pinned inputs to be claimed by a node's
+    ``kpi_source`` or declined here with the reason. One neither claims nor
+    declines is the ``business_model_node_unresolved`` warning; each row here
+    is projected into ``ModelSpec.declinations`` as the Declination that
+    clears it, stamped with the revision's author and time
+    (`schema/build_bm_node_history.py` `declined_series_rows`,
+    `api/research/model_spec_assembly.py`). A decline is a declared judgment
+    downstream reads, never a refusal (Henry 2026-10-08 20:15).
+    """
+
+    series: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 def _collect_node_ids(nodes: list[DriverNode], seen: set[str], segment_id: str) -> None:
     """Recursively validate node ID uniqueness within a segment tree."""
 
@@ -597,7 +1064,14 @@ class BusinessModel(_ContractModel):
     consolidated: Consolidated | None = None
     profitability_targets: ProfitabilityTargets | None = None
     recommended_depth: RecommendedDepth | None = None
+    annual_capability_profile: BusinessModelCapabilityProfile | None = None
+    semantic_successor_actions: tuple[
+        BusinessModelSemanticSuccessorAction, ...
+    ] = ()
     decisions_log: list[BmDecisionsLogEntry] = Field(default_factory=list)
+    declined_series: tuple[DeclinedSeries, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     metadata: BusinessModelMetadata = Field(default_factory=BusinessModelMetadata)
 
     @model_validator(mode="after")
@@ -611,10 +1085,30 @@ class BusinessModel(_ContractModel):
         for segment in self.segments:
             _collect_node_ids(segment.revenue_model.decomposition, set(), segment.id)
 
+        declared_balances: dict[str, str] = {}
+        for segment in self.segments:
+            for node in _iter_decomposition_nodes(segment.revenue_model.decomposition):
+                balance_role = declared_balance_role(node)
+                if balance_role is None:
+                    continue
+                declarer = f"{segment.id}.{node.id}"
+                if balance_role in declared_balances:
+                    raise ValueError(
+                        f"balance_of {balance_role!r} is declared by both "
+                        f"{declared_balances[balance_role]!r} and {declarer!r}; "
+                        "one node is that balance"
+                    )
+                declared_balances[balance_role] = declarer
+
         return self
 
 
 class DriverAssumptionPlanEntry(_ContractModel):
+    driver_id: DriverId
+    control_id: ControlId
+    binding_id: BindingId
+    template_item_id: str = Field(min_length=1)
+    control_unit: Unit
     driver_key: str = Field(min_length=1)
     business_model_id: str = Field(min_length=1)
     revision: str = Field(min_length=1)
@@ -632,7 +1126,11 @@ class DriverAssumptionPlanEntry(_ContractModel):
 
     @model_validator(mode="after")
     def _normalize_aliases(self) -> "DriverAssumptionPlanEntry":
-        self.aliases = _unique_nonempty([*self.aliases, self.existing_driver_key])
+        normalized = (
+            str(value or "").strip()
+            for value in (*self.aliases, self.existing_driver_key)
+        )
+        self.aliases = list(dict.fromkeys(value for value in normalized if value))
         return self
 
 
@@ -652,6 +1150,12 @@ class DriverAssumptionPlan(_ContractModel):
             if entry.driver_key in entries_by_key:
                 raise ValueError(f"duplicate driver_key: {entry.driver_key!r}")
             entries_by_key[entry.driver_key] = entry
+        for field_name in ("driver_id", "control_id", "binding_id"):
+            values = [getattr(entry, field_name) for entry in self.entries]
+            if len(values) != len(set(values)):
+                raise ValueError(
+                    f"DriverAssumptionPlan entries require unique {field_name}"
+                )
 
         for raw_alias, raw_target in self.alias_map.items():
             alias = str(raw_alias or "").strip()
@@ -679,6 +1183,17 @@ class DriverAssumptionPlan(_ContractModel):
     @property
     def driver_keys(self) -> list[str]:
         return [entry.driver_key for entry in self.entries]
+
+    @property
+    def driver_ids(self) -> list[DriverId]:
+        return [entry.driver_id for entry in self.entries]
+
+    def entry_for_driver_id(self, driver_id: str) -> DriverAssumptionPlanEntry | None:
+        normalized = str(driver_id or "").strip()
+        for entry in self.entries:
+            if entry.driver_id == normalized:
+                return entry
+        return None
 
     def entry_for_driver_key(self, driver_key: str) -> DriverAssumptionPlanEntry | None:
         normalized = str(driver_key or "").strip()
@@ -712,6 +1227,9 @@ __all__ = [
     "AbsorbedClaim",
     "BmCompanyInfo",
     "BmDecisionsLogEntry",
+    "BalanceRole",
+    "StoredBalanceRole",
+    "declared_balance_role",
     "BusinessModel",
     "BusinessModelMetadata",
     "Capex",
@@ -729,7 +1247,9 @@ __all__ = [
     "DebtLevel",
     "DerivedExpr",
     "DerivedParams",
+    "DeclinedSeries",
     "DilutionPattern",
+    "Dimension",
     "DriverExpr",
     "DriverExprType",
     "DriverNode",
@@ -747,6 +1267,7 @@ __all__ = [
     "Intensity",
     "KpiFrequency",
     "NodeBehavior",
+    "NodeMeasure",
     "NodeRef",
     "ProductExpr",
     "ProductParams",
@@ -765,9 +1286,15 @@ __all__ = [
     "SumExpr",
     "SumParams",
     "UnitEconomics",
+    "UNIT_DIMENSION",
     "WcModelAs",
     "WorkingCapital",
     "derive_driver_assumption_plan",
     "driver_assumption_key",
     "normalize_legacy_profitability_targets",
+    "node_measure",
+    "product_dimension",
+    "product_scale_exponent",
+    "quotient_dimension",
+    "unit_for_dimension",
 ]

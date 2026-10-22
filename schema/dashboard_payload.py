@@ -42,7 +42,7 @@ class DashboardMetadata(_ContractModel):
     readiness_posture: ReadinessPosture
     verdict_token: str | None = None
     may_circulate: bool = True
-    freeze_time: str = Field(..., min_length=1)
+    freeze_time: str
     decision_context: str | None = None
     citation_policy: CitationPolicy
 

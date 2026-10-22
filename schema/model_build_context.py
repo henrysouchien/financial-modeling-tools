@@ -3,10 +3,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
-from .models import DriverCategory, PERIOD_MODE_QUARTERLY5, PERIOD_MODE_YEARLY, Unit
-from .overrides_projections import ProjectionValueScale
+from .models import PeriodMode
+from industry_slice_core.industry_types import DriverCategory, Unit
+from .period_value_series import PeriodValueSeries
+from .provider_port.registry import (
+    ProviderId,
+    ProviderRegistry,
+    require_registered_provider_id,
+)
 from .thesis_shared_slice import (
     ConfidenceLevel,
     ScalarValue,
@@ -17,14 +23,21 @@ from .thesis_shared_slice import (
 )
 
 
-BuildSource = Literal["fmp", "edgar"]
-PeriodMode = Literal[PERIOD_MODE_YEARLY, PERIOD_MODE_QUARTERLY5]
-ValuationMethod = Literal["dcf", "multiples", "sum_of_parts", "hybrid", "relative"]
+ProjectionValueScale = Literal["display", "model"]
+MbcValuationMethod = Literal["dcf", "multiples", "sum_of_parts", "hybrid", "relative"]
 DiscountRateMethod = Literal["capm", "wacc", "manual"]
 ExitMultipleType = Literal["p_e", "ev_ebitda", "p_b", "p_s", "ev_sales"]
 SegmentSnapshotSource = Literal["edgar_auto", "caller_override", "fallback_single"]
 SegmentRevenueObservationSource = Literal["edgar_fact", "caller_override", "derived_other", "reconciliation"]
 SegmentRevenueComparability = Literal["comparable", "not_comparable", "unknown", "not_applicable"]
+
+
+def _provider_registry_from_validation(info: ValidationInfo) -> ProviderRegistry | None:
+    if isinstance(info.context, Mapping):
+        registry = info.context.get("provider_registry")
+        if isinstance(registry, ProviderRegistry):
+            return registry
+    return None
 
 
 def _segment_observation_structural_basis_key(
@@ -75,7 +88,7 @@ class MbcCompany(_ContractModel):
         return _normalize_ticker(value)
 
 
-class FiscalAxis(_ContractModel):
+class MbcYearAxis(_ContractModel):
     period_mode: PeriodMode
     historical_years: list[int] = Field(min_length=1)
     projection_years: list[int] = Field(min_length=1)
@@ -190,15 +203,22 @@ class SegmentConfig(_ContractModel):
     segment_profile_snapshot: SegmentProfileSnapshot
 
 
-class Driver(_ContractModel):
+class MbcDriverSpec(_ContractModel):
     assumption_id: str | None = None
-    value: ScalarValue
+    value: ScalarValue | None = None
+    period_values: PeriodValueSeries | None = None
     unit: Unit
     value_scale: ProjectionValueScale = "model"
     periods: list[int] | None = None
     sia_category: DriverCategory | None = None
     rationale: str | None = None
     confidence: ConfidenceLevel | None = None
+
+    @model_validator(mode="after")
+    def _one_value_shape(self) -> "MbcDriverSpec":
+        if (self.value is None) == (self.period_values is None):
+            raise ValueError("driver requires exactly one scalar or period series")
+        return self
 
     @field_validator("assumption_id", mode="before")
     @classmethod
@@ -211,14 +231,14 @@ class Driver(_ContractModel):
         return _normalize_level(value)
 
 
-class ScenarioOverride(_ContractModel):
-    value: ScalarValue
+class MbcScenarioOverride(_ContractModel):
+    value: ScalarValue | PeriodValueSeries
     periods: list[int] | None = None
 
 
-class Scenario(_ContractModel):
+class MbcScenarioSpec(_ContractModel):
     description: str | None = None
-    overrides: dict[str, ScenarioOverride] = Field(default_factory=dict)
+    overrides: dict[str, MbcScenarioOverride] = Field(default_factory=dict)
 
     @field_validator("overrides", mode="before")
     @classmethod
@@ -276,17 +296,49 @@ class ValuationRanges(_ContractModel):
     high: float | None = None
 
 
-class Valuation(_ContractModel):
-    method: ValuationMethod
+class MbcValuationSpec(_ContractModel):
+    method: MbcValuationMethod
     inputs: ValuationInputs = Field(default_factory=ValuationInputs)
     ranges: ValuationRanges = Field(default_factory=ValuationRanges)
     rationale: str | None = None
 
 
 class HistoricalSourceOverride(_ContractModel):
-    concept_id: str = Field(min_length=1)
-    preferred: BuildSource
-    fallback_order: list[BuildSource] = Field(min_length=1)
+    required_role: str = Field(min_length=1)
+    preferred: ProviderId
+    fallback_order: list[ProviderId] = Field(min_length=1)
+
+    @field_validator("preferred", mode="before")
+    @classmethod
+    def _normalize_preferred_provider(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> ProviderId:
+        return require_registered_provider_id(
+            value,
+            provider_registry=_provider_registry_from_validation(info),
+            entry_point="historical override preferred provider",
+        )
+
+    @field_validator("fallback_order", mode="before")
+    @classmethod
+    def _normalize_fallback_providers(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> object:
+        if not isinstance(value, (list, tuple)):
+            return value
+        registry = _provider_registry_from_validation(info)
+        return [
+            require_registered_provider_id(
+                provider_id,
+                provider_registry=registry,
+                entry_point="historical override fallback provider",
+            )
+            for provider_id in value
+        ]
 
     @model_validator(mode="after")
     def _enforce_fallback_order_head(self) -> "HistoricalSourceOverride":
@@ -299,9 +351,22 @@ class HistoricalSourceOverride(_ContractModel):
 
 
 class HistoricalSources(_ContractModel):
-    default_source: BuildSource = "fmp"
+    default_source: ProviderId = "fmp"
     default_fallback_enabled: bool = False
     overrides: list[HistoricalSourceOverride] = Field(default_factory=list)
+
+    @field_validator("default_source", mode="before")
+    @classmethod
+    def _normalize_default_provider(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> ProviderId:
+        return require_registered_provider_id(
+            value,
+            provider_registry=_provider_registry_from_validation(info),
+            entry_point="historical default provider",
+        )
 
 
 class BuildFlags(_ContractModel):
@@ -311,24 +376,36 @@ class BuildFlags(_ContractModel):
 
 
 class ModelBuildContext(_ContractModel):
-    source: BuildSource = "fmp"
+    source: ProviderId = "fmp"
     n_historical: int = Field(default=5, ge=1)
     n_projection: int = Field(default=12, ge=1)
-    formula_first: bool = True
     sector: str | None = None
     business_model_path: str | None = None
     business_model_revision: str | None = None
 
     company: MbcCompany
-    fiscal_axis: FiscalAxis
+    fiscal_axis: MbcYearAxis
     segment_config: SegmentConfig | None = None
-    drivers: dict[str, Driver] = Field(default_factory=dict)
-    scenarios: dict[str, Scenario] = Field(default_factory=dict)
-    valuation: Valuation
+    drivers: dict[str, MbcDriverSpec] = Field(default_factory=dict)
+    scenarios: dict[str, MbcScenarioSpec] = Field(default_factory=dict)
+    valuation: MbcValuationSpec
     historical_sources: HistoricalSources = Field(default_factory=HistoricalSources)
     build_flags: BuildFlags = Field(default_factory=BuildFlags)
 
     schema_version: Literal["1.0"] = "1.0"
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source_provider(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> ProviderId:
+        return require_registered_provider_id(
+            value,
+            provider_registry=_provider_registry_from_validation(info),
+            entry_point="model-build source provider",
+        )
 
     @field_validator("drivers", mode="before")
     @classmethod
@@ -343,20 +420,19 @@ class ModelBuildContext(_ContractModel):
 
 __all__ = [
     "BuildFlags",
-    "BuildSource",
     "DiscountRateMethod",
     "DiscountRateSpec",
-    "Driver",
+    "MbcCompany",
+    "MbcDriverSpec",
     "ExitMultipleSpec",
     "ExitMultipleType",
-    "FiscalAxis",
+    "MbcYearAxis",
     "HistoricalSourceOverride",
     "HistoricalSources",
-    "MbcCompany",
     "ModelBuildContext",
     "PeriodMode",
-    "Scenario",
-    "ScenarioOverride",
+    "MbcScenarioSpec",
+    "MbcScenarioOverride",
     "SegmentConfig",
     "SegmentMappingEntry",
     "SegmentProfileSnapshot",
@@ -364,8 +440,8 @@ __all__ = [
     "SegmentSnapshotEntry",
     "SegmentSnapshotSource",
     "TerminalGrowthSpec",
-    "Valuation",
+    "MbcValuationSpec",
     "ValuationInputs",
-    "ValuationMethod",
+    "MbcValuationMethod",
     "ValuationRanges",
 ]

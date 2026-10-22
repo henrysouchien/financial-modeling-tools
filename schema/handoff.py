@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from decimal import Decimal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import (
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
-from .business_model import CompileTargetType, DriverAssumptionPlan, Factor
-from .models import Unit
+from .annual_presentation_guard import AnnualPresentationGuardResult
+from .models import ModelScale
+from industry_slice_core.industry_types import Unit
+from .model_build_context import _provider_registry_from_validation
+from .provider_port.registry import ProviderId, require_registered_provider_id
 from .model_readiness import (
     ModelQualityReadiness,
     ModelProjectionReadiness,
@@ -37,13 +47,19 @@ from .thesis_shared_slice import (
     _ContractModel,
     _normalize_optional_identifier,
 )
-
-
 AnnotationIdentifier = str
 DiligenceCompletionState = Literal["empty", "draft", "confirmed"]
-FinancialsSource = Literal["fmp", "edgar"]
-ModelFeedbackStatus = Literal["success", "missing", "skipped", "disabled", "error", "pending", "unknown"]
 ModelArtifactStatus = Literal["present", "missing", "unknown"]
+# Price-target copy older handoff model refs carried. The PriceTarget is its one
+# owner (``schema.price_target``); stored refs that still hold a copy decode
+# with it dropped.
+_LEGACY_HANDOFF_MODEL_REF_PRICE_TARGET_KEYS = frozenset({"last_price_target"})
+
+
+def _drop_legacy_keys(data: Any, legacy_keys: frozenset[str]) -> Any:
+    if isinstance(data, dict) and not legacy_keys.isdisjoint(data):
+        return {key: value for key, value in data.items() if key not in legacy_keys}
+    return data
 
 
 def _require_identifier(value: object | None, *, field_name: str) -> str:
@@ -97,6 +113,346 @@ class ThesisRef(_ContractModel):
         return _require_identifier(value, field_name="thesis_id")
 
 
+SeedCoverageSourceKind = Literal[
+    "projection_override",
+    "model_spec_assumption",
+    "template_code_seed",
+    "accepted_carry_forward",
+]
+
+
+class SeedCoverageRecord(_ContractModel):
+    canonical_driver_key: str
+    assumption_id: str | None = None
+    resolved_item_id: str
+    periods: list[int] = Field(min_length=1)
+    source_kind: SeedCoverageSourceKind
+    build_identity: str
+    control_id: str | None = None
+    binding_id: str | None = None
+    scenario: Literal["base", "bull", "bear"] | None = None
+
+
+class HistoricalDriverSeedCoverageRecord(_ContractModel):
+    """Exact accepted-HFF lineage for one compiled historical opening value."""
+
+    source_kind: Literal["historical_driver_seed"]
+    historical_foundation_artifact_id: str = Field(
+        pattern=r"^hff_[0-9a-f]{32}$"
+    )
+    historical_foundation_content_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+    historical_driver_seed_denominator_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+    driver_id: str = Field(pattern=r"^drv_[0-9a-f]{32}$")
+    driver_key: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1)
+    period_id: str = Field(pattern=r"^FY[1-9][0-9]{3}$")
+    unit: Unit
+    model_scale: ModelScale
+    observation_basis: Literal["period_flow", "period_end", "period_average"]
+    value: Decimal
+    disposition: Literal[
+        "observed",
+        "derived",
+        "proxy",
+        "analyst_normalized",
+    ]
+    derivation_kind: Literal["direct", "arithmetic_mean", "allocation"]
+    derivation_rationale: str = Field(min_length=1)
+    confidence: Literal["high", "medium", "low"]
+    limitations: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    evidence_value_ids: list[str] = Field(default_factory=list)
+    fact_ids: list[str] = Field(default_factory=list)
+    legacy_anchor_reconciled: bool
+    build_identity: str = Field(min_length=1)
+
+    @field_validator(
+        "limitations",
+        "evidence_ids",
+        "supporting_evidence_ids",
+        "evidence_value_ids",
+        "fact_ids",
+    )
+    @classmethod
+    def _canonical_seed_lineage_refs(
+        cls,
+        value: list[str],
+        info: ValidationInfo,
+    ) -> list[str]:
+        if any(not item for item in value):
+            raise ValueError(f"{info.field_name} must be nonempty text")
+        return sorted(set(value))
+
+    @model_validator(mode="after")
+    def _validate_seed_coverage(self) -> "HistoricalDriverSeedCoverageRecord":
+        if not self.value.is_finite():
+            raise ValueError("historical driver seed coverage value must be finite")
+        expected_period = int(self.period_id.removeprefix("FY"))
+        if self.periods != [expected_period]:
+            raise ValueError(
+                "historical driver seed coverage must name its one exact fiscal period"
+            )
+        if self.unit is not Unit.dollars and self.model_scale != "units":
+            raise ValueError(
+                "non-dollar historical driver seed coverage requires units scale"
+            )
+        return self
+
+
+class HistoricalFoundationFactCoverageRecord(_ContractModel):
+    """Exact accepted-HFF lineage for one compiled historical fact value."""
+
+    source_kind: Literal["historical_foundation_fact"]
+    historical_foundation_artifact_id: str = Field(
+        pattern=r"^hff_[0-9a-f]{32}$"
+    )
+    historical_foundation_content_sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+    requirement_id: str = Field(min_length=1)
+    semantic_id: str = Field(min_length=1)
+    fact_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1, max_length=1)
+    build_identity: str = Field(min_length=1)
+
+
+class SourceBundleScheduleDisclosureCoverageRecord(_ContractModel):
+    """Exact SourceBundle lineage for one code-owned schedule disclosure."""
+
+    source_kind: Literal["source_bundle_schedule_disclosure"]
+    fact_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1, max_length=1)
+    build_identity: str = Field(min_length=1)
+
+
+class SourceBundleAdjustedEbitdaBridgeCoverageRecord(_ContractModel):
+    """Exact SourceBundle lineage for one issuer EBITDA bridge fact."""
+
+    source_kind: Literal["source_bundle_adjusted_ebitda_bridge"]
+    fact_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1, max_length=1)
+    build_identity: str = Field(min_length=1)
+
+
+class SourceBundleOpeningBalanceCoverageRecord(_ContractModel):
+    """Exact SourceBundle lineage for one first-year cell's opening balance.
+
+    The evidence is the pin's opening column: the role's value at the year
+    before the first historical year, which the cell reads as a literal.
+    """
+
+    source_kind: Literal["source_bundle_opening_balance"]
+    requirement_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1, max_length=1)
+    build_identity: str = Field(min_length=1)
+
+
+class BusinessModelNodeIdentityCoverageRecord(_ContractModel):
+    """Identity-channel lineage for one BM-node historical value.
+
+    Stage A step A-3: the retired binding executor's observation vocabulary
+    migrates to the identity channel's rows — same exact SourceBundle
+    lineage, produced by ``resolve_bm_node_history``'s identity arm rather
+    than an authored join.
+    """
+
+    source_kind: Literal["business_model_node_identity"]
+    requirement_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    business_model_node_key: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1, max_length=1)
+    build_identity: str = Field(min_length=1)
+
+
+class BusinessModelNodeFormulaCoverageRecord(_ContractModel):
+    """Formula-arm lineage: a registered ratio formula stands on a BM node."""
+
+    source_kind: Literal["business_model_node_formula"]
+    formula_id: str = Field(min_length=1)
+    business_model_node_key: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    input_item_ids: list[str] = Field(min_length=1)
+    periods: list[int] = Field(min_length=1)
+    build_identity: str = Field(min_length=1)
+
+    @field_validator("input_item_ids")
+    @classmethod
+    def _canonical_input_item_ids(cls, value: list[str]) -> list[str]:
+        if any(not item for item in value):
+            raise ValueError(
+                "input_item_ids must be nonempty text"
+            )
+        return sorted(set(value))
+
+
+class RetiredBusinessModelObservationCoverageRecord(_ContractModel):
+    """Read-side decode of pre-Stage-A stored lineage rows (closed artifacts).
+
+    No producer exists: the binding executor that wrote this vocabulary was
+    deleted at Stage A step A-3. Published ModelVersions are closed artifacts
+    replayed from stored bytes (plan §6.2), so their semantic sidecars'
+    render states must keep decoding; new builds emit only the identity
+    channel's vocabulary above.
+    """
+
+    source_kind: Literal["source_bundle_business_model_observation"]
+    requirement_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    source_id: str = Field(min_length=1)
+    business_model_node_key: str = Field(min_length=1)
+    resolved_item_id: str = Field(min_length=1)
+    periods: list[int] = Field(min_length=1, max_length=1)
+    build_identity: str = Field(min_length=1)
+
+
+SeedCoverageManifestRecord = Annotated[
+    SeedCoverageRecord
+    | HistoricalDriverSeedCoverageRecord
+    | HistoricalFoundationFactCoverageRecord
+    | BusinessModelNodeIdentityCoverageRecord
+    | BusinessModelNodeFormulaCoverageRecord
+    | RetiredBusinessModelObservationCoverageRecord
+    | SourceBundleScheduleDisclosureCoverageRecord
+    | SourceBundleAdjustedEbitdaBridgeCoverageRecord
+    | SourceBundleOpeningBalanceCoverageRecord,
+    Field(discriminator="source_kind"),
+]
+
+
+class CompilerInput(_ContractModel):
+    ticker: str
+    content_hash: str
+    payload: dict[str, Any]
+    bundle_id: str | None = Field(default=None, min_length=1)
+    identity_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @field_validator("bundle_id", mode="before")
+    @classmethod
+    def _validate_bundle_id(cls, value: object | None) -> object | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError("bundle_id must be canonical nonempty text")
+        return value
+
+    @field_validator("identity_digest", mode="before")
+    @classmethod
+    def _validate_identity_digest(cls, value: object | None) -> object | None:
+        if value is None:
+            return None
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or value != value.lower()
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("identity_digest must be lowercase sha256 hex")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_source_bundle_lineage_pair(self) -> "CompilerInput":
+        if (self.bundle_id is None) != (self.identity_digest is None):
+            raise ValueError(
+                "bundle_id and identity_digest must be supplied together"
+            )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_legacy_lineage(self, handler: Any) -> dict[str, Any]:
+        serialized = handler(self)
+        if self.bundle_id is None:
+            serialized.pop("bundle_id", None)
+            serialized.pop("identity_digest", None)
+        return serialized
+
+
+class BusinessModelCompilerRef(_ContractModel):
+    """Legacy logical ref retained for non-build current-state reads."""
+
+    business_model_id: str
+    revision: str
+    content_hash: str
+
+
+class SegmentProfileSnapshotCompilerRef(_ContractModel):
+    """Legacy logical ref retained for offline acquisition reads."""
+
+    snapshot_id: str
+    content_hash: str
+
+
+class RenderCompilerInputs(_ContractModel):
+    source_bundle: CompilerInput
+    model_spec: CompilerInput
+
+
+class RenderStateIdentity(_ContractModel):
+    build_id: str
+    model_id: str
+    model_version: int = Field(ge=1)
+    source_bundle_digest: str
+    model_spec_digest: str
+
+
+class ModelRenderState(_ContractModel):
+    """The one atomic rendered-from contract for a workbook revision."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    workbook_semantics_hash: str
+    compiler_inputs: RenderCompilerInputs
+    seed_coverage_manifest: list[SeedCoverageManifestRecord]
+    identity: RenderStateIdentity
+
+    @model_validator(mode="after")
+    def _identity_matches_compiler_inputs(self) -> "ModelRenderState":
+        pairs = (
+            (
+                self.identity.source_bundle_digest,
+                self.compiler_inputs.source_bundle.content_hash,
+            ),
+            (
+                self.identity.model_spec_digest,
+                self.compiler_inputs.model_spec.content_hash,
+            ),
+        )
+        if any(left != right for left, right in pairs):
+            raise ValueError("render-state identity must match compiler inputs")
+        expected_build_id = (
+            f"{self.identity.source_bundle_digest}:"
+            f"{self.identity.model_spec_digest}:"
+            f"{self.identity.model_version}:"
+            f"{self.workbook_semantics_hash}"
+        )
+        if self.identity.build_id != expected_build_id:
+            raise ValueError(
+                "render-state build identity must stamp the exact atomic record"
+            )
+        if any(record.build_identity != self.identity.build_id for record in self.seed_coverage_manifest):
+            raise ValueError("every seed-coverage record must match render-state build identity")
+        return self
+
+
 class HandoffModelRef(_ContractModel):
     model_id: str
     version: int = Field(ge=1)
@@ -104,13 +460,39 @@ class HandoffModelRef(_ContractModel):
     model_build_context_version: int = Field(ge=1)
     file_path: str | None = None
     diagnostic_status: ModelArtifactStatus = "unknown"
-    seed_projection_status: ModelArtifactStatus = "unknown"
+    control_snapshot_projection_status: ModelArtifactStatus = "unknown"
     projection_readiness: ModelProjectionReadiness | None = None
     scenario_output_readiness: ModelScenarioOutputReadiness | None = None
     scenario_bridge_readiness: ModelScenarioBridgeReadiness | None = None
     model_quality_readiness: ModelQualityReadiness | None = None
     valuation_input_readiness: ValuationInputReadiness | None = None
-    last_price_target: float | None = None
+    annual_presentation: AnnualPresentationGuardResult
+    render_state: ModelRenderState | None = None
+    workbook_semantics_hash: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_price_target(cls, data: Any) -> Any:
+        return _drop_legacy_keys(data, _LEGACY_HANDOFF_MODEL_REF_PRICE_TARGET_KEYS)
+
+    @model_validator(mode="after")
+    def _derive_rendered_hash(self) -> "HandoffModelRef":
+        if self.render_state is None:
+            if self.workbook_semantics_hash is not None:
+                raise ValueError("workbook_semantics_hash cannot be stamped without the complete render_state")
+            return self
+        if self.workbook_semantics_hash not in (None, self.render_state.workbook_semantics_hash):
+            raise ValueError("workbook_semantics_hash must match render_state")
+        identity = self.render_state.identity
+        if (self.model_id, self.version) != (
+            identity.model_id,
+            identity.model_version,
+        ):
+            raise ValueError(
+                "handoff model identity must match render_state.identity"
+            )
+        self.workbook_semantics_hash = self.render_state.workbook_semantics_hash
+        return self
 
     @field_validator("model_id", mode="before")
     @classmethod
@@ -123,96 +505,22 @@ class HandoffModelRef(_ContractModel):
         return _require_identifier(value, field_name="model_build_context_id")
 
 
-class ForecastAssumptionWriteTarget(_ContractModel):
-    source: Literal["DriverAssumptionPlan"] = "DriverAssumptionPlan"
-    driver_key: str
-    item_id: str | None = None
-    label: str
-    unit: Unit
-    driver_unit: Unit | None = None
-    value_unit: Unit | None = None
-    factors: list[Factor] = Field(default_factory=list)
-    compile_target_type: CompileTargetType
-    existing_driver_key: str | None = None
-    business_model_id: str
-    revision: str
-    segment_id: str
-    driver_node_id: str
-    aliases: list[str] = Field(default_factory=list)
-
-    @field_validator(
-        "driver_key",
-        "label",
-        "business_model_id",
-        "revision",
-        "segment_id",
-        "driver_node_id",
-        mode="before",
-    )
-    @classmethod
-    def _normalize_required_write_target_identifier(cls, value: object | None) -> str:
-        return _require_identifier(value, field_name="forecast_assumption_write_target")
-
-
-class CurrentModelRef(_ContractModel):
-    ticker: str
-    research_file_id: int = Field(ge=1)
-    handoff_id: int = Field(ge=1)
-    handoff_version: int = Field(ge=1)
-    handoff_status: str
-    model_id: str
-    version: int = Field(ge=1)
-    model_build_context_id: str
-    model_build_context_version: int = Field(ge=1)
-    workbook_path: str
-    file_path: str
-    workbook_exists: bool = False
-    diagnostic_status: ModelArtifactStatus = "unknown"
-    seed_projection_status: ModelArtifactStatus = "unknown"
-    projection_readiness: ModelProjectionReadiness | None = None
-    scenario_output_readiness: ModelScenarioOutputReadiness | None = None
-    scenario_bridge_readiness: ModelScenarioBridgeReadiness | None = None
-    model_quality_readiness: ModelQualityReadiness | None = None
-    valuation_input_readiness: ValuationInputReadiness | None = None
-    business_model_ref: BusinessModelRef | None = None
-    driver_assumption_plan: DriverAssumptionPlan | None = None
-    driver_assumption_plan_status: ModelFeedbackStatus = "missing"
-    driver_assumption_plan_error: dict[str, Any] | None = None
-    forecast_assumption_write_targets: list[ForecastAssumptionWriteTarget] = Field(default_factory=list)
-    model_semantics_status: ModelFeedbackStatus = "missing"
-    model_semantics_hash: str | None = None
-    model_insights_status: ModelFeedbackStatus = "missing"
-    model_insights_id: str | None = None
-    price_target_status: ModelFeedbackStatus = "missing"
-    price_target_id: str | None = None
-    last_price_target: float | None = None
-    price_target_as_of: str | None = None
-    price_target_current_price: float | None = None
-    price_target_current_price_source: str | None = None
-    price_target_current_price_provider: str | None = None
-    price_target_current_price_as_of: str | None = None
-    price_target_current_price_retrieved_at: str | None = None
-    price_target_current_price_currency: str | None = None
-    price_target_horizon_basis: str | None = None
-    price_target_horizon_fiscal_period: str | None = None
-    price_target_horizon_fiscal_year_end: str | None = None
-    price_target_horizon_months_to_period_end: int | None = None
-    price_target_horizon_caveat: str | None = None
-
-    @field_validator("ticker", mode="before")
-    @classmethod
-    def _normalize_current_model_ticker(cls, value: object | None) -> str:
-        return _require_identifier(value, field_name="ticker").upper()
-
-    @field_validator("handoff_status", "model_id", "model_build_context_id", "workbook_path", "file_path", mode="before")
-    @classmethod
-    def _normalize_required_current_model_identifier(cls, value: object | None) -> str:
-        return _require_identifier(value, field_name="current_model")
-
-
 class Financials(_ContractModel):
-    source: FinancialsSource = "fmp"
+    source: ProviderId = "fmp"
     data: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source_provider(
+        cls,
+        value: object,
+        info: ValidationInfo,
+    ) -> ProviderId:
+        return require_registered_provider_id(
+            value,
+            provider_registry=_provider_registry_from_validation(info),
+            entry_point="handoff financials source provider",
+        )
 
 
 class HandoffMetadata(_ContractModel):
@@ -270,20 +578,30 @@ class HandoffArtifactV1_1(_ContractModel):
 __all__ = [
     "AnnotationIdentifier",
     "AssumptionLineageEntry",
-    "CurrentModelRef",
+    "BusinessModelNodeFormulaCoverageRecord",
+    "BusinessModelNodeIdentityCoverageRecord",
     "DiligenceCompletionState",
     "Financials",
-    "FinancialsSource",
-    "ForecastAssumptionWriteTarget",
     "HandoffArtifactV1_1",
     "HandoffMetadata",
     "HandoffModelRef",
+    "HistoricalDriverSeedCoverageRecord",
+    "HistoricalFoundationFactCoverageRecord",
     "IdeaProvenance",
     "ModelArtifactStatus",
-    "ModelFeedbackStatus",
+    "ModelRenderState",
     "ModelProjectionReadiness",
     "ModelScenarioBridgeReadiness",
     "ModelScenarioOutputReadiness",
     "ScorecardRef",
+    "RenderCompilerInputs",
+    "RenderStateIdentity",
+    "SeedCoverageRecord",
+    "SeedCoverageManifestRecord",
+    "RetiredBusinessModelObservationCoverageRecord",
+    "SeedCoverageSourceKind",
+    "SourceBundleAdjustedEbitdaBridgeCoverageRecord",
+    "SourceBundleOpeningBalanceCoverageRecord",
+    "SourceBundleScheduleDisclosureCoverageRecord",
     "ThesisRef",
 ]

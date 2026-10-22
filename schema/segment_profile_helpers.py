@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Sequence
 
-from .model_build_context import SegmentRevenueObservation
+from .model_build_context import (
+    SegmentRevenueObservation,
+    SegmentRevenueObservationSource,
+)
 from .segment_fact_helpers import _annotate_revenue_comparability
 
 
@@ -258,7 +261,7 @@ def _segment_contributor_key(snapshot_segment: object) -> str:
 def _derived_revenue_observations(
     values: Dict[int, float],
     *,
-    source: str,
+    source: SegmentRevenueObservationSource,
     note: str,
     basis_by_year: Mapping[int, str] | None = None,
 ) -> Dict[int, SegmentRevenueObservation]:

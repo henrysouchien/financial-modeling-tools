@@ -10,8 +10,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from api.addin_dispatch import _dispatch_to_addin
-from schema.build import _set_constant_override, write_xlsx  # noqa: F401
+from schema.excel_writer import write_xlsx
 from schema.models import (
     FinancialModel,
     FormulaSpec,  # noqa: F401 - compatibility alias for schema.modify imports
@@ -23,19 +22,18 @@ from schema.models import (
     ValueProvenance,  # noqa: F401
 )
 from schema.modify_core import (
+    AddItemOperation,
+    FixedCellValueOperation,
     LayoutError,  # noqa: F401 - compatibility alias for schema.modify imports
+    ModelOperation,
     ModifyError,
     Operation,
     OperationResult,
     OperationType,
-    _apply_add_item,  # noqa: F401 - compatibility alias for schema.modify imports
-    _apply_remove_item,  # noqa: F401 - compatibility alias for schema.modify imports
-    _apply_rename_item,  # noqa: F401 - compatibility alias for schema.modify imports
-    _apply_reorder_items,  # noqa: F401 - compatibility alias for schema.modify imports
-    _apply_set_formula,  # noqa: F401 - compatibility alias for schema.modify imports
-    _apply_set_value,  # noqa: F401 - compatibility alias for schema.modify imports
+    PeriodValueOperation,
     _counts,
     _dispatch_op,
+    validate_operation,
 )
 from schema.modify_layout import (
     _assert_layout_integrity,
@@ -44,7 +42,6 @@ from schema.modify_layout import (
     _find_item_location,  # noqa: F401 - compatibility alias for schema.modify imports
     _iter_item_formula_specs,  # noqa: F401 - compatibility alias for schema.modify imports
     _iter_model_items,  # noqa: F401 - compatibility alias for schema.modify imports
-    _matches_custom_concept_target,  # noqa: F401 - compatibility alias for schema.modify imports
     _replace_refs,  # noqa: F401 - compatibility alias for schema.modify imports
     _replace_refs_in_item,  # noqa: F401 - compatibility alias for schema.modify imports
 )
@@ -57,19 +54,11 @@ from schema.modify_persistence import (
 from schema.model_writer_lock import model_writer_lock
 from schema.refs import line_item_ref_from_obj  # noqa: F401 - compatibility alias for schema.modify imports
 from schema.renderer import (
-    _fixed_cell_anchor_period,  # noqa: F401 - compatibility alias for schema.modify imports
-    _spec_for_period,  # noqa: F401
     render_model,
     render_plan_to_addin_payload,
 )
-from schema.segments import _shift_rows  # noqa: F401 - compatibility alias for schema.modify imports
 from schema import serialization
 from schema.handle import evict_handle, load_handle, peek_handle
-
-
-def _load_on_cache_miss_enabled() -> bool:
-    value = os.getenv("SCHEMA_MODIFY_LOAD_ON_CACHE_MISS", "true").strip().lower()
-    return value not in {"0", "false", "no", "off"}
 
 
 class ModifyResult(BaseModel):
@@ -82,12 +71,16 @@ class ModifyResult(BaseModel):
     stale_file_detected: bool = False
 
 
-def _schema_sidecar_matches(file_path: str, expected_model: FinancialModel) -> tuple[bool, str]:
+def _schema_sidecar_matches(
+    file_path: str, expected_model: FinancialModel
+) -> tuple[bool, str]:
     loaded = serialization.try_load_sidecar(file_path)
     if loaded is None:
         return False, "schema_sidecar_unavailable"
     loaded_model, _base_results = loaded
-    if loaded_model.model_dump(mode="json") != expected_model.model_dump(mode="json"):
+    if loaded_model.model_dump(
+        mode="json"
+    ) != serialization.canonical_financial_model_payload(expected_model):
         return False, "schema_sidecar_model_mismatch"
     return True, "ok"
 
@@ -96,6 +89,7 @@ def apply_modify_request(
     file_path: str,
     operations: List[Operation],
     *,
+    dispatch_to_addin: Callable[[str, Dict[str, Any]], Dict[str, Any]],
     target: Literal["file", "workbook", "both"] = "file",
     conflict_strategy: Literal["fail_on_collision", "overwrite"] = "fail_on_collision",
     force_overwrite: bool = False,
@@ -103,25 +97,26 @@ def apply_modify_request(
     historical_cutoff_year: Optional[int] = None,
     post_process_model: Optional[Callable[[FinancialModel], Any]] = None,
 ) -> ModifyResult:
-    cutoff = historical_cutoff_year if historical_cutoff_year is not None else datetime.now().year
+    """Apply model edits; the embedding app supplies the Excel relay callable.
+
+    File-only requests do not call the dispatcher. Workbook requests pass
+    ``("apply_render_plan", payload)`` and preserve the relay's result or error.
+    """
+    cutoff = (
+        historical_cutoff_year
+        if historical_cutoff_year is not None
+        else datetime.now().year
+    )
     handle = peek_handle(file_path, cutoff)
-    if handle is None and _load_on_cache_miss_enabled():
+    if handle is None:
         try:
             handle = load_handle(file_path, historical_cutoff_year=cutoff)
         except Exception as exc:
             raise ModifyError(
                 f"Unable to load model for {file_path!r} (cutoff={cutoff}) on cache miss: {exc}"
             ) from exc
-    if handle is None:
-        raise ModifyError(
-            f"Model not in cache for {file_path!r} (cutoff={cutoff}). "
-            "Call model_build first to warm canonical state, then retry modify."
-        )
 
-    parsed_ops = [
-        op if isinstance(op, Operation) else Operation.model_validate(op)
-        for op in operations
-    ]
+    parsed_ops = [validate_operation(op) for op in operations]
 
     if not parsed_ops:
         applied, failed = _counts([])
@@ -245,7 +240,7 @@ def apply_modify_request(
                 conflict_strategy=conflict_strategy,
             )
             try:
-                workbook_status = _dispatch_to_addin("apply_render_plan", payload)
+                workbook_status = dispatch_to_addin("apply_render_plan", payload)
             except Exception as exc:
                 workbook_dispatch_failed = True
                 workbook_status = {
@@ -255,7 +250,9 @@ def apply_modify_request(
                     "kind": "dispatch_failed",
                 }
 
-        if file_write_succeeded or (target == "workbook" and not workbook_dispatch_failed):
+        if file_write_succeeded or (
+            target == "workbook" and not workbook_dispatch_failed
+        ):
             load_handle(
                 file_path,
                 model=snapshot,
@@ -263,7 +260,9 @@ def apply_modify_request(
                 persist=file_write_succeeded,
             )
             if file_write_succeeded:
-                sidecar_ok, sidecar_reason = _schema_sidecar_matches(file_path, snapshot)
+                sidecar_ok, sidecar_reason = _schema_sidecar_matches(
+                    file_path, snapshot
+                )
                 if not sidecar_ok:
                     _restore_optional_bytes(Path(file_path), original_file_bytes)
                     _restore_optional_bytes(sidecar_path, original_sidecar_bytes)

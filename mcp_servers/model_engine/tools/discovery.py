@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, get_type_hints
+from industry_slice_core.thesis_shared_slice_helpers import _normalize_ticker
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,7 @@ def model_discover_segments_handler(
 ) -> dict[str, Any]:
   try:
     result = deps.discover_all_axes(
-      ticker=ticker,
+      ticker=_normalize_ticker(ticker),
       fetcher=deps.make_edgar_financials_fetcher(),
       most_recent_fy=most_recent_fy,
       n_historical=n_historical,
@@ -99,7 +100,10 @@ def _register_tool(
   mcp: Any,
   function: Callable[..., dict[str, Any]],
 ) -> Callable[..., dict[str, Any]]:
-  registered = mcp.tool()(function)
+  registered = mcp.tool(meta={
+    "hank/code-disposition": "read_composable",
+    "hank/code-reason": "Discovers segment axes from EDGAR financials for an explicit ticker and fiscal year; persisting extraction cache is a side effect of the read.",
+  })(function)
   return registered or function
 
 

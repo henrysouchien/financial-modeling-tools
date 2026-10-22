@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import re
+from datetime import datetime
 from pathlib import PurePosixPath
+from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
-from ._insights_shared import Confidence, DriverUnit, Severity
+from ._insights_shared import DriverUnit, Severity
 from ._outcome_shared import OutcomeComponent
-from .models import DriverCategory
-from .price_target import CurrentPriceSnapshot, ValuationHorizon
+from industry_slice_core.industry_types import DriverCategory
+from .model_ref import ModelVersionRef
+from .model_state_identity import CurrentModelIdentity, validate_sha256_hex
+from .numeric_display import NumericDisplaySpec
 from .research_labels import canonicalize_optional_research_label
 from .thesis_shared_slice import (
     Assumption,
@@ -37,6 +42,7 @@ from .thesis_shared_slice import (
     _normalize_optional_identifier,
     _normalize_ticker,
 )
+from .versioned_artifact import canonical_json_bytes
 
 
 ThesisLinkCategory = Literal["revenue", "margin", "growth", "valuation", "catalyst", "risk"]
@@ -44,7 +50,7 @@ ThesisDirectionComparison = Literal["above_consensus", "below_consensus", "speci
 ResolutionAnchor = Literal[
     "driver_key",
     "business_model_node",
-    "data_concept_id",
+    "required_role",
     "structural_fingerprint",
     "template_version_cache",
     "model_item_id",
@@ -67,6 +73,25 @@ PatchOpPreview: TypeAlias = dict[str, Any]
 DecisionValue: TypeAlias = ScalarValue | dict[str, Any] | list[Any]
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
+#: A scenario's return on the current price, declared once for every writer and reader of
+#: ``ThesisQuantitativeScenario.return_pct``: a decimal fraction, ``0.12`` for 12%
+#: (docs/reference/value-semantics-contract.md *Percentages And Basis Points*).
+SCENARIO_RETURN_LABEL = "Return"
+SCENARIO_RETURN_DISPLAY = NumericDisplaySpec(numeric_kind="percentage", scale="unit")
+SCENARIO_TARGET_PRICE_DISPLAY = NumericDisplaySpec(
+    numeric_kind="per_share", currency="USD", precision=2,
+)
+SCENARIO_MULTIPLE_TYPE_LABELS = {
+    "dcf": "DCF",
+    "forward_pe": "Forward P/E",
+    "forward_ev_ebitda": "Forward EV / EBITDA",
+    "ev_adjusted_ebitda": "EV/Adj-EBITDA",
+    "price_to_book": "Price / Book",
+    "nav": "Net Asset Value",
+    "rnpv": "Risk-adjusted NPV",
+    "sum_of_parts": "Sum of the Parts",
+}
+
 
 def _rank_is_dense_from_one(ranks: list[int], *, field_name: str) -> None:
     if ranks != list(range(1, len(ranks) + 1)):
@@ -79,7 +104,9 @@ class UnknownSection(_ContractModel):
 
 
 class ScenarioMultiple(_ContractModel):
-    type: str
+    claim_id: str | None = Field(default=None, min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
+    type: str = Field(json_schema_extra={"labels": dict(SCENARIO_MULTIPLE_TYPE_LABELS)})
     multiple: float
     basis: str
     historical_low: float | None = None
@@ -97,8 +124,16 @@ class ScenarioProbability(_ContractModel):
 
 
 class ThesisQuantitativeScenario(_ContractModel):
-    target_price: float | None = None
-    return_pct: float | None = None
+    target_price: float | None = Field(
+        default=None,
+        json_schema_extra={"display": SCENARIO_TARGET_PRICE_DISPLAY.model_dump(mode="json", exclude_none=True)},
+    )
+    return_pct: float | None = Field(
+        default=None,
+        title=SCENARIO_RETURN_LABEL,
+        description="Return on the current price as a decimal fraction: 0.12 is 12%.",
+        json_schema_extra={"display": SCENARIO_RETURN_DISPLAY.model_dump(mode="json", exclude_none=True)},
+    )
     scenario_multiple: ScenarioMultiple | None = None
     probability: ScenarioProbability | None = None
     revenue_m: ScalarValue | None = None
@@ -163,6 +198,8 @@ class ScenarioFraming(_ContractModel):
 
 
 class RevenueQuantitativeFraming(_ContractModel):
+    claim_id: str | None = Field(default=None, min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
     base: ScalarValue | None = None
     bull: ScalarValue | None = None
     bear: ScalarValue | None = None
@@ -170,6 +207,8 @@ class RevenueQuantitativeFraming(_ContractModel):
 
 
 class MarginsQuantitativeFraming(_ContractModel):
+    claim_id: str | None = Field(default=None, min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
     trajectory: str | None = None
     key_drivers: list[str] = Field(default_factory=list)
 
@@ -177,6 +216,7 @@ class MarginsQuantitativeFraming(_ContractModel):
 class GaapNonGaapBridge(_ContractModel):
     """Reconciliation between GAAP and non-GAAP terminal values."""
 
+    bridge_id: str | None = Field(default=None, min_length=1)
     metric: str
     period: str | None = None
     gaap_value: ScalarValue
@@ -189,6 +229,8 @@ class GaapNonGaapBridge(_ContractModel):
 
 
 class EpsFcfQuantitativeFraming(_ContractModel):
+    claim_id: str | None = Field(default=None, min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
     projection: ScalarValue | None = None
     delta_vs_consensus: ScalarValue | None = None
     terminal_year: int | None = Field(default=None, ge=1900, le=2200)
@@ -201,6 +243,8 @@ class QuantitativeFraming(_ContractModel):
     margins: MarginsQuantitativeFraming | None = None
     eps_fcf: EpsFcfQuantitativeFraming | None = None
     scenarios: ScenarioFraming | None = None
+    model_ref: ModelVersionRef | None = None
+    as_of: str | None = None
 
 
 class PositionSize(_ContractModel):
@@ -217,6 +261,16 @@ class RiskDecomposition(_ContractModel):
     note: str | None = None
 
 
+class PortfolioFitProvenance(_ContractModel):
+    tool_version: str = Field(min_length=1)
+    ticker: str = Field(min_length=1)
+    computation_id: str = Field(pattern=r"^fms:quantifying_risk:[A-Z0-9.\-]+:\d{4}-\d{2}:[0-9a-f]{16}$")
+    computation_params: dict[str, Any]
+    helper_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    covered_payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    as_of: str = Field(min_length=1)
+
+
 class PortfolioFit(_ContractModel):
     sector_exposure: str | None = None
     factor_exposure: str | None = None
@@ -224,20 +278,13 @@ class PortfolioFit(_ContractModel):
     dominant_factor_stability: bool | None = None
     idiosyncratic_volatility_annualized_pct: float | None = None
     market_only_decomposition: RiskDecomposition | None = None
+    derived_from: PortfolioFitProvenance | None = None
 
 
 class PositionMetadata(_ContractModel):
     position_size: PositionSize | None = None
     date_initiated: str | None = None
     portfolio_fit: PortfolioFit | None = None
-
-
-class ThesisModelRef(_ContractModel):
-    model_id: str
-    version: int
-    file_path: str | None = None
-    last_updated: str | None = None
-    drivers_locked: list[str] = Field(default_factory=list)
 
 
 class BusinessModelRef(_ContractModel):
@@ -247,11 +294,6 @@ class BusinessModelRef(_ContractModel):
     schema_version: str = "1.0"
     revision: str = Field(min_length=1)
     last_updated: str = Field(min_length=1)
-
-
-class ThesisModelVersionRef(_ContractModel):
-    model_id: str = Field(min_length=1)
-    version: int = Field(ge=1)
 
 
 class ThesisDriverSensitivity(_ContractModel):
@@ -319,6 +361,7 @@ class ThesisImpliedAssumption(_ContractModel):
     value: float
     unit: DriverUnit
     rationale: str = Field(min_length=1)
+    source_refs: list[SourceId] = Field(default_factory=list)
     suggests_patch: bool = False
 
     @field_validator("sia_category", mode="before")
@@ -338,13 +381,13 @@ class ThesisRiskSurfaced(_ContractModel):
 
 class ThesisModelInsight(_ContractModel):
     model_insights_id: str = Field(min_length=1)
-    model_ref: ThesisModelVersionRef
-    derived_from_model_build_context_id: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    model_version: int = Field(ge=1)
     generated_at: str = Field(min_length=1)
     driver_sensitivities: list[ThesisDriverSensitivity] = Field(default_factory=list)
     implied_assumptions: list[ThesisImpliedAssumption] = Field(default_factory=list)
     risks_surfaced: list[ThesisRiskSurfaced] = Field(default_factory=list)
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["2.0"] = "2.0"
 
     @field_validator("driver_sensitivities")
     @classmethod
@@ -370,66 +413,6 @@ class ThesisModelInsight(_ContractModel):
             return value
         _rank_is_dense_from_one(ranks, field_name="driver_sensitivities")
         return value
-
-
-class ThesisPriceTargetRanges(_ContractModel):
-    low: float
-    mid: float
-    high: float
-
-    @model_validator(mode="after")
-    def _ordered(self) -> "ThesisPriceTargetRanges":
-        if not (self.low <= self.mid <= self.high):
-            raise ValueError(
-                f"ranges must satisfy low<=mid<=high; got ({self.low}, {self.mid}, {self.high})"
-            )
-        return self
-
-
-class ThesisPriceTargetDriverSensitivity(_ContractModel):
-    driver_key: str = Field(min_length=1)
-    delta_per_pct: float
-    rank: int = Field(ge=1)
-
-
-class ThesisPriceTarget(_ContractModel):
-    price_target_id: str = Field(min_length=1)
-    model_ref: ThesisModelVersionRef
-    derived_from_model_build_context_id: str = Field(min_length=1)
-    as_of: str = Field(min_length=1)
-    ranges: ThesisPriceTargetRanges
-    confidence: Confidence
-    method: str | None = Field(default=None, min_length=1)
-    driver_sensitivities: list[ThesisPriceTargetDriverSensitivity] = Field(default_factory=list)
-    time_horizon_months: int = Field(ge=1, le=120)
-    current_price: float = Field(gt=0)
-    current_price_snapshot: CurrentPriceSnapshot | None = None
-    valuation_horizon: ValuationHorizon | None = None
-    implied_return_pct: float
-    schema_version: Literal["1.0"] = "1.0"
-
-    @field_validator("driver_sensitivities")
-    @classmethod
-    def _rank_dense(
-        cls,
-        value: list[ThesisPriceTargetDriverSensitivity],
-    ) -> list[ThesisPriceTargetDriverSensitivity]:
-        if not value:
-            return value
-        _rank_is_dense_from_one(
-            sorted(item.rank for item in value),
-            field_name="driver_sensitivities",
-        )
-        return value
-
-    @model_validator(mode="after")
-    def _current_price_snapshot_matches_current_price(self) -> "ThesisPriceTarget":
-        if (
-            self.current_price_snapshot is not None
-            and abs(float(self.current_price_snapshot.price) - float(self.current_price)) > 1e-9
-        ):
-            raise ValueError("current_price_snapshot.price must equal current_price")
-        return self
 
 
 class ThesisFromIdea(_ContractModel):
@@ -524,6 +507,26 @@ def _normalize_decision_log_artifact_ref(value: Any) -> Any:
     return item
 
 
+class DecisionLogActor(_ContractModel):
+    kind: str
+    id: str | None = None
+    role: str | None = None
+    channel: str | None = None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalize_kind(cls, value: object | None) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("actor.kind is required")
+        return text
+
+    @field_validator("id", "role", "channel", mode="before")
+    @classmethod
+    def _normalize_optional_fields(cls, value: object | None) -> str | None:
+        return _normalize_optional_identifier(value)
+
+
 class DecisionsLogEntry(_ContractModel):
     entry_id: str | None = None
     date: str
@@ -536,6 +539,7 @@ class DecisionsLogEntry(_ContractModel):
     patch_ops_applied: list[PatchOpPreview] = Field(default_factory=list)
     run_id: str | None = None
     artifact_refs: list[DecisionLogArtifactRef] = Field(default_factory=list)
+    actor: DecisionLogActor | None = None
 
     @field_validator("entry_id", "run_id", mode="before")
     @classmethod
@@ -559,6 +563,15 @@ class DecisionsLogEntry(_ContractModel):
         normalized = _normalize_optional_identifier(value)
         return normalized.upper() if normalized is not None else None
 
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        data = handler(self)
+        if isinstance(data, dict):
+            actor = data.get("actor")
+            if actor is None or (isinstance(actor, dict) and actor.get("kind") == "unattributed"):
+                data.pop("actor", None)
+        return data
+
 
 class StructuralFingerprint(_ContractModel):
     sheet: str
@@ -578,7 +591,10 @@ class ThesisLink(_ContractModel):
     thesis_text: str
     category: ThesisLinkCategory
     driver_key: str | None = None
-    data_concept_id: str | None = None
+    required_role: str | None = Field(
+        default=None,
+        pattern=r"^(statement\.(is|bs|cf)|operating|adjustment)\.[a-z0-9][a-z0-9_]*$",
+    )
     structural_fingerprint: StructuralFingerprint | None = None
     model_item_id: str | None = None
     business_model_node_id: str | None = None
@@ -635,6 +651,31 @@ class ComponentScorecardEntry(_ContractModel):
     scored_at: str | None = None
 
 
+class ThesisScorecardBasis(_ContractModel):
+    """Exact thesis/current-model snapshot used by one scorecard run."""
+
+    research_file_id: int = Field(gt=0, strict=True)
+    thesis_version: int = Field(gt=0, strict=True)
+    thesis_links_sha256: str
+    current_model: CurrentModelIdentity
+
+    @field_validator("thesis_links_sha256")
+    @classmethod
+    def _validate_links_digest(cls, value: str) -> str:
+        return validate_sha256_hex(value, field_name="thesis_links_sha256")
+
+
+def thesis_scorecard_links_sha256(links: list[Any]) -> str:
+    payloads = [
+        link.model_dump(mode="json")
+        if hasattr(link, "model_dump")
+        else dict(link)
+        for link in links
+    ]
+    payloads.sort(key=lambda payload: str(payload.get("thesis_link_id") or ""))
+    return hashlib.sha256(canonical_json_bytes(payloads)).hexdigest()
+
+
 class ThesisScorecard(_ContractModel):
     scorecard_id: str | None = None
     thesis_id: str | None = None
@@ -646,6 +687,7 @@ class ThesisScorecard(_ContractModel):
     confirmed_count: int = Field(ge=0)
     challenged_count: int = Field(ge=0)
     disconfirmed_count: int = Field(ge=0)
+    basis: ThesisScorecardBasis | None = None
     schema_version: Literal["1.0"] = "1.0"
 
     @field_validator("scorecard_id", mode="before")
@@ -657,6 +699,86 @@ class ThesisScorecard(_ContractModel):
     @classmethod
     def _normalize_thesis_id(cls, value: object | None) -> str | None:
         return _normalize_optional_identifier(value)
+
+
+class DifferentiatedViewMerge(_ContractModel):
+    """A differentiated-view claim retired into a surviving claim.
+
+    Handles that named ``retired_claim_id`` (thesis links, scorecard entries,
+    excerpt ``claim_ids``) resolve to ``into_claim_id``.
+    """
+
+    retired_claim_id: str = Field(min_length=1)
+    into_claim_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+QuestionContext = Literal["equity", "transaction", "corporate"]
+QuestionPeriodicity = Literal["annual", "quarterly"]
+
+
+class ThesisQuestionProposal(_ContractModel):
+    """What the proposer states: the debate the model exists to answer (spec §3 Question).
+
+    The subject is the Thesis's Business (its ticker), and the author, date, id and
+    ratification are stamped by the doors, so none of them is proposed.
+    """
+
+    claim: str = Field(min_length=1, description="The claim in dispute.")
+    context: QuestionContext
+    horizon: str = Field(min_length=1, description="The horizon the claim resolves over, e.g. FY2028.")
+    periodicity: QuestionPeriodicity
+
+
+class ThesisQuestion(ThesisQuestionProposal):
+    """One recorded Question beside the Thesis (R1, 2026-10-03: agent-proposed, human-ratified).
+
+    ``Thesis.questions`` is append-only: a restated Question is a new record that names
+    the one it ``supersedes``; the prior record survives. ``ratified`` is false until the
+    human ratify door (``POST /theses/{research_file_id}/questions/{question_id}/ratify``)
+    stamps ``ratified_by`` (the trusted principal) and ``ratified_at``.
+    """
+
+    question_id: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    author: str = Field(min_length=1)
+    proposed_at: datetime
+    supersedes: str | None = Field(default=None, min_length=1)
+    ratified: bool = False
+    ratified_by: str | None = Field(default=None, min_length=1)
+    ratified_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _ratification_is_stamped(self) -> "ThesisQuestion":
+        stamped = (self.ratified_by is not None, self.ratified_at is not None)
+        if stamped != (self.ratified, self.ratified):
+            raise ValueError(
+                "a ratified Question carries ratified_by and ratified_at; "
+                "an unratified Question carries neither"
+            )
+        return self
+
+
+class QuestionRef(_ContractModel):
+    """Names one recorded Question: the research file holding its Thesis, and its id (R2)."""
+
+    research_file_id: int = Field(gt=0, strict=True)
+    question_id: str = Field(min_length=1)
+
+
+def _validate_question_history(questions: list[ThesisQuestion], *, ticker: str) -> None:
+    seen: set[str] = set()
+    for question in questions:
+        if question.question_id in seen:
+            raise ValueError(f"duplicate question_id {question.question_id!r}")
+        if question.supersedes is not None and question.supersedes not in seen:
+            raise ValueError(
+                f"question {question.question_id!r} supersedes {question.supersedes!r}, "
+                "which is not an earlier Question"
+            )
+        if question.subject != ticker:
+            raise ValueError("question subject must be the thesis ticker")
+        seen.add(question.question_id)
 
 
 class Thesis(_ContractModel):
@@ -673,6 +795,7 @@ class Thesis(_ContractModel):
     thesis: ThesisField = Field(default_factory=ThesisField)
     consensus_view: ConsensusView | None = None
     differentiated_view: list[DifferentiatedViewClaim] = Field(default_factory=list)
+    differentiated_view_merges: list[DifferentiatedViewMerge] = Field(default_factory=list)
     invalidation_triggers: list[InvalidationTrigger] = Field(default_factory=list)
     business_overview: BusinessOverview | None = None
     catalysts: list[Catalyst] = Field(default_factory=list)
@@ -695,13 +818,30 @@ class Thesis(_ContractModel):
     raw_markdown_extras: list[UnknownSection] = Field(default_factory=list)
     quantitative_framing: QuantitativeFraming | None = None
     position_metadata: PositionMetadata | None = None
-    model_ref: ThesisModelRef | None = None
+    model_ref: ModelVersionRef | None = None
     business_model_ref: BusinessModelRef | None = None
     model_insights: list[ThesisModelInsight] = Field(default_factory=list)
-    price_target: ThesisPriceTarget | None = None
     from_idea: ThesisFromIdea | None = None
+    #: The Question this research file exists to answer, as an append-only history; the
+    #: last record is current (``current_question``). Excluded from dumps while empty so a
+    #: Thesis written before it keeps its bytes.
+    questions: list[ThesisQuestion] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+    )
 
     schema_version: Literal["1.0"] = "1.0"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _stored_price_target(cls, data: Any) -> Any:
+        # A Thesis stores no price target; it reads the PriceTarget bound to
+        # the ModelVersion (``schema/thesis_model_view.py``). Thesis rows and
+        # proposal payloads written before that carry a ``price_target`` key,
+        # which decodes to nothing.
+        if isinstance(data, Mapping) and "price_target" in data:
+            return {key: value for key, value in data.items() if key != "price_target"}
+        return data
 
     @field_validator("thesis_id", mode="before")
     @classmethod
@@ -730,7 +870,28 @@ class Thesis(_ContractModel):
     def _validate_company_identity(self) -> "Thesis":
         if self.company.ticker != self.ticker:
             raise ValueError("company.ticker must match thesis ticker")
+        _validate_question_history(self.questions, ticker=self.ticker)
         return self
+
+    def current_question(self) -> ThesisQuestion | None:
+        return self.questions[-1] if self.questions else None
+
+    def question(self, question_id: str) -> ThesisQuestion | None:
+        return next(
+            (item for item in self.questions if item.question_id == question_id),
+            None,
+        )
+
+    def current_question_ref(self, research_file_id: int) -> QuestionRef | None:
+        """The ref a new decomposition or deliverable of this research file carries (R2)."""
+
+        current = self.current_question()
+        if current is None:
+            return None
+        return QuestionRef(
+            research_file_id=int(research_file_id),
+            question_id=current.question_id,
+        )
 
 
 __all__ = [
@@ -738,9 +899,11 @@ __all__ = [
     "BusinessModelRef",
     "ComponentScorecardEntry",
     "ConsensusVsThesisStatus",
+    "DecisionLogActor",
     "DecisionLogArtifactRef",
     "DecisionsLogEntry",
     "DecisionValue",
+    "DifferentiatedViewMerge",
     "EpsFcfQuantitativeFraming",
     "GaapNonGaapBridge",
     "MarginsQuantitativeFraming",
@@ -748,6 +911,9 @@ __all__ = [
     "PositionMetadata",
     "PositionSize",
     "QuantitativeFraming",
+    "QuestionContext",
+    "QuestionPeriodicity",
+    "QuestionRef",
     "ResolutionAnchor",
     "RevenueQuantitativeFraming",
     "RiskDecomposition",
@@ -766,13 +932,10 @@ __all__ = [
     "ThesisLink",
     "ThesisLinkCategory",
     "ThesisModelInsight",
-    "ThesisModelRef",
-    "ThesisModelVersionRef",
-    "ThesisPriceTarget",
-    "ThesisPriceTargetDriverSensitivity",
-    "ThesisPriceTargetRanges",
     "ThesisRiskSurfaced",
     "ThesisQuantitativeScenario",
+    "ThesisQuestion",
+    "ThesisQuestionProposal",
     "ThesisScorecard",
     "ThesisScorecardEvidence",
     "ThesisScorecardEntry",

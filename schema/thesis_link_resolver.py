@@ -1,31 +1,29 @@
 """Pure ThesisLink -> FinancialModel resolution helpers.
 
-Known plan #1 gaps, deferred to plan #3 / ModelBuildContext work:
+Known contract gap deferred to ModelBuildContext work:
 
-1. ``segment_edgar_member`` cannot resolve today because expanded ``LineItem``
-   instances do not persist EDGAR member identity on the model graph.
-2. Expanded Assumptions growth rows currently use the generic repeat-group role
-   ``growth`` rather than distinct ``volume_growth`` / ``price_growth`` roles.
-   Links that carry the more specific thesis-side role therefore fall through
-   to the weaker label-pattern path until template persistence is tightened.
+``segment_edgar_member`` cannot resolve today because expanded ``LineItem``
+instances do not persist EDGAR member identity on the model graph.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-import re
 from typing import Literal
 
 from .business_model_compiler import CompiledDriverRegistry
 from .driver_resolver import _find_item, resolve_driver_key
-from .model_build_context_errors import InvalidDriverKey, ModelBuildContextError
+from .model_input_errors import InvalidDriverKey, ModelBuildContextError
 from .models import FinancialModel, LineItem
 from .thesis import ResolutionAnchor, StructuralFingerprint, ThesisLink
+
+logger = logging.getLogger(__name__)
 
 ResolvedAnchor = Literal[
     "driver_key",
     "business_model_node",
-    "data_concept_id",
+    "required_role",
     "structural_fingerprint",
     "template_version_cache",
     "model_item_id",
@@ -44,7 +42,7 @@ _SEMANTIC_DRIVER_KEY_ALIASES: dict[str, str] = {
 _ANCHOR_STRENGTH: dict[ResolvedAnchor, int] = {
     "driver_key": 6,
     "business_model_node": 5,
-    "data_concept_id": 4,
+    "required_role": 4,
     "structural_fingerprint": 3,
     "template_version_cache": 2,
     "model_item_id": 1,
@@ -83,23 +81,8 @@ def _append_warning(warnings: list[str], warning: str) -> None:
         warnings.append(warning)
 
 
-def _normalize_text(value: object | None) -> str:
-    return " ".join(str(value or "").strip().split())
 
 
-def _label_matches(pattern: str, label: str) -> bool:
-    normalized_pattern = _normalize_text(pattern)
-    normalized_label = _normalize_text(label)
-    if not normalized_pattern or not normalized_label:
-        return False
-    if normalized_pattern.casefold() == normalized_label.casefold():
-        return True
-    if normalized_pattern.casefold() in normalized_label.casefold():
-        return True
-    try:
-        return re.search(pattern, label, flags=re.IGNORECASE) is not None
-    except re.error:
-        return False
 
 
 def _iter_contexts(model: FinancialModel) -> list[_ItemContext]:
@@ -184,58 +167,52 @@ def _resolve_structural_fingerprint(
             _append_warning(warnings, _STRUCTURAL_ANCHOR_WARNING_REPEAT_GROUP_ROLE_MISMATCH)
 
     if fingerprint.segment_edgar_member:
-        # The plan #1 resolver cannot implement this anchor yet because the
-        # current FinancialModel graph does not retain segment member identity
-        # after expand_segments(). Plan #3 is the persistence fix.
+        # The current FinancialModel graph does not retain segment member
+        # identity after expand_segments().
         _append_warning(warnings, _STRUCTURAL_ANCHOR_WARNING_SEGMENT_EDGAR_MEMBER_UNAVAILABLE)
-
-    if fingerprint.driver_category is None or not fingerprint.label_pattern:
-        return None
-
-    labeled_candidates = [
-        candidate
-        for candidate in base_candidates
-        if candidate.line_item.driver_category == fingerprint.driver_category
-        and _label_matches(fingerprint.label_pattern, candidate.line_item.label)
-    ]
-    return _select_candidate(labeled_candidates, fingerprint.position_index)
-
-
-def _resolve_data_concept_id(data_concept_id: str | None, contexts: list[_ItemContext]) -> LineItem | None:
-    normalized = _normalize_text(data_concept_id)
-    if not normalized:
-        return None
-    matches = [context.line_item for context in contexts if context.line_item.data_concept_id == normalized]
-    if len(matches) == 1:
-        return matches[0]
     return None
+
+
+def _resolve_required_role(
+    required_role: str | None,
+    contexts: list[_ItemContext],
+) -> LineItem | None:
+    if not required_role:
+        return None
+    matches = [
+        context.line_item
+        for context in contexts
+        if context.line_item.required_role == required_role
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _resolve_template_version_cache(link: ThesisLink, model: FinancialModel) -> LineItem | None:
     if not link.template_version or not link.model_item_id:
         return None
-    current_template_version = _normalize_text(model.metadata.template_version)
+    current_template_version = model.metadata.template_version
     if not current_template_version:
         return None
-    if _normalize_text(link.template_version) != current_template_version:
+    if link.template_version != current_template_version:
         return None
     if not model._index:
         model.build_index()
     try:
         return model.get_item(link.model_item_id)
     except KeyError:
+        logger.debug("template_version cache anchor dropped: model_item_id %r not in model", link.model_item_id)
         return None
 
 
 def _resolve_model_item_id(model: FinancialModel, model_item_id: str | None) -> LineItem | None:
-    normalized = _normalize_text(model_item_id)
-    if not normalized:
+    if not model_item_id:
         return None
     if not model._index:
         model.build_index()
     try:
-        return model.get_item(normalized)
+        return model.get_item(model_item_id)
     except KeyError:
+        logger.debug("model_item_id anchor dropped: %r not in model", model_item_id)
         return None
 
 
@@ -251,13 +228,20 @@ def _try_driver_key(
         resolved_item_id = resolve_driver_key(link.driver_key, compiled_registry=compiled_registry)
     except InvalidDriverKey:
         resolved_item_id = _SEMANTIC_DRIVER_KEY_ALIASES.get(str(link.driver_key or "").strip())
-    except (KeyError, ValueError, ModelBuildContextError):
+    except (KeyError, ValueError, ModelBuildContextError) as exc:
+        logger.warning(
+            "driver_key %r failed to resolve (%s: %s); anchor dropped",
+            link.driver_key,
+            type(exc).__name__,
+            exc,
+        )
         return None
     if resolved_item_id is None:
         return None
     try:
         _, item = _find_item(model, resolved_item_id)
     except KeyError:
+        logger.debug("driver_key %r resolved to %r but item not in model", link.driver_key, resolved_item_id)
         return None
     return _resolved("driver_key", item, [])
 
@@ -305,9 +289,9 @@ def resolve_link(
     if result is not None:
         return result
 
-    item = _resolve_data_concept_id(link.data_concept_id, contexts)
+    item = _resolve_required_role(link.required_role, contexts)
     if item is not None:
-        return _resolved("data_concept_id", item, warnings)
+        return _resolved("required_role", item, warnings)
 
     item = _resolve_structural_fingerprint(link, contexts, warnings)
     if item is not None:

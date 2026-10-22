@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .control_snapshot_projection import CanonicalProjectionCurve
 from .dependency_graph import DependencyGraph as DependencyGraph
 from .growth_carry_forward_guard import (
     GrowthCarryForwardFinding,
     growth_carry_forward_findings,
 )
+from .forecast_contribution import durable_driver_plan_coverage
+from .handle import ComputedValues
 from .model_readiness_common import (
     _computed_values,
     _has_any_value,
@@ -17,7 +21,7 @@ from .model_readiness_common import (
     _latest_numeric_value as _latest_numeric_value,
     _missing_periods,
     _nearly_equal as _nearly_equal,
-    _normalize_computed_values,  # noqa: F401 - compatibility alias for schema.model_readiness imports
+    _normalize_computed_values,
     _projection_periods,
 )
 from .model_readiness_valuation import (
@@ -29,32 +33,16 @@ from .model_readiness_valuation import (
     _VALUATION_ECONOMIC_INPUTS as _VALUATION_ECONOMIC_INPUTS,
     _VALUATION_PLACEHOLDER_VALUES as _VALUATION_PLACEHOLDER_VALUES,
     _VALUATION_REQUIRED_INPUTS as _VALUATION_REQUIRED_INPUTS,
-    _valuation_input_status,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     compute_valuation_input_readiness,
 )
 from .model_readiness_quality import (
     ModelQualityDomain,
     ModelQualityDomainReadiness,
     ModelQualityReadiness,
-    ModelQualityReadinessDomain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     ModelQualityReadinessIssue,
     ModelQualityReadinessSeverity,
     ModelQualityReadinessStatus,
-    _capital_structure_quality_issues,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _dependency_issue,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _inventory_material,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _model_quality_summary,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _quality_any_projection_issue,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _quality_projection_issue,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _segment_basis_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_bridge_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_output_direction_issues,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _share_count_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     _upstream_item_ids,
-    _valuation_input_flags,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _valuation_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _working_capital_quality_domain,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     compute_model_quality_readiness,
 )
 from .model_readiness_scenario_output import (
@@ -66,10 +54,6 @@ from .model_readiness_scenario_output import (
     ScenarioOutputReadinessScope,
     ScenarioOutputReadinessSeverity,
     ScenarioOutputReadinessStatus,
-    _SCENARIO_OUTPUT_REQUIREMENTS,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_output_issue_category,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_output_summary,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _select_scenario_output_item_id,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     compute_model_scenario_output_readiness,
 )
 from .model_readiness_scenario_bridge import (
@@ -81,20 +65,6 @@ from .model_readiness_scenario_bridge import (
     ScenarioBridgeReadinessScope,
     ScenarioBridgeReadinessSeverity,
     ScenarioBridgeReadinessStatus,
-    _DEFAULT_SCENARIO_BRIDGE_TARGET_ID,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _SCENARIO_CASE_PATTERNS,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _SCENARIO_CASES,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _find_item_location,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _find_scenario_value_row,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _graph_downstream_ids,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _is_offset_scenario_owner,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _normalize_scenario_label,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _offset_anchor_ids,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_bridge_anchor_id,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_bridge_case_row_ids,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_bridge_issue_category,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_bridge_owners,  # noqa: F401 - compatibility alias for schema.model_readiness imports
-    _scenario_bridge_summary,  # noqa: F401 - compatibility alias for schema.model_readiness imports
     compute_model_scenario_bridge_readiness,
 )
 from .models import FinancialModel, FormulaSpec, ItemType, LineItemRef
@@ -108,7 +78,9 @@ if TYPE_CHECKING:
 ProjectionReadinessStatus = Literal["ready", "incomplete", "blocked", "unknown"]
 ProjectionReadinessSeverity = Literal["blocking", "warning"]
 ProjectionReadinessScope = Literal["build_contract", "workbook_formula"]
-ProjectionReadinessIssueCategory = Literal["seedable", "operational_warning", "blocking"]
+ProjectionReadinessIssueCategory = Literal[
+    "seedable", "operational_warning", "blocking"
+]
 ProjectionReadinessIssueCode = Literal[
     "primary_projection_item_missing",
     "primary_projection_missing",
@@ -117,11 +89,13 @@ ProjectionReadinessIssueCode = Literal[
     "bm_segment_projection_missing",
     "segment_history_basis_mixed",
     "segment_history_basis_unverified",
-    "projection_override_validation_error",
-    "stale_projection_overrides",
-    "projection_override_warnings",
     "formula_rollup_missing_inputs",
+    "required_driver_projection_missing",
+    "driver_projection_period_gap",
+    "stale_render_state",
 ]
+
+
 class ModelProjectionReadinessIssue(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -164,21 +138,29 @@ def compute_model_projection_readiness(
     *,
     compiled_registry: "CompiledDriverRegistry | None" = None,
     segment_profile: "SegmentProfile | None" = None,
-    seed_projections: Any | None = None,
-    computed_values: dict[str, dict[int, float]] | None = None,
+    canonical_control_curves: tuple[CanonicalProjectionCurve, ...] = (),
+    artifact_forecast_coverage_by_driver_id: Mapping[
+        str, Sequence[int]
+    ] | None = None,
+    computed_values: ComputedValues | None = None,
     guard_config: Any | None = None,
+    driver_assumption_plan: Any | None = None,
+    render_state: Any | None = None,
+    current_identity: Any | None = None,
 ) -> ModelProjectionReadiness:
     """Return an agent-facing projection-readiness summary for a built model."""
 
     model.build_index()
     scope: ProjectionReadinessScope = (
         "build_contract"
-        if compiled_registry is not None or segment_profile is not None or seed_projections is not None
+        if compiled_registry is not None
+        or segment_profile is not None
+        or canonical_control_curves
+        or artifact_forecast_coverage_by_driver_id
         else "workbook_formula"
     )
     limitations = _readiness_limitations(
         compiled_registry=compiled_registry,
-        seed_projections=seed_projections,
     )
     projection_periods = _projection_periods(model)
     if not projection_periods:
@@ -244,8 +226,21 @@ def compute_model_projection_readiness(
             )
         )
 
-    issues.extend(_seed_projection_issues(seed_projections))
-    issues.extend(_formula_rollup_missing_input_issues(model, values, projection_periods))
+    durable_issues = _canonical_driver_coverage_issues(
+        driver_assumption_plan=driver_assumption_plan,
+        canonical_control_curves=canonical_control_curves,
+        artifact_forecast_coverage_by_driver_id=(
+            artifact_forecast_coverage_by_driver_id
+        ),
+        render_state=render_state,
+        current_identity=current_identity,
+        projection_periods=projection_periods,
+    )
+    issues = _dedup_compiled_issues(issues, durable_issues)
+    issues.extend(durable_issues)
+    issues.extend(
+        _formula_rollup_missing_input_issues(model, values, projection_periods)
+    )
 
     if any(issue.severity == "blocking" for issue in issues):
         status: ProjectionReadinessStatus = "blocked"
@@ -265,6 +260,187 @@ def compute_model_projection_readiness(
     )
 
 
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _render_identity_mismatches(
+    *, driver_assumption_plan: Any, render_state: Any, current_identity: Any
+) -> list[str]:
+    if render_state is None:
+        return []
+    identity = _field(render_state, "identity")
+    compiler = _field(render_state, "compiler_inputs")
+    if identity is None or compiler is None:
+        return ["partial_render_state"]
+    mismatches: list[str] = []
+    plan_bm = str(_field(driver_assumption_plan, "business_model_id", "") or "")
+    plan_revision = str(_field(driver_assumption_plan, "revision", "") or "")
+    if plan_bm and plan_bm != str(_field(identity, "business_model_id", "") or ""):
+        mismatches.append("business_model_id")
+    if plan_revision and plan_revision != str(
+        _field(identity, "business_model_revision", "") or ""
+    ):
+        mismatches.append("business_model_revision")
+    comparisons = {
+        "build_id": "build_id",
+        "model_id": "model_id",
+        "model_version": "model_version",
+        "model_build_context_id": "model_build_context_id",
+        "model_build_context_version": "model_build_context_version",
+        "business_model_id": "business_model_id",
+        "business_model_revision": "business_model_revision",
+        "segment_profile_snapshot_ref": "segment_profile_snapshot_ref",
+    }
+    if current_identity is not None:
+        for current_name, identity_name in comparisons.items():
+            expected = _field(current_identity, current_name)
+            if expected is not None and expected != _field(identity, identity_name):
+                mismatches.append(current_name)
+    for name in (
+        "model_build_context_id",
+        "model_build_context_version",
+    ):
+        if _field(identity, name) != _field(compiler, name):
+            mismatches.append(name)
+    business_model_ref = _field(compiler, "business_model_ref")
+    segment_profile_ref = _field(compiler, "segment_profile_snapshot_ref")
+    if _field(identity, "business_model_id") != _field(
+        business_model_ref, "business_model_id"
+    ):
+        mismatches.append("business_model_id")
+    if _field(identity, "business_model_revision") != _field(
+        business_model_ref, "revision"
+    ):
+        mismatches.append("business_model_revision")
+    if _field(identity, "segment_profile_snapshot_ref") != _field(
+        segment_profile_ref, "snapshot_id"
+    ):
+        mismatches.append("segment_profile_snapshot_ref")
+    records = list(_field(render_state, "seed_coverage_manifest", []) or [])
+    build_id = _field(identity, "build_id")
+    if any(_field(record, "build_identity") != build_id for record in records):
+        mismatches.append("seed_coverage_build_id")
+    return sorted(set(mismatches))
+
+
+def _canonical_driver_coverage_issues(
+    *,
+    driver_assumption_plan: Any,
+    canonical_control_curves: tuple[CanonicalProjectionCurve, ...],
+    artifact_forecast_coverage_by_driver_id: Mapping[
+        str, Sequence[int]
+    ] | None,
+    render_state: Any,
+    current_identity: Any,
+    projection_periods: list[int],
+) -> list[ModelProjectionReadinessIssue]:
+    if driver_assumption_plan is None:
+        return []
+    mismatches = _render_identity_mismatches(
+        driver_assumption_plan=driver_assumption_plan,
+        render_state=render_state,
+        current_identity=current_identity,
+    )
+    if mismatches:
+        return [
+            ModelProjectionReadinessIssue(
+                code="stale_render_state",
+                severity="blocking",
+                detail="render-state identity does not match the current accepted model: "
+                + ", ".join(mismatches),
+                fix="rebuild the model from the accepted BusinessModel and segment snapshot",
+            )
+        ]
+    coverage = durable_driver_plan_coverage(
+        driver_assumption_plan=driver_assumption_plan,
+        canonical_control_curves=canonical_control_curves,
+        projection_periods=projection_periods,
+    )
+    covered_periods_by_driver_id = {
+        driver_id: set(periods)
+        for driver_id, periods in coverage.covered_periods_by_driver_id.items()
+    }
+    artifact_coverage = artifact_forecast_coverage_by_driver_id or {}
+    unknown_driver_ids = set(artifact_coverage) - set(coverage.required_driver_ids)
+    if unknown_driver_ids:
+        raise ValueError(
+            "artifact forecast coverage driver_id is absent from the accepted plan: "
+            f"{tuple(sorted(unknown_driver_ids))!r}"
+        )
+    for driver_id, periods in artifact_coverage.items():
+        covered_periods_by_driver_id[driver_id].update(
+            str(int(period)) for period in periods
+        )
+    issues: list[ModelProjectionReadinessIssue] = []
+    required_periods = set(coverage.required_periods)
+    for key in coverage.required_driver_ids:
+        durable_periods = covered_periods_by_driver_id[key]
+        missing = sorted(int(period) for period in required_periods - durable_periods)
+        if not durable_periods:
+            issues.append(
+                ModelProjectionReadinessIssue(
+                    code="required_driver_projection_missing",
+                    severity="blocking",
+                    detail=(
+                        f"required driver {key!r} has no canonical forecast-control "
+                        "curve"
+                    ),
+                    item_id=key,
+                    missing_periods=list(projection_periods),
+                )
+            )
+        elif missing:
+            issues.append(
+                ModelProjectionReadinessIssue(
+                    code="driver_projection_period_gap",
+                    severity="blocking",
+                    detail=(
+                        f"required driver {key!r} has a canonical forecast-control "
+                        "period gap"
+                    ),
+                    item_id=key,
+                    missing_periods=missing,
+                )
+            )
+    return issues
+
+
+def _dedup_compiled_issues(
+    existing: list[ModelProjectionReadinessIssue],
+    durable: list[ModelProjectionReadinessIssue],
+) -> list[ModelProjectionReadinessIssue]:
+    blocking_gaps = [
+        issue
+        for issue in durable
+        if issue.severity == "blocking"
+        and issue.code
+        in {"required_driver_projection_missing", "driver_projection_period_gap"}
+    ]
+    if not blocking_gaps:
+        return existing
+    result: list[ModelProjectionReadinessIssue] = []
+    for issue in existing:
+        if (
+            issue.code != "bm_driver_projection_seed_missing"
+            or issue.severity == "blocking"
+        ):
+            result.append(issue)
+            continue
+        issue_periods = set(issue.missing_periods)
+        related = set(issue.related_item_ids)
+        superseded = any(
+            (not issue_periods or bool(issue_periods & set(gap.missing_periods)))
+            and (gap.item_id in related or not related)
+            for gap in blocking_gaps
+        )
+        if not superseded:
+            result.append(issue)
+    return result
+
+
 def _primary_revenue_item_id(model: FinancialModel) -> str | None:
     for item_id in (
         "tpl.fm.income_statement.total_revenue",
@@ -279,7 +455,7 @@ def _compiled_bm_projection_issues(
     model: FinancialModel,
     *,
     compiled_registry: "CompiledDriverRegistry",
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
     guard_config: Any | None = None,
 ) -> list[ModelProjectionReadinessIssue]:
@@ -296,7 +472,9 @@ def _compiled_bm_projection_issues(
         )
     }
 
-    for segment_id, segment_index in sorted(compiled_registry.segment_mapping.items(), key=lambda item: item[1]):
+    for segment_id, segment_index in sorted(
+        compiled_registry.segment_mapping.items(), key=lambda item: item[1]
+    ):
         segment_info = (
             segment_profile.segments[int(segment_index) - 1]
             if 0 < int(segment_index) <= len(segment_profile.segments)
@@ -391,7 +569,9 @@ def _compiled_bm_projection_issues(
         issues.append(
             ModelProjectionReadinessIssue(
                 code="bm_segment_projection_missing",
-                severity="blocking" if structural_gaps or not seedable_gaps else "warning",
+                severity="blocking"
+                if structural_gaps or not seedable_gaps
+                else "warning",
                 detail=(
                     (
                         f"segment {segment_id!r} has historical revenue actuals but no projected revenue; "
@@ -467,14 +647,19 @@ def _segment_history_basis_issues(
     mixed_notes: list[str] = []
     prior_observation: Any | None = None
     for _raw_year, observation in sorted(
-        ((int(getattr(observation, "fiscal_year", year)), observation) for year, observation in observations.items()),
+        (
+            (int(getattr(observation, "fiscal_year", year)), observation)
+            for year, observation in observations.items()
+        ),
         key=lambda item: item[0],
     ):
         fiscal_year = int(getattr(observation, "fiscal_year", _raw_year))
         if fiscal_year not in historical_set:
             prior_observation = observation
             continue
-        comparable, note = _effective_segment_observation_comparability(prior_observation, observation)
+        comparable, note = _effective_segment_observation_comparability(
+            prior_observation, observation
+        )
         if comparable == "not_applicable":
             prior_observation = observation
             continue
@@ -563,20 +748,26 @@ def _effective_segment_observation_comparability(
     note = getattr(observation, "comparability_note", None)
     if prior_basis and basis:
         if prior_basis != basis:
-            return "not_comparable", note or f"segment basis changed from {prior_basis!r} to {basis!r}"
+            return (
+                "not_comparable",
+                note or f"segment basis changed from {prior_basis!r} to {basis!r}",
+            )
         if explicit == "not_comparable":
             return "not_comparable", note
         return "comparable", note
     if explicit == "not_comparable":
         return "not_comparable", note
-    return "unknown", note or "segment basis provenance is missing for adjacent-year comparability"
+    return (
+        "unknown",
+        note or "segment basis provenance is missing for adjacent-year comparability",
+    )
 
 
 def _split_segment_driver_gaps(
     model: FinancialModel,
     *,
     compiled_registry: "CompiledDriverRegistry",
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     segment_id: str,
     gaps: dict[str, list[int]],
     historical_periods: list[int],
@@ -590,7 +781,9 @@ def _split_segment_driver_gaps(
         except KeyError:
             structural[item_id] = missing
             continue
-        if item_id in rate_item_ids or _has_any_value(values.get(item_id, {}), historical_periods):
+        if item_id in rate_item_ids or _has_any_value(
+            values.get(item_id, {}), historical_periods
+        ):
             seedable[item_id] = missing
         else:
             structural[item_id] = missing
@@ -605,8 +798,7 @@ def _segment_rate_item_ids(
     return {
         item_id
         for driver_key, item_id in compiled_registry.driver_keys.items()
-        if driver_key.startswith(prefix)
-        and "." in driver_key[len(prefix):]
+        if driver_key.startswith(prefix) and "." in driver_key[len(prefix) :]
     }
 
 
@@ -615,12 +807,14 @@ def _downgrade_primary_missing_for_seedable_bm(
 ) -> None:
     has_seedable_bm_gap = any(
         issue.severity == "warning"
-        and issue.code in {"bm_driver_projection_seed_missing", "bm_segment_projection_missing"}
+        and issue.code
+        in {"bm_driver_projection_seed_missing", "bm_segment_projection_missing"}
         for issue in issues
     )
     has_structural_bm_block = any(
         issue.severity == "blocking"
-        and issue.code in {"bm_driver_projection_seed_missing", "bm_segment_projection_missing"}
+        and issue.code
+        in {"bm_driver_projection_seed_missing", "bm_segment_projection_missing"}
         for issue in issues
     )
     if not has_seedable_bm_gap or has_structural_bm_block:
@@ -639,7 +833,7 @@ def _segment_driver_projection_gaps(
     model: FinancialModel,
     *,
     compiled_registry: "CompiledDriverRegistry",
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     segment_id: str,
     projection_periods: list[int],
 ) -> dict[str, list[int]]:
@@ -680,7 +874,7 @@ def _segment_projection_related_item_ids(
     model: FinancialModel,
     *,
     compiled_registry: "CompiledDriverRegistry",
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     segment_id: str,
     projection_periods: list[int],
 ) -> list[str]:
@@ -690,61 +884,13 @@ def _segment_projection_related_item_ids(
         if not registry_key.startswith(prefix) or item_id not in model._index:
             continue
         item = model.get_item(item_id)
-        if item.item_type != ItemType.input and not item_id.endswith(".segment_revenue"):
+        if item.item_type != ItemType.input and not item_id.endswith(
+            ".segment_revenue"
+        ):
             continue
         if not _has_any_value(values.get(item_id, {}), projection_periods):
             blank_ids.append(item_id)
     return blank_ids
-
-
-def _seed_projection_issues(seed_projections: Any | None) -> list[ModelProjectionReadinessIssue]:
-    if seed_projections is None:
-        return []
-
-    validation_error = getattr(seed_projections, "validation_error", None)
-    if validation_error:
-        return [
-            ModelProjectionReadinessIssue(
-                code="projection_override_validation_error",
-                severity="blocking",
-                detail=str(validation_error),
-            )
-        ]
-
-    issues: list[ModelProjectionReadinessIssue] = []
-    total_rate_keys = int(getattr(seed_projections, "total_rate_keys", 0) or 0)
-    orphans = list(getattr(seed_projections, "orphans", []) or [])
-    if total_rate_keys and orphans:
-        item_miss_reasons = {"bm_key_not_in_registry", "tpl_item_not_found", "item_not_found"}
-        item_miss_orphans = [
-            orphan for orphan in orphans if getattr(orphan, "reason", None) in item_miss_reasons
-        ]
-        if item_miss_orphans:
-            ratio = len(item_miss_orphans) / total_rate_keys
-            severity: ProjectionReadinessSeverity = "blocking" if ratio > 0.5 else "warning"
-            issues.append(
-                ModelProjectionReadinessIssue(
-                    code="stale_projection_overrides",
-                    severity=severity,
-                    detail=(
-                        f"{len(item_miss_orphans)}/{total_rate_keys} projection override keys "
-                        "do not exist in this build"
-                    ),
-                    related_item_ids=[str(getattr(orphan, "rate_key", "")) for orphan in item_miss_orphans[:20]],
-                )
-            )
-
-    warnings = list(getattr(seed_projections, "warnings", []) or [])
-    if warnings:
-        issues.append(
-            ModelProjectionReadinessIssue(
-                code="projection_override_warnings",
-                severity="warning",
-                detail=f"{len(warnings)} projection override warning(s) were emitted during build",
-                related_item_ids=[str(getattr(warning, "rate_key", "")) for warning in warnings[:20]],
-            )
-        )
-    return issues
 
 
 _ROLLUP_COLLAPSE_ANCHORS: dict[str, tuple[str, ...]] = {
@@ -763,7 +909,7 @@ _ROLLUP_REQUIRED_INPUT_ANCHORS: dict[str, tuple[str, ...]] = {
 
 def _formula_rollup_missing_input_issues(
     model: FinancialModel,
-    values: dict[str, dict[int, float]],
+    values: ComputedValues,
     projection_periods: list[int],
 ) -> list[ModelProjectionReadinessIssue]:
     issues: list[ModelProjectionReadinessIssue] = []
@@ -793,7 +939,10 @@ def _formula_rollup_missing_input_issues(
                 continue
             if not any(period in missing for missing in missing_by_ref.values()):
                 continue
-            if any(_is_material_nonzero(values.get(anchor_id, {}).get(period)) for anchor_id in anchor_ids):
+            if any(
+                _is_material_nonzero(values.get(anchor_id, {}).get(period))
+                for anchor_id in anchor_ids
+            ):
                 collapsed_periods.append(period)
 
         if not collapsed_periods:
@@ -844,7 +993,8 @@ def _formula_rollup_missing_input_issues(
             if not any(period in missing for missing in missing_by_ref.values()):
                 continue
             if _is_material_nonzero(output_values.get(period)) or any(
-                _is_material_nonzero(values.get(anchor_id, {}).get(period)) for anchor_id in anchor_ids
+                _is_material_nonzero(values.get(anchor_id, {}).get(period))
+                for anchor_id in anchor_ids
             ):
                 incomplete_periods.append(period)
 
@@ -913,8 +1063,6 @@ def _issue_category(
     }:
         return "seedable"
     if code in {
-        "stale_projection_overrides",
-        "projection_override_warnings",
         "segment_history_basis_unverified",
     }:
         return "operational_warning"
@@ -924,17 +1072,16 @@ def _issue_category(
 def _readiness_limitations(
     *,
     compiled_registry: "CompiledDriverRegistry | None",
-    seed_projections: Any | None,
 ) -> list[str]:
     limitations: list[str] = []
     if compiled_registry is None:
         limitations.append("bm_segment_projection_missing requires the build registry")
-    if seed_projections is None:
-        limitations.append("stale_projection_overrides requires build seed-projection metadata")
     return limitations
 
 
-def _readiness_summary(status: ProjectionReadinessStatus, issues: list[ModelProjectionReadinessIssue]) -> str:
+def _readiness_summary(
+    status: ProjectionReadinessStatus, issues: list[ModelProjectionReadinessIssue]
+) -> str:
     if status == "ready":
         return "projection formulas resolve for the primary model outputs"
     if not issues:

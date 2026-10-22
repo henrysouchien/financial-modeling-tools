@@ -12,11 +12,11 @@ from pydantic import (
 )
 
 from ._shared_slice import DILIGENCE_SECTION_KEYS
-from .enum_canonicalizers import (
+from industry_slice_core.enum_canonicalizers import (
     canonicalize_optional_strategy,
     canonicalize_optional_timeframe,
 )
-from .strategy_categories.registry import validate_strategy_category_id
+from industry_slice_core.strategy_categories.registry import validate_strategy_category_id
 
 
 _DILIGENCE_KEYS = frozenset(DILIGENCE_SECTION_KEYS)
@@ -28,7 +28,7 @@ _FROZEN_CONTRACT = ConfigDict(
 )
 _CONFIDENCE_LEVELS = frozenset({"low", "medium", "high"})
 
-# Must match _shared_slice.DILIGENCE_SECTION_KEYS — parity enforced by tests/schema/test_process_template.py:312.
+# Must match _shared_slice.DILIGENCE_SECTION_KEYS; focused schema tests enforce parity.
 SectionKey = Literal[
     "business_overview",
     "thesis",

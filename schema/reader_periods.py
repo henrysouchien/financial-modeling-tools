@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import re
-import sys
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .models import (
@@ -20,14 +19,6 @@ from .reader_cells import (
     _parse_period_token,
 )
 
-
-def _parent_attr(name: str, fallback: Any) -> Any:
-    parent = sys.modules.get("schema.reader")
-    if parent is None:
-        parent = sys.modules.get("reader")
-    return getattr(parent, name, fallback) if parent is not None else fallback
-
-
 _QUARTERLY_RE = re.compile(r"^[1-4]Q\d{2,4}[AEae]?$")
 
 
@@ -40,16 +31,13 @@ def _sheet_has_quarterly_tokens(cells: Dict[Tuple[int, int], Any]) -> bool:
     Requires at least _QUARTERLY_AUTO_THRESHOLD quarterly tokens in a single
     row to avoid false positives from stray '1Q24'-like labels in notes cells.
     """
-    get_cell_value = _parent_attr("_get_cell_value", _get_cell_value)
-    parse_period_token = _parent_attr("_parse_period_token", _parse_period_token)
-    quarterly_auto_threshold = _parent_attr("_QUARTERLY_AUTO_THRESHOLD", _QUARTERLY_AUTO_THRESHOLD)
     for row in range(1, 11):
         count = 0
         for col in range(2, 200):
-            parsed = parse_period_token(get_cell_value(cells, row, col))
+            parsed = _parse_period_token(_get_cell_value(cells, row, col))
             if parsed and parsed[2]:
                 count += 1
-                if count >= quarterly_auto_threshold:
+                if count >= _QUARTERLY_AUTO_THRESHOLD:
                     return True
     return False
 
@@ -59,43 +47,27 @@ def _find_period_header(
     mode: str,
 ) -> Tuple[Dict[int, int], Set[int], Set[int]]:
     """Heuristically locate period header rows and return period mappings."""
-    get_cell_value = _parent_attr("_get_cell_value", _get_cell_value)
-    parse_period_token = _parent_attr("_parse_period_token", _parse_period_token)
-    row_is_date_period_header = _parent_attr(
-        "_row_is_date_period_header",
-        _row_is_date_period_header,
-    )
-    parse_excel_date_period_token = _parent_attr(
-        "_parse_excel_date_period_token",
-        _parse_excel_date_period_token,
-    )
-    expand_date_header_periods = _parent_attr(
-        "_expand_date_header_periods",
-        _expand_date_header_periods,
-    )
-    encode_period_fn = _parent_attr("encode_period", encode_period)
-
     rows_data = []
     for row in range(1, 11):
         periods: Dict[int, int] = {}
         quarterly_cols: Set[int] = set()
         annual_cols: Set[int] = set()
-        is_date_header = row_is_date_period_header(cells, row)
+        is_date_header = _row_is_date_period_header(cells, row)
         for col in range(2, 200):
-            value = get_cell_value(cells, row, col)
-            parsed = parse_period_token(value)
+            value = _get_cell_value(cells, row, col)
+            parsed = _parse_period_token(value)
             if parsed is None and is_date_header:
-                parsed = parse_excel_date_period_token(value)
+                parsed = _parse_excel_date_period_token(value)
             if parsed:
                 year, slot, is_quarterly = parsed
-                period = encode_period_fn(year, slot or 5, mode)
+                period = encode_period(year, slot or 5, mode)
                 periods[col] = period
                 if is_quarterly:
                     quarterly_cols.add(col)
                 else:
                     annual_cols.add(col)
         if is_date_header and periods and not quarterly_cols:
-            periods = expand_date_header_periods(cells, row, periods, mode)
+            periods = _expand_date_header_periods(cells, row, periods, mode)
             annual_cols = set(periods)
         rows_data.append((row, periods, quarterly_cols, annual_cols))
 
@@ -130,23 +102,18 @@ def _is_weak_annual_period_header(
     col_to_period: Dict[int, int],
     quarterly_cols: Set[int],
 ) -> bool:
-    row_is_date_period_header = _parent_attr(
-        "_row_is_date_period_header",
-        _row_is_date_period_header,
-    )
     if not col_to_period or quarterly_cols:
         return False
     if len(col_to_period) >= 3:
         return False
-    if any(row_is_date_period_header(cells, row) for row in range(1, 11)):
+    if any(_row_is_date_period_header(cells, row) for row in range(1, 11)):
         return False
     return True
 
 
 def _row_is_date_period_header(cells: Dict[Tuple[int, int], Any], row: int) -> bool:
-    get_cell_value = _parent_attr("_get_cell_value", _get_cell_value)
     for col in range(1, 4):
-        value = get_cell_value(cells, row, col)
+        value = _get_cell_value(cells, row, col)
         if value is None:
             continue
         text = str(value).strip().lower()
@@ -156,8 +123,7 @@ def _row_is_date_period_header(cells: Dict[Tuple[int, int], Any], row: int) -> b
 
 
 def _parse_excel_date_period_token(value: Optional[str]) -> Optional[Tuple[int, Optional[int], bool]]:
-    coerce_number = _parent_attr("_coerce_number", _coerce_number)
-    serial = coerce_number(value)
+    serial = _coerce_number(value)
     if serial is None or not serial.is_integer():
         return None
     if serial < 25000 or serial > 80000:
@@ -174,8 +140,7 @@ def _expand_date_header_periods(
     periods: Dict[int, int],
     mode: str,
 ) -> Dict[int, int]:
-    period_mode_yearly = _parent_attr("PERIOD_MODE_YEARLY", PERIOD_MODE_YEARLY)
-    if mode != period_mode_yearly or not periods:
+    if mode != PERIOD_MODE_YEARLY or not periods:
         return periods
     first_col = min(periods)
     first_year = periods[first_col]
@@ -216,10 +181,6 @@ def _build_time_structure(
     historical_cutoff_year: Optional[int] = None,
 ) -> TimeStructure:
     """Build a TimeStructure from detected period keys."""
-    period_year_fn = _parent_attr("period_year", period_year)
-    index_to_col = _parent_attr("_index_to_col", _index_to_col)
-    period_mode_yearly = _parent_attr("PERIOD_MODE_YEARLY", PERIOD_MODE_YEARLY)
-
     if not periods:
         return TimeStructure(
             fiscal_year_end="",
@@ -239,26 +200,26 @@ def _build_time_structure(
         historical_periods = [
             period
             for period in periods_sorted
-            if period_year_fn(period, period_mode) <= historical_cutoff_year
+            if period_year(period, period_mode) <= historical_cutoff_year
         ]
         projection_periods = [
             period
             for period in periods_sorted
-            if period_year_fn(period, period_mode) > historical_cutoff_year
+            if period_year(period, period_mode) > historical_cutoff_year
         ]
     else:
         historical_periods = periods_sorted
 
-    if period_mode == period_mode_yearly:
+    if period_mode == PERIOD_MODE_YEARLY:
         historical_years = list(historical_periods)
         projection_years = list(projection_periods)
     else:
-        historical_years = sorted({period_year_fn(period, period_mode) for period in historical_periods})
-        projection_years = sorted({period_year_fn(period, period_mode) for period in projection_periods})
+        historical_years = sorted({period_year(period, period_mode) for period in historical_periods})
+        projection_years = sorted({period_year(period, period_mode) for period in projection_periods})
 
     all_years = sorted(set(historical_years + projection_years))
-    column_map = {year: index_to_col(idx + 1) for idx, year in enumerate(all_years)}
-    period_column_map = {period: index_to_col(idx + 1) for idx, period in enumerate(periods_sorted)}
+    column_map = {year: _index_to_col(idx + 1) for idx, year in enumerate(all_years)}
+    period_column_map = {period: _index_to_col(idx + 1) for idx, period in enumerate(periods_sorted)}
     return TimeStructure(
         fiscal_year_end="",
         period_mode=period_mode,

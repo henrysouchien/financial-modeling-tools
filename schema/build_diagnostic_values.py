@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import (
+    Any,
+    Iterable,
+    Optional,
+    Protocol,
+    TypeGuard,
+    TypeVar,
+)
 
+from .driver_formula import evaluate_driver_value
 from .models import (
-    DataSourceMapping,
     FinancialModel,
     FormulaSpec,
     FormulaType,
     LineItem,
     LineItemRef,
     shift_period,
+)
+from .required_role_catalog import (
+    RequiredRole,
+    RequiredRoleCatalog,
+    RequiredRoleUnknown,
+    load_required_role_catalog,
 )
 
 VALID_SEVERITIES = {"ok", "gap", "material_gap", "inconsistency"}
@@ -23,12 +36,49 @@ SEVERITY_ORDER = {
     "inconsistency": 3,
 }
 
+_ItemT_co = TypeVar("_ItemT_co", covariant=True)
+_RequiredRoleItemT = TypeVar("_RequiredRoleItemT", bound="_RequiredRoleItem")
+
+
+class _RequiredRoleItem(Protocol):
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def required_role(self) -> str | None: ...
+
+
+class _ItemSection(Protocol[_ItemT_co]):
+    @property
+    def line_items(self) -> Iterable[_ItemT_co]: ...
+
+
+class _ItemSheet(Protocol[_ItemT_co]):
+    @property
+    def sections(self) -> Iterable[_ItemSection[_ItemT_co]]: ...
+
+
+class _ItemSheets(Protocol[_ItemT_co]):
+    def values(self) -> Iterable[_ItemSheet[_ItemT_co]]: ...
+
+
+class _ItemWalkModel(Protocol[_ItemT_co]):
+    @property
+    def sheets(self) -> _ItemSheets[_ItemT_co]: ...
+
+
+def _values_are_resolved(
+    values: list[float | None],
+) -> TypeGuard[list[float]]:
+    return all(value is not None for value in values)
+
 
 def _is_synthetic_override(spec: FormulaSpec) -> bool:
     return spec.type is FormulaType.constant and spec.note == "synthetic"
 
-
-def _iter_items(model: FinancialModel) -> Iterable[LineItem]:
+def _iter_items(
+    model: _ItemWalkModel[_ItemT_co],
+) -> Iterable[_ItemT_co]:
     for sheet in model.sheets.values():
         for section in sheet.sections:
             yield from section.line_items
@@ -100,19 +150,39 @@ def _constant_override_value(spec: FormulaSpec | None) -> Optional[float]:
         return None
 
 
+def _stored_value(item: LineItem, period: int) -> Optional[float]:
+    """The item's stored cell, which renders only where no spec does.
+
+    Coverage reads (was a value observed for the period) take it directly;
+    an identity operand reads it through ``_observed_value``, which
+    evaluates the rendered spec first.
+    """
+
+    if item.values is None:
+        return None
+    cell = item.values.values.get(int(period))
+    if cell is None or cell.value is None:
+        return None
+    return float(cell.value)
+
+
+def _period_override(item: LineItem, period: int) -> FormulaSpec | None:
+    """The period's override spec, which a rendered cell takes over its lane spec."""
+
+    if item.overrides is None:
+        return None
+    return item.overrides.get(int(period))
+
+
 def _has_real_value(item: LineItem, period: int) -> bool:
-    if item.values is not None and int(period) in item.values.values:
-        cell = item.values.values[int(period)]
-        if cell.value is not None:
-            return True
-    if item.overrides is not None and int(period) in item.overrides:
-        spec = item.overrides[int(period)]
-        if (
-            not _is_synthetic_override(spec)
-            and _constant_override_value(spec) is not None
-        ):
-            return True
-    return False
+    if _stored_value(item, period) is not None:
+        return True
+    override = _period_override(item, period)
+    return (
+        override is not None
+        and not _is_synthetic_override(override)
+        and _constant_override_value(override) is not None
+    )
 
 
 def _observed_value(
@@ -122,25 +192,25 @@ def _observed_value(
     memo: dict[tuple[str, int], Optional[float]],
     stack: set[tuple[str, int]] | None = None,
 ) -> Optional[float]:
+    """The value a historical cell renders, recomputed.
+
+    The renderer's rule: a period override wins, then the active historical
+    spec; the stored cell renders only where neither exists. A spec is
+    evaluated, never short-circuited by a stored value, so a stored total that
+    disagrees with its formula is read as the formula computes it. An
+    unresolved operand leaves the cell missing, as the rendered ``NA()`` does.
+    """
+
     key = (item.id, int(period))
     if key in memo:
         return memo[key]
 
-    if item.overrides is not None and int(period) in item.overrides:
-        override_value = _constant_override_value(item.overrides[int(period)])
-        if override_value is not None:
-            memo[key] = override_value
-            return override_value
-    if item.values is not None and int(period) in item.values.values:
-        value_cell = item.values.values[int(period)]
-        if value_cell.value is not None:
-            memo[key] = float(value_cell.value)
-            return memo[key]
-
-    spec = _historical_spec(item, int(period))
+    spec = _period_override(item, int(period))
     if spec is None:
-        memo[key] = None
-        return None
+        spec = _historical_spec(item, int(period))
+    if spec is None:
+        memo[key] = _stored_value(item, int(period))
+        return memo[key]
 
     active_stack = stack if stack is not None else set()
     if key in active_stack:
@@ -168,6 +238,56 @@ def _historical_spec(item: LineItem, period: int) -> FormulaSpec | None:
     if int(period) in active_periods:
         return item.historical
     return None
+
+
+def _is_unreported_optional_item(
+    model: FinancialModel, ref_item: LineItem, period: int
+) -> bool:
+    """An ``optional_if_unreported`` role's line the issuer never reports.
+
+    Unreported in every historical year and with no period spec of its own, it
+    is omitted from a sum rather than leaving it unresolved
+    (``_intentional_blank_detail`` records the same fact as ``optional_unreported``).
+    """
+
+    if ref_item.required_role is None:
+        return False
+    catalog = load_required_role_catalog()
+    try:
+        role = catalog.role(ref_item.required_role)
+    except RequiredRoleUnknown:
+        return False
+    return (
+        role.optional_if_unreported
+        and _period_override(ref_item, period) is None
+        and _historical_spec(ref_item, period) is None
+        and not any(
+            _has_real_value(ref_item, year) for year in _historical_years(model)
+        )
+    )
+
+
+def _is_unreported_optional_sum_item(
+    model: FinancialModel, expr: Any, period: int
+) -> bool:
+    """Whether a SUM operand is a same-period ref to an unreported optional line."""
+
+    if isinstance(expr, LineItemRef):
+        ref_id, ref_t = expr.id, int(expr.t)
+    elif isinstance(expr, dict) and isinstance(expr.get("id"), str):
+        ref_id = expr["id"]
+        try:
+            ref_t = int(expr.get("t", 0))
+        except (TypeError, ValueError):
+            return False
+    else:
+        return False
+    ref_item = model._index.get(ref_id)
+    return (
+        ref_t == 0
+        and ref_item is not None
+        and _is_unreported_optional_item(model, ref_item, period)
+    )
 
 
 def _evaluate_formula_spec(
@@ -203,8 +323,12 @@ def _evaluate_formula_spec(
             values = [
                 _evaluate_expr(model, expr, period, memo, stack=stack)
                 for expr in list(params.get("items", []) or [])
+                if not (
+                    function == "SUM"
+                    and _is_unreported_optional_sum_item(model, expr, period)
+                )
             ]
-            if any(value is None for value in values):
+            if not _values_are_resolved(values):
                 return None
             if not values:
                 return 0.0
@@ -218,7 +342,7 @@ def _evaluate_formula_spec(
             values = [
                 _evaluate_expr(model, expr, period, memo, stack=stack) for expr in args
             ]
-            if any(value is None for value in values):
+            if not _values_are_resolved(values):
                 return None
             if not values:
                 return 0.0
@@ -263,10 +387,7 @@ def _evaluate_formula_spec(
     if spec.type is FormulaType.driver:
         base = _evaluate_expr(model, params.get("base"), period, memo, stack=stack)
         rate = _evaluate_expr(model, params.get("rate"), period, memo, stack=stack)
-        if base is None or rate is None:
-            return None
-        scale = float(params.get("scale", 1.0))
-        return base * rate * scale
+        return evaluate_driver_value(base, rate, params)
     return None
 
 
@@ -313,27 +434,33 @@ def _evaluate_expr(
                 return None
         op = expr.get("op")
         args = list(expr.get("args", []) or [])
-        if op in {"SUM", "AVERAGE"}:
+        if op in {"SUM", "AVERAGE", "MAX", "MIN"}:
             values = [
                 _evaluate_expr(model, arg, period, memo, stack=stack) for arg in args
             ]
-            if any(value is None for value in values):
+            if not _values_are_resolved(values):
                 return None
             if not values:
                 return 0.0
-            return sum(values) / len(values) if op == "AVERAGE" else sum(values)
+            if op == "AVERAGE":
+                return sum(values) / len(values)
+            if op == "MAX":
+                return max(values)
+            if op == "MIN":
+                return min(values)
+            return sum(values)
         if op == "+":
             values = [
                 _evaluate_expr(model, arg, period, memo, stack=stack) for arg in args
             ]
-            if any(value is None for value in values):
+            if not _values_are_resolved(values):
                 return None
             return sum(values)
         if op == "*":
             values = [
                 _evaluate_expr(model, arg, period, memo, stack=stack) for arg in args
             ]
-            if any(value is None for value in values):
+            if not _values_are_resolved(values):
                 return None
             result = 1.0
             for value in values:
@@ -351,6 +478,17 @@ def _evaluate_expr(
             if left is None or right is None or abs(right) < 1e-12:
                 return None
             return left / right
+        if op == "IFERROR":
+            value = _evaluate_expr(model, expr.get("expr"), period, memo, stack=stack)
+            if value is not None:
+                return value
+            return _evaluate_expr(
+                model,
+                expr.get("fallback", 0),
+                period,
+                memo,
+                stack=stack,
+            )
         if op == "NEG":
             value = _evaluate_expr(model, expr.get("arg"), period, memo, stack=stack)
             if value is None:
@@ -423,6 +561,8 @@ def _missing_ref_ids(
         except KeyError:
             missing.append(ref_id)
             continue
+        if _is_unreported_optional_item(model, ref_item, period):
+            continue
         if _observed_value(model, ref_item, period, memo) is None:
             missing.append(ref_id)
     return missing
@@ -453,15 +593,44 @@ def _transitive_downstream_ids(
     return discovered
 
 
-def _concept_item_map(model: FinancialModel) -> dict[str, list[LineItem]]:
-    concept_items: dict[str, list[LineItem]] = {}
+def _required_role_item_map(
+    model: _ItemWalkModel[_RequiredRoleItemT],
+    *,
+    role_catalog: RequiredRoleCatalog,
+    ticker: str,
+    required_roles: Iterable[str],
+) -> dict[str, list[_RequiredRoleItemT]]:
+    """Each role's model items on every plane the catalog binds it through.
+
+    The ``required_role`` stamp, the population plane (``{ticker}`` resolved)
+    and the HFF fact plane — the same union population writes through. Ids
+    absent from the model are dropped; an item on two planes appears once.
+    """
+
+    items_by_id: dict[str, _RequiredRoleItemT] = {}
+    role_items: dict[str, dict[str, _RequiredRoleItemT]] = {
+        required_role: {} for required_role in required_roles
+    }
     for item in _iter_items(model):
-        if item.data_concept_id:
-            concept_items.setdefault(item.data_concept_id, []).append(item)
-    return concept_items
+        items_by_id[item.id] = item
+        required_role = item.required_role
+        if required_role in role_items:
+            role_items[required_role][item.id] = item
+    for required_role, items in role_items.items():
+        for item_id in (
+            *role_catalog.population_item_ids(required_role, ticker=ticker),
+            *role_catalog.hff_fact_item_ids(required_role),
+        ):
+            item = items_by_id.get(item_id)
+            if item is not None:
+                items.setdefault(item_id, item)
+    return {
+        required_role: list(items.values())
+        for required_role, items in role_items.items()
+    }
 
 
-def _concept_has_coverage(
+def _role_has_coverage(
     model: FinancialModel,
     items: list[LineItem],
     historical_years: list[int],
@@ -483,7 +652,7 @@ def _concept_has_coverage(
     return False
 
 
-def _concept_has_full_coverage(
+def _role_has_full_coverage(
     model: FinancialModel,
     items: list[LineItem],
     historical_years: list[int],
@@ -521,10 +690,9 @@ def _item_has_coverage_for_year(
         return True
     if year in derivable_items.get(item.id, set()):
         return True
+    override = _period_override(item, year)
     if _observed_value(model, item, year, value_memo) is not None and not (
-        item.overrides is not None
-        and year in item.overrides
-        and _is_synthetic_override(item.overrides[year])
+        override is not None and _is_synthetic_override(override)
     ):
         return True
     return _item_has_path(model, item, year, derivable_items, path_memo, set())
@@ -533,19 +701,19 @@ def _item_has_coverage_for_year(
 def _intentional_blank_detail(
     model: FinancialModel,
     *,
-    mapping: DataSourceMapping,
-    concept_items: dict[str, list[LineItem]],
+    role: RequiredRole,
+    role_items: dict[str, list[LineItem]],
     years: list[int],
     derivable_items: dict[str, set[int]],
     path_memo: dict[tuple[str, int], bool],
     value_memo: dict[tuple[str, int], Optional[float]],
 ) -> dict[str, Any] | None:
     covered_by = [
-        cover_concept_id
-        for cover_concept_id in list(mapping.missing_ok_when_covered_by or [])
-        if _concept_has_full_coverage(
+        cover_role
+        for cover_role in role.covered_by_roles
+        if _role_has_full_coverage(
             model,
-            concept_items.get(cover_concept_id, []),
+            role_items.get(cover_role, []),
             years,
             derivable_items,
             path_memo,
@@ -554,12 +722,12 @@ def _intentional_blank_detail(
     ]
     if covered_by:
         return {
-            "status": "covered_by_concept",
+            "status": "covered_by_role",
             "severity": "ok",
-            "kind": "covered_by_concept",
+            "kind": "covered_by_role",
             "covered_by": covered_by,
         }
-    if mapping.optional_if_unreported:
+    if role.optional_if_unreported:
         return {
             "status": "optional_unreported",
             "severity": "ok",
@@ -569,11 +737,13 @@ def _intentional_blank_detail(
 
 
 def _projection_only_historical_blank_detail(
+    model: FinancialModel,
     item: LineItem,
     historical_years: list[int],
+    derivable_items: dict[str, set[int]],
 ) -> dict[str, Any] | None:
     if (
-        item.data_concept_id is not None
+        item.required_role is not None
         or item.historical is not None
         or item.projected is None
         or item.formula_periods is None
@@ -585,12 +755,149 @@ def _projection_only_historical_blank_detail(
     if not formula_periods or formula_periods & historical_periods:
         return None
 
-    return {
+    detail: dict[str, Any] = {
         "status": "projection_only",
         "severity": "ok",
         "kind": "projection_only",
         "formula_periods": sorted(formula_periods),
     }
+    source_id = _direct_projection_source_id(item)
+    if source_id is None:
+        return detail
+
+    source_backed_years = _referenced_source_backed_years(
+        model,
+        source_id=source_id,
+        historical_years=historical_years,
+        derivable_items=derivable_items,
+    )
+    if not source_backed_years:
+        return detail
+
+    detail.update(
+        {
+            "status": "source_backed_projection_only",
+            "severity": "material_gap",
+            "source_backed_historical_evidence": True,
+            "source_item_ids": [source_id],
+            "source_backed_years": source_backed_years,
+        }
+    )
+    return detail
+
+
+def _direct_projection_source_id(item: LineItem) -> str | None:
+    """Return the same-period source of a direct visible projection mirror.
+
+    Projection-only cash-flow bridges are arithmetic movements, while offset
+    rows are negated refs. Neither shape represents a visible statement
+    component whose historical source values should have been mirrored into the
+    statement row.
+    """
+
+    spec = item.projected
+    if spec is None or spec.type is not FormulaType.ref:
+        return None
+    params = spec.params or {}
+    if params.get("negate") is True or params.get("adjustment") not in (None, 0, 0.0):
+        return None
+    source = params.get("source")
+    if isinstance(source, LineItemRef):
+        return source.id if int(source.t) == 0 else None
+    if isinstance(source, dict) and isinstance(source.get("id"), str):
+        try:
+            offset = int(source.get("t", 0))
+        except (TypeError, ValueError):
+            return None
+        return source["id"] if offset == 0 else None
+    return None
+
+
+def _referenced_source_backed_years(
+    model: FinancialModel,
+    *,
+    source_id: str,
+    historical_years: list[int],
+    derivable_items: dict[str, set[int]],
+) -> list[int]:
+    """Return years backed by source history, never by forecast formulas."""
+
+    memo: dict[tuple[str, int], bool] = {}
+    return [
+        int(year)
+        for year in historical_years
+        if _has_referenced_historical_evidence(
+            model,
+            source_id,
+            int(year),
+            derivable_items,
+            memo,
+            set(),
+        )
+    ]
+
+
+def _has_referenced_historical_evidence(
+    model: FinancialModel,
+    item_id: str,
+    year: int,
+    derivable_items: dict[str, set[int]],
+    memo: dict[tuple[str, int], bool],
+    stack: set[tuple[str, int]],
+) -> bool:
+    """Follow historical refs to real or explicitly derivable source evidence."""
+
+    key = (item_id, int(year))
+    if key in memo:
+        return memo[key]
+    if key in stack:
+        return False
+    try:
+        item = model.get_item(item_id)
+    except KeyError:
+        memo[key] = False
+        return False
+
+    if _has_real_value(item, int(year)):
+        memo[key] = True
+        return True
+    if int(year) in derivable_items.get(item.id, set()):
+        memo[key] = True
+        return True
+    override = _period_override(item, int(year))
+    if override is not None and _is_synthetic_override(override):
+        memo[key] = False
+        return False
+
+    spec = _historical_spec(item, int(year))
+    if spec is None:
+        memo[key] = False
+        return False
+    targets = _extract_ref_targets(
+        spec.params,
+        period=int(year),
+        mode=model.time_structure.period_mode,
+    )
+    if not targets:
+        memo[key] = False
+        return False
+
+    stack.add(key)
+    result = all(
+        ref_year is not None
+        and _has_referenced_historical_evidence(
+            model,
+            ref_id,
+            int(ref_year),
+            derivable_items,
+            memo,
+            stack,
+        )
+        for ref_id, ref_year in targets
+    )
+    stack.remove(key)
+    memo[key] = result
+    return result
 
 
 def _item_has_path(
@@ -612,11 +919,8 @@ def _item_has_path(
     if _has_real_value(item, int(year)):
         memo[key] = True
         return True
-    if (
-        item.overrides is not None
-        and int(year) in item.overrides
-        and _is_synthetic_override(item.overrides[int(year)])
-    ):
+    override = _period_override(item, int(year))
+    if override is not None and _is_synthetic_override(override):
         memo[key] = False
         return False
     spec = _historical_spec(item, int(year))
@@ -676,10 +980,6 @@ def _blocking_ref_ids(
     return sorted(blocked)
 
 
-def _is_edgar_sourced(mapping: DataSourceMapping) -> bool:
-    return bool(
-        mapping.edgar_tags or mapping.registry_group_id or mapping.canonical_tag
-    )
 
 
 __all__ = [
@@ -695,6 +995,8 @@ __all__ = [
     "_percent",
     "_ratio",
     "_constant_override_value",
+    "_stored_value",
+    "_period_override",
     "_has_real_value",
     "_observed_value",
     "_historical_spec",
@@ -705,13 +1007,12 @@ __all__ = [
     "_missing_ref_ids",
     "_build_reverse_dependency_graph",
     "_transitive_downstream_ids",
-    "_concept_item_map",
-    "_concept_has_coverage",
-    "_concept_has_full_coverage",
+    "_required_role_item_map",
+    "_role_has_coverage",
+    "_role_has_full_coverage",
     "_item_has_coverage_for_year",
     "_intentional_blank_detail",
     "_projection_only_historical_blank_detail",
     "_item_has_path",
     "_blocking_ref_ids",
-    "_is_edgar_sourced",
 ]

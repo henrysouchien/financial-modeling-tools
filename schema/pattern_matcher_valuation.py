@@ -1,15 +1,46 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import lru_cache
 from typing import Any, Optional
 
 from .formula_ast import BinaryOp, Empty, FuncCall, Node, Number, Ref
-from .models import FormulaSpec, FormulaType, LineItemRef
+from .models import FormulaSpec, FormulaType, LineItemRef, SheetType
 
 
 ToLineItemRef = Callable[[Node, Any], Optional[LineItemRef]]
 ExtractOnePlusRef = Callable[[Node, Any], Optional[LineItemRef]]
 MatchOffsetScenario = Callable[[FuncCall, Any], Optional[FormulaSpec]]
+
+
+@lru_cache(maxsize=1)
+def _template_sheet_names_by_type() -> dict[
+    SheetType | None, frozenset[str]
+]:
+    """Sheet display names derived from the checked-in generic template.
+
+    The template artifact owns the workbook tab names; deriving them here
+    keeps the sheet-scoped valuation/scenario pattern arms aligned with the
+    template instead of hand-pinned English strings.
+    """
+
+    from .templates import load_sia_generic_template
+
+    names: dict[SheetType | None, set[str]] = {}
+    for name, sheet in load_sia_generic_template().sheets.items():
+        names.setdefault(sheet.sheet_type, set()).add(name)
+    return {sheet_type: frozenset(members) for sheet_type, members in names.items()}
+
+
+def _scenario_sheet_names() -> frozenset[str]:
+    return _template_sheet_names_by_type().get(SheetType.scenarios, frozenset())
+
+
+def _valuation_or_scenario_sheet_names() -> frozenset[str]:
+    by_type = _template_sheet_names_by_type()
+    return by_type.get(SheetType.valuation, frozenset()) | by_type.get(
+        SheetType.scenarios, frozenset()
+    )
 
 
 def match_valuation(
@@ -195,7 +226,7 @@ def match_valuation(
                 )
 
     # Probability-weighted: (value - current) * probability
-    if isinstance(ast, BinaryOp) and ast.op == "*" and context.sheet == "Scenarios":
+    if isinstance(ast, BinaryOp) and ast.op == "*" and context.sheet in _scenario_sheet_names():
         if isinstance(ast.left, BinaryOp) and ast.left.op == "-":
             value_ref = (
                 to_line_item_ref_fn(ast.left.left, context)
@@ -224,7 +255,7 @@ def match_valuation(
                 )
 
     # Kelly criterion: expected / total win
-    if isinstance(ast, BinaryOp) and ast.op == "/" and context.sheet == "Scenarios":
+    if isinstance(ast, BinaryOp) and ast.op == "/" and context.sheet in _scenario_sheet_names():
         left_ref = (
             to_line_item_ref_fn(ast.left, context) if isinstance(ast.left, Ref) else None
         )
@@ -244,7 +275,7 @@ def match_valuation(
     if (
         isinstance(ast, BinaryOp)
         and ast.op == "*"
-        and context.sheet in {"Valuation", "Scenarios"}
+        and context.sheet in _valuation_or_scenario_sheet_names()
     ):
         left_ref = (
             to_line_item_ref_fn(ast.left, context) if isinstance(ast.left, Ref) else None

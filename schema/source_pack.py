@@ -5,9 +5,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
-from schema.thesis_shared_slice import _ContractModel
+from industry_slice_core._contract import _ContractModel
 
 
 _MANIFEST_PATH = Path(__file__).with_name("source_pack_manifest.json")
@@ -16,7 +16,20 @@ _CANONICAL_INTENTS: Final[tuple[str, ...]] = tuple(
     sorted(_MANIFEST["canonical_intents"])
 )
 
-INTENTS = Literal[_CANONICAL_INTENTS]  # type: ignore[valid-type]
+INTENTS = Literal[
+    "acquisition_strategy",
+    "concentration_risk",
+    "deal_status",
+    "debt_terms",
+    "generic_filing_question",
+    "guidance_actuals",
+    "non_gaap_reconciliation",
+    "proxy_governance",
+    "regulatory_risk",
+    "revenue_disaggregation",
+    "risk_factor",
+    "security_offering_terms",
+]
 INTENT_ALIASES: dict[str, str] = dict(_MANIFEST["aliases"])
 
 _PROVENANCE_FIELDS = frozenset(
@@ -29,44 +42,16 @@ def _canonical_intent(intent: str) -> str:
     return INTENT_ALIASES.get(normalized, normalized)
 
 
-def _looks_like_investment_idea_source_ref(value: object) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    return "section" not in value and {"type", "source_id", "source_repo"} <= set(value)
-
-
 class SourceRef(_ContractModel):
     section: str
     subsections: list[str] = Field(default_factory=list)
     rationale: str
-
-    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
-        # schema.SourceRef was already public for InvestmentIdea. Keep that
-        # construction path working while exporting this filing SourceRef there.
-        if cls is SourceRef:
-            candidate = args[0] if len(args) == 1 and not kwargs else kwargs
-            if _looks_like_investment_idea_source_ref(candidate):
-                from schema.investment_idea import SourceRef as IdeaSourceRef
-
-                if args and not kwargs:
-                    return IdeaSourceRef.model_validate(args[0])
-                return IdeaSourceRef(**kwargs)
-        return super().__new__(cls)
-
-    @classmethod
-    def model_validate(cls, obj: Any, *args: Any, **kwargs: Any) -> Any:
-        if cls is SourceRef and _looks_like_investment_idea_source_ref(obj):
-            from schema.investment_idea import SourceRef as IdeaSourceRef
-
-            return IdeaSourceRef.model_validate(obj, *args, **kwargs)
-        return super().model_validate(obj, *args, **kwargs)
 
 
 class SourcePack(_ContractModel):
     intent: INTENTS
     source_pack_origin: Literal["planner", "manual"]
     source_pack_version: str | None = None
-    source_pack_sha256: str | None = None
     required_reads: list[SourceRef] = Field(..., min_length=1)
     optional_reads: list[SourceRef] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -82,7 +67,9 @@ class SourcePack(_ContractModel):
     ) -> "SourcePack":
         unknown = set(provenance) - _PROVENANCE_FIELDS
         if unknown:
-            raise TypeError(f"Unsupported SourcePack provenance fields: {sorted(unknown)}")
+            raise TypeError(
+                f"Unsupported SourcePack provenance fields: {sorted(unknown)}"
+            )
 
         matched_intent = str(getattr(planner_result, "matched_intent")).strip()
         intent = _canonical_intent(matched_intent)
@@ -90,7 +77,6 @@ class SourcePack(_ContractModel):
             "intent": intent,
             "source_pack_origin": "planner",
             "source_pack_version": getattr(planner_result, "source_pack_version"),
-            "source_pack_sha256": getattr(planner_result, "source_pack_sha256"),
             "required_reads": [
                 _coerce_source_ref(ref)
                 for ref in getattr(planner_result, "required_reads")
@@ -124,21 +110,11 @@ class SourcePack(_ContractModel):
             {
                 "intent": canonical,
                 "source_pack_origin": "manual",
-                "source_pack_sha256": None,
                 "required_reads": required_reads,
                 "rationale": rationale,
             }
         )
         return cls(**payload)
-
-    @model_validator(mode="after")
-    def _enforce_origin_invariants(self) -> "SourcePack":
-        if self.source_pack_origin == "planner" and self.source_pack_sha256 is None:
-            raise ValueError("planner-origin SourcePack must carry source_pack_sha256")
-        if self.source_pack_origin == "manual" and self.source_pack_sha256 is not None:
-            raise ValueError("manual-origin SourcePack must NOT claim source_pack_sha256")
-        return self
-
 
 def _coerce_source_ref(value: Any) -> SourceRef:
     if isinstance(value, SourceRef):

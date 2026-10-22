@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from .models import FormulaSpec, FormulaType, LineItemRef
+from .models import (
+    COLUMN_OFFSET_MODE_PERIOD_RELATIVE as _COLUMN_OFFSET_MODE_PERIOD_RELATIVE,
+    FormulaSpec,
+    FormulaType,
+    LineItemRef,
+)
 
 _SCENARIO_SELECTOR_ID = "tpl.a.header.scenario_value"
 _SCENARIO_VOLUME_GROWTH_LABEL_ID = "tpl.a.scenario_tables.scenario_volume_growth_label"
-_COLUMN_OFFSET_MODE_PERIOD_RELATIVE = "period_relative"
 
 
 def _ref_target_id(spec: FormulaSpec) -> Optional[str]:

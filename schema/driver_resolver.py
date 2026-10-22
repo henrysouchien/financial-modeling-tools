@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from .model_build_context_errors import InvalidDriverKey, UnsupportedInSegmentMode
+from .model_input_errors import (
+  InvalidDriverKey,
+  UnsupportedCategory,
+  UnsupportedInSegmentMode,
+)
 from .models import FinancialModel, ItemType, LineItem, SheetLayout
 from .renderer import AbsoluteColumnMapper
 from .segments import SegmentInfo, SegmentProfile, expand_segments
@@ -112,16 +116,22 @@ def _find_validation_item(
 
 
 @lru_cache(maxsize=1)
-def load_driver_mapping() -> dict[str, str]:
+def registered_driver_mapping() -> dict[str, str]:
+  """The configured key-to-row registry without loading a model template."""
   payload = _load_driver_mapping_payload()
   mappings = payload.get("mappings") if isinstance(payload, dict) else None
   if not isinstance(mappings, dict):
     raise ValueError("driver_mapping.yaml must define a top-level 'mappings' object")
-  normalized = {
+  return {
     str(key).strip(): str(value).strip()
     for key, value in mappings.items()
     if str(key).strip() and str(value).strip()
   }
+
+
+@lru_cache(maxsize=1)
+def load_driver_mapping() -> dict[str, str]:
+  normalized = registered_driver_mapping()
   _validate_mapping(normalized)
   return normalized
 
@@ -195,7 +205,7 @@ def _validate_mapping(mapping: dict[str, str], template_path: str | Path | None 
     raise ValueError(f"Driver mapping targets must resolve to input items: {joined}")
 
 
-def _unsupported_category(pattern_key: str) -> str:
+def _unsupported_category(pattern_key: str) -> UnsupportedCategory:
   if pattern_key.endswith(".operating_metric"):
     return "B1"
   if pattern_key.endswith(".revenue"):
@@ -215,8 +225,10 @@ def _compile_unsupported_pattern(pattern_key: str) -> re.Pattern[str]:
 
 
 @lru_cache(maxsize=1)
-def _compiled_unsupported_in_segment_mode() -> tuple[tuple[re.Pattern[str], str, str], ...]:
-  compiled: list[tuple[re.Pattern[str], str, str]] = []
+def _compiled_unsupported_in_segment_mode() -> tuple[
+  tuple[re.Pattern[str], str, UnsupportedCategory], ...
+]:
+  compiled: list[tuple[re.Pattern[str], str, UnsupportedCategory]] = []
   for pattern_key, reason in load_unsupported_in_segment_mode():
     compiled.append((_compile_unsupported_pattern(pattern_key), reason, _unsupported_category(pattern_key)))
   return tuple(compiled)
@@ -277,17 +289,31 @@ def resolve_driver_key(
   raise InvalidDriverKey(normalized, "not in driver_mapping.yaml")
 
 
-def resolve_driver_cells(
-  model: FinancialModel,
+def driver_key_items(
   driver_key: str,
-  periods: list[int] | None = None,
   compiled_registry: "CompiledDriverRegistry | None" = None,
-) -> list[tuple[str, str, int]]:
-  item_id = resolve_driver_key(driver_key, compiled_registry=compiled_registry)
-  sheet_name, item = _find_item(model, item_id)
-  if item.item_type != ItemType.input:
-    raise ValueError(f"Driver target must resolve to an input item: {item_id}")
+) -> tuple[str, ...]:
+  """Template rows controlled by a driver, including profile-owned fan-out."""
+  from .forecast_control_profile import sia_generic_nonvaluation_forecast_profile
 
+  normalized = str(driver_key or "").strip()
+  for control in sia_generic_nonvaluation_forecast_profile().controls:
+    if control.control_id == normalized:
+      return tuple(
+        resolve_driver_key(binding.projection_driver_key, compiled_registry)
+        for binding in control.target_bindings
+      )
+  return (resolve_driver_key(normalized, compiled_registry),)
+
+
+def resolve_item_cells(
+  model: FinancialModel,
+  item_id: str,
+  periods: list[int] | None = None,
+) -> list[tuple[str, str, int]]:
+  """``(sheet, A1 cell, period)`` of one rendered item, projection periods by default."""
+
+  sheet_name, item = _find_item(model, item_id)
   sheet = model.sheets[sheet_name]
   layout = sheet.layout or SheetLayout(label_column="A", first_data_column="B")
   mapper = AbsoluteColumnMapper(
@@ -304,6 +330,19 @@ def resolve_driver_cells(
   return resolved
 
 
+def resolve_driver_cells(
+  model: FinancialModel,
+  driver_key: str,
+  periods: list[int] | None = None,
+  compiled_registry: "CompiledDriverRegistry | None" = None,
+) -> list[tuple[str, str, int]]:
+  item_id = resolve_driver_key(driver_key, compiled_registry=compiled_registry)
+  _sheet_name, item = _find_item(model, item_id)
+  if item.item_type != ItemType.input:
+    raise ValueError(f"Driver target must resolve to an input item: {item_id}")
+  return resolve_item_cells(model, item_id, periods)
+
+
 __all__ = [
   "DRIVER_MAPPING_PATH",
   "RAW_PREFIX",
@@ -312,5 +351,6 @@ __all__ = [
   "load_unsupported_in_segment_mode",
   "resolve_driver_cells",
   "resolve_driver_key",
+  "resolve_item_cells",
   "_validate_mapping",
 ]

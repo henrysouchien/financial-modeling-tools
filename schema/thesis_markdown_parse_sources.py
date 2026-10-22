@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 
 from pydantic import ValidationError
@@ -14,58 +13,51 @@ from .thesis_markdown_parse_support import (
     _safe_validate,
 )
 from .thesis_markdown_utils import _parse_key_value_segments
-from .thesis_shared_slice import Excerpt, SourceRecord
+from industry_slice_core.thesis_shared_sources import Excerpt, SourceRecord
 
 
-_PARENT_MODULES = ("schema.thesis_markdown", "schema.thesis_markdown_parse")
-
-
-def _compat(name: str, fallback: Any) -> Any:
-    first_available = fallback
-    for module_name in _PARENT_MODULES:
-        parent = sys.modules.get(module_name)
-        if parent is not None and hasattr(parent, name):
-            value = getattr(parent, name)
-            if first_available is fallback:
-                first_available = value
-            if value is not fallback:
-                return value
-    return first_available
+_SOURCE_METADATA_FIELDS = frozenset(SourceRecord.model_fields) - {"id", "excerpts"}
+_DEFAULT_PARSE_KEY_VALUE_SEGMENTS = _parse_key_value_segments
 
 
 def _parse_sources(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
     records: list[SourceRecord] = []
-    parse_warning_model = _compat("ParseWarning", ParseWarning)
-    numbered_item_re = _compat("_NUMBERED_ITEM_RE", _NUMBERED_ITEM_RE)
-    source_excerpt_re = _compat("_SOURCE_EXCERPT_RE", _SOURCE_EXCERPT_RE)
-    parse_key_value_segments = _compat(
-        "_parse_key_value_segments",
-        _parse_key_value_segments,
-    )
-    parse_source_excerpt = _compat("_parse_source_excerpt", _parse_source_excerpt)
-    safe_validate = _compat("_safe_validate", _safe_validate)
-    source_record_model = _compat("SourceRecord", SourceRecord)
     index = 0
     while index < len(body_lines):
         line = body_lines[index]
-        match = numbered_item_re.match(line.strip())
+        match = _NUMBERED_ITEM_RE.match(line.strip())
         if match is None:
-            state.warnings.append(parse_warning_model(code="section_parse_error", section="sources", message="failed to parse source line", context={"line": line}))
+            state.warnings.append(ParseWarning(code="section_parse_error", section="sources", message="failed to parse source line", context={"line": line}))
             index += 1
             continue
         index += 1
+        metadata_lines = [match.group("meta") or ""]
+        while index < len(body_lines):
+            candidate = body_lines[index]
+            if _SOURCE_EXCERPT_RE.match(candidate) is not None:
+                break
+            if _NUMBERED_ITEM_RE.match(candidate.strip()) is not None:
+                break
+            # Older canonical renders embedded raw multi-line source text in the
+            # numbered record. Recover those physical continuation lines so a
+            # read/re-render converts them to the escaped one-line contract.
+            metadata_lines.append(candidate)
+            index += 1
         excerpts: list[Excerpt] = []
         while index < len(body_lines):
-            excerpt_match = source_excerpt_re.match(body_lines[index])
+            excerpt_match = _SOURCE_EXCERPT_RE.match(body_lines[index])
             if excerpt_match is None:
                 break
-            excerpt = parse_source_excerpt(excerpt_match.group("payload"), state)
+            excerpt = _parse_source_excerpt(excerpt_match.group("payload"), state)
             if excerpt is not None:
                 excerpts.append(excerpt)
             index += 1
-        metadata = parse_key_value_segments(match.group("meta") or "")
-        validated = safe_validate(
-            source_record_model,
+        metadata = _parse_source_metadata(
+            "\n".join(metadata_lines),
+            parse_key_value_segments=_parse_key_value_segments,
+        )
+        validated = _safe_validate(
+            SourceRecord,
             {
                 "id": match.group("source_id"),
                 "type": metadata.get("type"),
@@ -77,13 +69,26 @@ def _parse_sources(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
                 "text": metadata.get("text"),
                 "annotation_id": metadata.get("annotation_id"),
                 "provider": metadata.get("provider"),
+                "document_id": metadata.get("document_id"),
                 "endpoint_or_filing_id": metadata.get("endpoint_or_filing_id"),
+                "key_fields": metadata.get("key_fields"),
                 "retrieved_at": metadata.get("retrieved_at"),
+                "table_citation_record_id": metadata.get("table_citation_record_id"),
+                "table_id": metadata.get("table_id"),
+                "table_value_source": metadata.get("table_value_source"),
+                "parsed_value_text": metadata.get("parsed_value_text"),
+                "parsed_numeric_value": metadata.get("parsed_numeric_value"),
+                "unit": metadata.get("unit"),
+                "period": metadata.get("period"),
+                "concept": metadata.get("concept"),
                 "skill_name": metadata.get("skill_name"),
                 "artifact_path": metadata.get("artifact_path"),
                 "artifact_id": metadata.get("artifact_id"),
                 "skill_run_id": metadata.get("skill_run_id"),
                 "source_path": metadata.get("source_path"),
+                "page_number": metadata.get("page_number"),
+                "spine_hash": metadata.get("spine_hash"),
+                "extraction_version": metadata.get("extraction_version"),
                 "excerpts": excerpts,
             },
             state,
@@ -94,14 +99,78 @@ def _parse_sources(body_lines: list[str], state: _ParseState) -> dict[str, Any]:
     return {"sources": records}
 
 
+def _parse_source_metadata(
+    raw_metadata: str,
+    *,
+    parse_key_value_segments: Any = _DEFAULT_PARSE_KEY_VALUE_SEGMENTS,
+) -> dict[str, Any]:
+    # Split only on delimiters that introduce actual SourceRecord fields. This
+    # recovers legacy source text containing Markdown table pipes while keeping
+    # the ordinary key=value format human-readable.
+    if parse_key_value_segments is not _DEFAULT_PARSE_KEY_VALUE_SEGMENTS:
+        raw_values = parse_key_value_segments(raw_metadata)
+        return {
+            key: _decode_source_metadata_value(value)
+            for key, value in raw_values.items()
+        }
+
+    parsed: dict[str, Any] = {}
+    for segment in _split_source_metadata_segments(raw_metadata):
+        if "=" not in segment:
+            continue
+        key, value = segment.split("=", 1)
+        normalized_key = key.strip().lower()
+        if normalized_key in _SOURCE_METADATA_FIELDS:
+            parsed[normalized_key] = _decode_source_metadata_value(value.strip())
+    return parsed
+
+
+def _split_source_metadata_segments(raw_metadata: str) -> list[str]:
+    segments: list[str] = []
+    buffer: list[str] = []
+    index = 0
+    decoder = json.JSONDecoder()
+    while index < len(raw_metadata):
+        if raw_metadata.startswith("@json:", index):
+            try:
+                _, consumed = decoder.raw_decode(raw_metadata[index + len("@json:") :])
+            except json.JSONDecodeError:
+                pass
+            else:
+                end = index + len("@json:") + consumed
+                buffer.append(raw_metadata[index:end])
+                index = end
+                continue
+        if raw_metadata[index] == "|" and index > 0 and raw_metadata[index - 1].isspace():
+            remainder = raw_metadata[index + 1 :]
+            stripped = remainder.lstrip()
+            possible_key = stripped.split("=", 1)[0].strip().lower()
+            if "=" in stripped and possible_key in _SOURCE_METADATA_FIELDS:
+                segments.append("".join(buffer).strip())
+                buffer = []
+                index += 1 + (len(remainder) - len(stripped))
+                continue
+        buffer.append(raw_metadata[index])
+        index += 1
+    segments.append("".join(buffer).strip())
+    return segments
+
+
+def _decode_source_metadata_value(value: Any) -> Any:
+    if not isinstance(value, str) or not value.startswith("@json:"):
+        return value
+    try:
+        return json.loads(value.removeprefix("@json:"))
+    except json.JSONDecodeError:
+        return value
+
+
 def _parse_source_excerpt(raw_payload: str, state: _ParseState) -> Excerpt | None:
-    parse_warning_model = _compat("ParseWarning", ParseWarning)
-    excerpt_model = _compat("Excerpt", Excerpt)
     try:
         payload = json.loads(raw_payload)
     except json.JSONDecodeError as exc:
         state.warnings.append(
-            parse_warning_model(
+            ParseWarning(
                 code="section_parse_error",
                 section="sources",
                 message="failed to parse source excerpt JSON",
@@ -110,10 +179,10 @@ def _parse_source_excerpt(raw_payload: str, state: _ParseState) -> Excerpt | Non
         )
         return None
     try:
-        return excerpt_model.model_validate(payload)
+        return Excerpt.model_validate(payload)
     except ValidationError as exc:
         state.warnings.append(
-            parse_warning_model(
+            ParseWarning(
                 code="section_parse_error",
                 section="sources",
                 message="failed to validate source excerpt",

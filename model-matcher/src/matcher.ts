@@ -69,7 +69,7 @@ export function match(input: MatcherInput): MatcherResult {
     if (detectResult.factor === null) {
       throw new MatcherError(
         "conversion_factor_required",
-        "Could not auto-detect conversion factor from source range values. Re-call update_model with an explicit conversion_factor parameter (1000 if model is in thousands, 1000000 if in millions, 1 if raw values).",
+        "Could not auto-detect conversion factor from source range values. Re-call persist_workbook_update with an explicit conversion_factor parameter (1000 if model is in thousands, 1000000 if in millions, 1 if raw values).",
         { auto_detect: detectResult.meta }
       );
     }

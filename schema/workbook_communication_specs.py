@@ -17,6 +17,7 @@ class _DirectCellSpec(NamedTuple):
     cell: str
     source_field: str
     required: bool
+    materializable: bool = True
 
 
 class _VisualCleanupSpec(NamedTuple):
@@ -30,7 +31,7 @@ _VALUATION_SUMMARY_SPECS: tuple[_CellSpec, ...] = (
     _CellSpec("summary.valuation.current_price", "Current Price", "summary.current_price", True),
     _CellSpec(
         "summary.valuation.blended_target_price",
-        "Blended Target Price",
+        "Price Target",
         "summary.blended_target_price",
         True,
     ),
@@ -65,7 +66,7 @@ _VALUATION_DIRECT_CELL_SPECS: tuple[_DirectCellSpec, ...] = (
         "valuation.forward_pe_price",
         "Forward P/E Price",
         "Valuation",
-        "B16",
+        "E77",
         "valuation.forward_pe_price",
         False,
     ),
@@ -73,8 +74,26 @@ _VALUATION_DIRECT_CELL_SPECS: tuple[_DirectCellSpec, ...] = (
         "valuation.forward_ev_ebitda_price",
         "EV/EBITDA Price",
         "Valuation",
-        "B23",
+        "H79",
         "valuation.forward_ev_ebitda_price",
+        False,
+    ),
+    _DirectCellSpec(
+        "valuation.at_current_multiple_pe_price",
+        "At Current Multiple P/E Price",
+        "Valuation",
+        "B16",
+        "valuation.at_current_multiple_pe_price",
+        False,
+        False,
+    ),
+    _DirectCellSpec(
+        "valuation.at_current_multiple_ev_ebitda_price",
+        "At Current Multiple EV/EBITDA Price",
+        "Valuation",
+        "B23",
+        "valuation.at_current_multiple_ev_ebitda_price",
+        False,
         False,
     ),
     _DirectCellSpec(
@@ -88,7 +107,7 @@ _VALUATION_DIRECT_CELL_SPECS: tuple[_DirectCellSpec, ...] = (
     _DirectCellSpec("valuation.dcf_price", "DCF Price", "Valuation", "B28", "valuation.dcf_price", False),
     _DirectCellSpec(
         "valuation.blended_target_price",
-        "Blended Target Price",
+        "Price Target",
         "Valuation",
         "B30",
         "summary.blended_target_price",

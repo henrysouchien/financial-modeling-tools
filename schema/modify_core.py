@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, TypeAdapter
 
 from schema.dependency_graph import DependencyGraph
 from schema.models import (
@@ -16,12 +16,16 @@ from schema.models import (
     LineItem,
     SheetType,
 )
+from industry_slice_core.industry_types import Unit
+from schema.presentation_captions import (
+    PresentationCaptionSpecError,
+    WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS,
+)
 from schema.modify_layout import (
     _collect_sheet_items,
     _extract_formula_refs,
     _find_item_location,
     _iter_model_items,
-    _matches_custom_concept_target,
     _replace_refs_in_item,
 )
 from schema.renderer import _fixed_cell_anchor_period
@@ -37,27 +41,14 @@ class OperationType(str, Enum):
     reorder_items = "reorder_items"
 
 
-class Operation(BaseModel):
-    """One persistent modification to apply to the in-memory model."""
+class _OperationBase(BaseModel):
+    """Fields shared by every persistent in-memory modification."""
 
-    type: OperationType
     item_id: Optional[str] = None
-
-    # set_value (period mode)
-    values: Optional[Dict[int, float]] = None
-
-    # set_value (fixed-cell mode)
-    value: Optional[float] = None
-
-    # set_formula
     formula: Optional[Dict[str, Any]] = None
     apply_to: Optional[Literal["projected", "historical", "both"]] = None
-
-    # rename_item
     new_label: Optional[str] = None
     new_id: Optional[str] = None
-
-    # add_item / reorder_items
     section_id: Optional[str] = None
     sheet_name: Optional[str] = None
     label: Optional[str] = None
@@ -68,19 +59,58 @@ class Operation(BaseModel):
     label_column: Optional[str] = None
     item_ids: Optional[List[str]] = None
 
-    # BM safety opt-outs. PR1 accepts the flags but only applies basic D7 refusals.
     force_set_value_on_derived: bool = False
     force_remove: bool = False
     detach_from_business_model: bool = False
 
-    @model_validator(mode="after")
-    def _validate_op_consistency(self) -> "Operation":
-        if self.type == OperationType.set_value:
-            if self.value is not None and self.values is not None:
-                raise ValueError("set_value: provide either `value` or `values`, not both")
-            if self.value is None and self.values is None:
-                raise ValueError("set_value: requires `value` (fixed-cell) or `values` (period)")
-        return self
+
+class FixedCellValueOperation(_OperationBase):
+    """A set-value operation carrying one fixed-cell value."""
+
+    type: Literal[OperationType.set_value]
+    values: None = None
+    value: float
+
+
+class PeriodValueOperation(_OperationBase):
+    """A set-value operation carrying explicit values by period."""
+
+    type: Literal[OperationType.set_value]
+    values: Dict[int, float]
+    value: None = None
+
+
+class AddItemOperation(_OperationBase):
+    """An add-item operation with optional seed values."""
+
+    type: Literal[OperationType.add_item]
+    values: Dict[int, float] | None = None
+    value: float | None = None
+
+
+class ModelOperation(_OperationBase):
+    """A non-value operation over existing model structure or formulas."""
+
+    type: Literal[
+        OperationType.set_formula,
+        OperationType.rename_item,
+        OperationType.remove_item,
+        OperationType.reorder_items,
+    ]
+    values: None = None
+    value: None = None
+
+
+Operation: TypeAlias = (
+    FixedCellValueOperation | PeriodValueOperation | AddItemOperation | ModelOperation
+)
+_OPERATION_ADAPTER = TypeAdapter(Operation)
+
+
+def validate_operation(value: object) -> Operation:
+    """Parse one operation from its public flat wire payload."""
+
+    return _OPERATION_ADAPTER.validate_python(value)
 
 
 class OperationResult(BaseModel):
@@ -112,14 +142,14 @@ def _dispatch_op(
     *,
     file_path: str,
 ) -> OperationResult:
-    if op.type == OperationType.set_value:
+    if isinstance(op, (FixedCellValueOperation, PeriodValueOperation)):
         return _apply_set_value(model, op, file_path=file_path)
+    if isinstance(op, AddItemOperation):
+        return _apply_add_item(model, op, file_path=file_path)
     if op.type == OperationType.set_formula:
         return _apply_set_formula(model, op, file_path=file_path)
     if op.type == OperationType.rename_item:
         return _apply_rename_item(model, op, file_path=file_path)
-    if op.type == OperationType.add_item:
-        return _apply_add_item(model, op, file_path=file_path)
     if op.type == OperationType.remove_item:
         return _apply_remove_item(model, op, file_path=file_path)
     if op.type == OperationType.reorder_items:
@@ -134,7 +164,7 @@ def _dispatch_op(
 
 def _apply_set_value(
     model: FinancialModel,
-    op: Operation,
+    op: FixedCellValueOperation | PeriodValueOperation,
     *,
     file_path: str,
 ) -> OperationResult:
@@ -145,6 +175,10 @@ def _apply_set_value(
             item_id=op.item_id,
             status="error",
             reason="item_id_required",
+        )
+    if op.item_id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS:
+        raise PresentationCaptionSpecError(
+            "presentation_caption_spec_violation: caption values are immutable"
         )
 
     try:
@@ -166,7 +200,7 @@ def _apply_set_value(
                 status="error",
                 reason="period_mismatch_fixed_cell",
                 details={
-                    "hint": "Fixed-cell row (column-anchored single value). Pass `value: <float>` only - drop `period`, `periods`, `period_values`, and `values`. Mirror the `valuation-inputs` skill RFR/SOFR/credit_spread write pattern.",
+                    "hint": "Fixed-cell row (column-anchored single value). Pass `value: <float>` only - drop `period`, `periods`, `period_values`, and `values`.",
                 },
             )
         anchor = _fixed_cell_anchor_period(model, item)
@@ -189,21 +223,23 @@ def _apply_set_value(
                     "hint": "Projection-row item (no fixed column). Pass `values: {period: float}` for explicit per-period writes - or `period: <int>` + `value: <float>` (the MCP wrapper auto-promotes for projection rows).",
                 },
             )
-        periods_to_write = {int(period): float(value) for period, value in op.values.items()}
+        periods_to_write = {
+            int(period): float(value) for period, value in op.values.items()
+        }
 
     details: Dict[str, Any] = {"warnings": []}
     if item.historical is not None and not op.force_set_value_on_derived:
         details["warnings"].append(
             "set_value on a row with historical formula. Override WINS at render "
-            "time, but may be removed by formula-first at next model_build if "
+            "time, but may be removed by formula-first at the next authenticated rebuild if "
             "reconciled. Use force_set_value_on_derived=True to suppress."
         )
 
-    if op.item_id.startswith("bm.") or _matches_custom_concept_target(model, op.item_id):
+    if op.item_id.startswith("bm.") or item.required_role is not None:
         details["warnings"].append(
-            "Workbook-local edit. Next model_build for this ticker will re-fetch "
-            "via override JSON / BM compile and clobber this. Use model_override "
-            "tool to persist durably."
+            "Workbook-local edit. The next authenticated rebuild for this ticker "
+            "will re-fetch via pinned filing-line state / BM compile and clobber "
+            "this; persist durable changes through the owning FMS transaction."
         )
 
     if item.overrides is None:
@@ -236,6 +272,10 @@ def _apply_set_formula(
             status="error",
             reason="item_id_required",
         )
+    if op.item_id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS:
+        raise PresentationCaptionSpecError(
+            "presentation_caption_spec_violation: caption formulas are immutable"
+        )
 
     try:
         item = model.get_item(op.item_id)
@@ -248,11 +288,20 @@ def _apply_set_formula(
         )
 
     if op.item_id.startswith("bm."):
+        # A BM row's definition and forecast belong to the BusinessModel; its
+        # history is a registered formula over filed operands, so a historical
+        # edit is repaired at the operand's binding (correspondence), not here.
+        owner = (
+            "fms_persist_correspondence"
+            if op.apply_to == "historical"
+            else "fms_persist_business_model"
+        )
         return OperationResult(
             op_type=op.type,
             item_id=op.item_id,
             status="error",
             reason="bm_row_protected",
+            details={"next_call": {"tool_name": owner, "arguments": {}}},
         )
 
     if op.formula is None:
@@ -275,11 +324,7 @@ def _apply_set_formula(
         )
 
     missing_refs = sorted(
-        {
-            ref.id
-            for ref in _extract_formula_refs(spec)
-            if ref.id not in model._index
-        }
+        {ref.id for ref in _extract_formula_refs(spec) if ref.id not in model._index}
     )
     if missing_refs:
         return OperationResult(
@@ -291,10 +336,24 @@ def _apply_set_formula(
         )
 
     apply_to = op.apply_to or "projected"
+    ts = model.time_structure
+    written: set[int] = set()
     if apply_to in {"projected", "both"}:
         item.projected = spec
+        written.update(ts.projection_periods or ts.projection_years or [])
     if apply_to in {"historical", "both"}:
         item.historical = spec
+        written.update(ts.historical_periods or ts.historical_years or [])
+    # ``formula_periods`` gates which periods the graph selects a formula for; a written
+    # section outside it would be a silent no-op, so the written periods join it. A fixed
+    # cell's anchor is formula_periods[0] (`schema/renderer_columns.py::_fixed_cell_anchor_period`
+    # owns the contract): never move it — the write appends only periods that are not the anchor.
+    if item.formula_periods is not None:
+        anchor = int(item.formula_periods[0])
+        item.formula_periods = sorted(
+            {int(period) for period in item.formula_periods}
+            | {int(period) for period in written if int(period) != anchor}
+        )
 
     return OperationResult(op_type=op.type, item_id=op.item_id, status="ok")
 
@@ -312,6 +371,13 @@ def _apply_rename_item(
             item_id=op.item_id,
             status="error",
             reason="item_id_required",
+        )
+    if (
+        op.item_id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS
+        or op.new_id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS
+    ):
+        raise PresentationCaptionSpecError(
+            "presentation_caption_spec_violation: caption identities are reserved"
         )
 
     try:
@@ -364,7 +430,7 @@ def _apply_rename_item(
 
 def _apply_add_item(
     model: FinancialModel,
-    op: Operation,
+    op: AddItemOperation,
     *,
     file_path: str,
 ) -> OperationResult:
@@ -374,6 +440,10 @@ def _apply_add_item(
             item_id=op.item_id,
             status="error",
             reason="item_id_required",
+        )
+    if op.item_id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS:
+        raise PresentationCaptionSpecError(
+            "presentation_caption_spec_violation: caption identities are reserved"
         )
     if op.sheet_name is None or op.section_id is None:
         return OperationResult(
@@ -400,7 +470,10 @@ def _apply_add_item(
             reason="sheet_not_found",
         )
 
-    section = next((candidate for candidate in sheet.sections if candidate.id == op.section_id), None)
+    section = next(
+        (candidate for candidate in sheet.sections if candidate.id == op.section_id),
+        None,
+    )
     if section is None:
         return OperationResult(
             op_type=op.type,
@@ -411,7 +484,14 @@ def _apply_add_item(
 
     after_item = None
     if op.after_item_id is not None:
-        after_item = next((candidate for candidate in section.line_items if candidate.id == op.after_item_id), None)
+        after_item = next(
+            (
+                candidate
+                for candidate in section.line_items
+                if candidate.id == op.after_item_id
+            ),
+            None,
+        )
         if after_item is None:
             return OperationResult(
                 op_type=op.type,
@@ -437,7 +517,9 @@ def _apply_add_item(
                 reason="column_required_fixed_cell_sheet",
             )
     else:
-        _shift_rows(_collect_sheet_items(model, op.sheet_name), at_or_after=new_row, delta=1)
+        _shift_rows(
+            _collect_sheet_items(model, op.sheet_name), at_or_after=new_row, delta=1
+        )
 
     item = LineItem(
         id=op.item_id,
@@ -446,20 +528,26 @@ def _apply_add_item(
         column=op.column.upper() if op.column is not None else None,
         label_column=op.label_column.upper() if op.label_column is not None else None,
         item_type=ItemType(op.item_type or ItemType.input.value),
-        unit=op.unit or "dollars",
+        unit=Unit(op.unit or Unit.dollars.value),
     )
     section.line_items.insert(insert_index, item)
     model.build_index()
 
     child_results: List[OperationResult] = []
-    if op.values is not None or op.value is not None:
-        child_results.append(
-            _apply_set_value(
-                model,
-                op.model_copy(update={"type": OperationType.set_value}),
-                file_path=file_path,
-            )
+    if op.values is not None:
+        value_op: FixedCellValueOperation | PeriodValueOperation = PeriodValueOperation(
+            type=OperationType.set_value,
+            values=op.values,
+            **op.model_dump(exclude={"type", "value", "values"}),
         )
+        child_results.append(_apply_set_value(model, value_op, file_path=file_path))
+    elif op.value is not None:
+        value_op = FixedCellValueOperation(
+            type=OperationType.set_value,
+            value=op.value,
+            **op.model_dump(exclude={"type", "value", "values"}),
+        )
+        child_results.append(_apply_set_value(model, value_op, file_path=file_path))
     if op.formula is not None:
         child_results.append(
             _apply_set_formula(
@@ -476,14 +564,22 @@ def _apply_add_item(
             item_id=op.item_id,
             status="error",
             reason="add_item_child_op_failed",
-            details={"child_results": [result.model_dump(mode="json") for result in child_results]},
+            details={
+                "child_results": [
+                    result.model_dump(mode="json") for result in child_results
+                ]
+            },
         )
 
     details: Dict[str, Any] = {}
     if child_results:
-        details["child_results"] = [result.model_dump(mode="json") for result in child_results]
+        details["child_results"] = [
+            result.model_dump(mode="json") for result in child_results
+        ]
 
-    return OperationResult(op_type=op.type, item_id=op.item_id, status="ok", details=details)
+    return OperationResult(
+        op_type=op.type, item_id=op.item_id, status="ok", details=details
+    )
 
 
 def _apply_remove_item(
@@ -499,6 +595,10 @@ def _apply_remove_item(
             item_id=op.item_id,
             status="error",
             reason="item_id_required",
+        )
+    if op.item_id in WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS:
+        raise PresentationCaptionSpecError(
+            "presentation_caption_spec_violation: captions are immutable"
         )
 
     try:
@@ -550,7 +650,9 @@ def _apply_remove_item(
     removed_row = int(item.row)
     section.line_items.pop(index)
     if sheet.sheet_type not in {SheetType.valuation, SheetType.scenarios}:
-        _shift_rows(_collect_sheet_items(model, sheet_name), at_or_after=removed_row, delta=-1)
+        _shift_rows(
+            _collect_sheet_items(model, sheet_name), at_or_after=removed_row, delta=-1
+        )
     model.build_index()
 
     return OperationResult(op_type=op.type, item_id=op.item_id, status="ok")
@@ -588,7 +690,10 @@ def _apply_reorder_items(
             reason="sheet_not_found",
         )
 
-    section = next((candidate for candidate in sheet.sections if candidate.id == op.section_id), None)
+    section = next(
+        (candidate for candidate in sheet.sections if candidate.id == op.section_id),
+        None,
+    )
     if section is None:
         return OperationResult(
             op_type=op.type,
@@ -598,7 +703,9 @@ def _apply_reorder_items(
         )
 
     current_ids = [item.id for item in section.line_items]
-    if sorted(current_ids) != sorted(op.item_ids) or len(current_ids) != len(op.item_ids):
+    if sorted(current_ids) != sorted(op.item_ids) or len(current_ids) != len(
+        op.item_ids
+    ):
         return OperationResult(
             op_type=op.type,
             item_id=op.item_id,

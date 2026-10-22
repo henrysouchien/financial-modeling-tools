@@ -55,16 +55,6 @@ _FM_SEGMENT_IDS = {
 
 _ASSUMPTIONS_SEGMENT_START_ROW = 7
 _ASSUMPTIONS_TOTAL_REVENUE_ROW = 27
-_FM_SECTION_START_ROWS = {
-    "income_statement": 5,
-    "margins": 41,
-    "growth_rates": 53,
-}
-_FM_SECTION_SHIFT_ROWS = {
-    "income_statement": 7,
-    "margins": 43,
-    "growth_rates": 55,
-}
 _SCENARIO_TABLE_OLD_GROWTH_ID = "tpl.a.revenue_drivers.volume_1_growth"
 _SCENARIO_TABLE_NEW_GROWTH_ID = "tpl.a.revenue_drivers.business_segment_1_growth"
 
@@ -94,8 +84,6 @@ __all__ = [
     "_ASSUMPTIONS_SEGMENT_IDS",
     "_ASSUMPTIONS_SEGMENT_START_ROW",
     "_ASSUMPTIONS_TOTAL_REVENUE_ROW",
-    "_FM_SECTION_SHIFT_ROWS",
-    "_FM_SECTION_START_ROWS",
     "_FM_SEGMENT_IDS",
     "_REBUILD_LATER_IDS",
     "_SCENARIO_TABLE_NEW_GROWTH_ID",

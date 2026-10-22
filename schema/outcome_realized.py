@@ -16,13 +16,12 @@ from ._outcome_shared import (
     SentimentMeasure,
     ValuationBasisKind,
 )
-from ._uuid import _NS_OUTCOME
 from .outcome_contract import (
     KeyValuePair,
     PredictionSnapshot,
     _canonical_utc_datetime,
 )
-from .thesis_shared_slice import SourceId
+from industry_slice_core.thesis_shared_sources import SourceId
 
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -40,7 +39,7 @@ def _reject_duplicate_keys(items: tuple[KeyValuePair, ...], *, field_name: str) 
         raise ValueError(f"{field_name} contains duplicate keys: {joined}")
 
 
-def _canonical_iso_date(value: object, *, field_name: str) -> str:
+def _canonical_iso_date(value: object, *, field_name: str | None) -> str:
     if isinstance(value, datetime):
         raise ValueError(f"{field_name} must be an ISO date")
     if isinstance(value, date):
@@ -338,16 +337,16 @@ class Realization(BaseModel):
     model_config = _FROZEN_CONTRACT
 
 
-def compute_outcome_contract_id(
-    prediction_snapshot_id: str,
-    realization_id: str | None = None,
-) -> str:
-    return str(
-        uuid.uuid5(
-            _NS_OUTCOME,
-            f"outcome_contract|{prediction_snapshot_id}|{realization_id or 'pending'}",
-        )
-    )
+def new_realization_id() -> str:
+    """Return an opaque identifier for one persisted realization."""
+
+    return str(uuid.uuid4())
+
+
+def new_outcome_contract_id() -> str:
+    """Return an opaque identifier for one persisted outcome contract."""
+
+    return str(uuid.uuid4())
 
 
 class OutcomeContract(BaseModel):
@@ -360,12 +359,6 @@ class OutcomeContract(BaseModel):
 
     @model_validator(mode="after")
     def _links_and_scorecard_are_coherent(self) -> OutcomeContract:
-        expected_contract_id = compute_outcome_contract_id(
-            self.prediction_snapshot.prediction_snapshot_id,
-            self.realization.realization_id if self.realization is not None else None,
-        )
-        if self.outcome_contract_id != expected_contract_id:
-            raise ValueError("outcome_contract_id does not match prediction/realization")
         if (
             self.realization is not None
             and self.realization.prediction_snapshot_id
@@ -408,5 +401,6 @@ __all__ = [
     "RealizedThesisRiskOutcome",
     "RealizedValuationSnapshot",
     "ReturnDecomposition",
-    "compute_outcome_contract_id",
+    "new_outcome_contract_id",
+    "new_realization_id",
 ]
