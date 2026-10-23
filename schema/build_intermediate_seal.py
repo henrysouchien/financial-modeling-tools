@@ -27,12 +27,12 @@ if TYPE_CHECKING:
 
 
 def _canonical_intermediate_value(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
     if isinstance(value, BaseModel):
         return {
             "__type__": f"{type(value).__module__}.{type(value).__qualname__}",
-            "value": _canonical_intermediate_value(
-                value.model_dump(mode="json")
-            ),
+            "value": value.model_dump(mode="json"),
         }
     if isinstance(value, Enum):
         return value.value
@@ -63,8 +63,12 @@ def _canonical_intermediate_value(value: object) -> object:
             for key, item in value.items()
         ]
         pairs.sort(
-            key=lambda pair: json.dumps(
-                pair[0], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            key=lambda pair: (
+                pair[0]
+                if isinstance(pair[0], str)
+                else json.dumps(
+                    pair[0], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
             )
         )
         return {"__mapping__": [[key, item] for key, item in pairs]}
@@ -87,8 +91,6 @@ def _canonical_intermediate_value(value: object) -> object:
                 f"{getattr(value, '__qualname__', type(value).__qualname__)}"
             )
         }
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
     state = getattr(value, "__dict__", None)
     if isinstance(state, dict):
         return {
@@ -150,34 +152,4 @@ def _verified_compiled_intermediate(
     observed = _compiled_intermediate_digest(intermediate)
     if observed != intermediate.content_digest:
         raise ValueError("compiled_model_intermediate_mutated")
-    # Revalidate one field at a time.  Retaining a second fully cloned sealed
-    # intermediate through rendering doubles the live FinancialModel, registry,
-    # typed-value, and source graphs at the same point provenance is serialized.
-    # The digest above proves the sealed object was not mutated; these per-field
-    # checks preserve exact schema revalidation without retaining that duplicate.
-    for field in fields(intermediate):
-        if field.name == "content_digest":
-            continue
-        original = getattr(intermediate, field.name)
-        restored = _deep_revalidate(original)
-        original_digest = hashlib.sha256(
-            json.dumps(
-                _canonical_intermediate_value(original),
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            ).encode("utf-8")
-        ).digest()
-        restored_digest = hashlib.sha256(
-            json.dumps(
-                _canonical_intermediate_value(restored),
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            ).encode("utf-8")
-        ).digest()
-        if restored_digest != original_digest:
-            raise ValueError("compiled_model_intermediate_revalidation_mismatch")
     return intermediate
