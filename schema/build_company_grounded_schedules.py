@@ -2409,12 +2409,20 @@ def _schedule_driver_ids(model: FinancialModel, schedule_id: str) -> set[str]:
     schedule = model._index.get(schedule_id)
     if schedule is None:
         return set()
+    specs = (schedule.historical, schedule.projected, *(schedule.overrides or {}).values())
     sources = {
         driver_id
-        for spec in (schedule.historical, schedule.projected, *(schedule.overrides or {}).values())
+        for spec in specs
         if spec is not None
         for driver_id in _formula_ref_ids(spec.params)
         if driver_id != schedule_id
+    }
+    rate_sources = {
+        ref.ref.id
+        for spec in specs
+        if spec is not None
+        for ref in spec.references()
+        if ref.role == "rate" and ref.ref.id != schedule_id
     }
     return {
         item.id
@@ -2425,7 +2433,8 @@ def _schedule_driver_ids(model: FinancialModel, schedule_id: str) -> set[str]:
             role.role == "section_total" for role in item.statement_section_roles or ()
         )
         and (
-            item.id in sources
+            (item.item_type is ItemType.input and item.id in sources)
+            or item.id in rate_sources
             or any(
                 spec is not None
                 and spec.type in (FormulaType.ratio, FormulaType.driver)
@@ -7091,11 +7100,6 @@ def _retire_absent_role_schedules(
             if item_id in face:
                 continue
             item = model.get_item(item_id)
-            driver_ids = (
-                sorted(_schedule_driver_ids(model, item_id) - set(owned))
-                if item_id.startswith("tpl.a.")
-                else []
-            )
             for period in (*historical, *projected):
                 if terminal.state == "not_applicable":
                     cell = rows.get((role, f"FY{period}"))
@@ -7113,10 +7117,6 @@ def _retire_absent_role_schedules(
                 )
                 if retires and not kept_number:
                     graph.retire(item_id, period)
-                    for driver_id in driver_ids:
-                        driver_item = model._index.get(driver_id)
-                        if driver_item is not None and not _authored_periods(driver_item, (period,)):
-                            graph.retire(driver_id, period)
         if terminal.state == "not_applicable":
             citation = cast(AbsenceCitation, terminal.absence_citation).model_dump(mode="json")
             for item_id in sorted(face & model._index.keys()):
