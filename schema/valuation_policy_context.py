@@ -394,6 +394,10 @@ class ValuationPolicyContextResponse(_Contract):
     default=None, exclude_if=lambda value: value is None
   )
   projection: ValuationPolicyContextProjection
+  #: Requested observation details in item_keys order; absent on summary/singular reads.
+  items: tuple[ValuationPolicyObservationDetail, ...] | None = Field(
+    default=None, exclude_if=lambda value: value is None
+  )
   findings: tuple[Finding, ...] = ()
   next_call: dict[str, Any] | None = Field(
     default=None, exclude_if=lambda value: value is None

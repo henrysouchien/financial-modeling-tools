@@ -944,6 +944,116 @@ def _validate_segment_graph(index: _NodeIndex) -> dict[str, tuple[str, ...]]:
     return edges
 
 
+
+def structural_lowering_errors(judgment: BusinessModelJudgment) -> tuple[str, ...]:
+    """Collect all segment/driver structural lowering errors in a single pass."""
+
+    errors: list[str] = []
+    segment_keys: dict[str, str] = {}
+    for segment in judgment.segments:
+        key = semantic_slug(segment.key, kind="segment")
+        if key in segment_keys:
+            errors.append(
+                f"duplicate/slug-colliding segment key {key!r}: "
+                f"{segment_keys[key]!r} and {segment.key!r}"
+            )
+        else:
+            segment_keys[key] = segment.key
+    for segment in judgment.segments:
+        try:
+            index = _NodeIndex(segment, segment_keys)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        edges: dict[str, tuple[str, ...]] = {}
+        for node_key, node in index.nodes.items():
+            if _reads_statement_role(node.calculation) and not isinstance(
+                node.calculation, SumCalculation
+            ):
+                errors.append(
+                    f"{node.calculation.kind} driver {node_key!r} reads a statement role; "
+                    "only a sum calculation takes a statement role operand"
+                )
+            resolved_list: list[str] = []
+            node_failed = False
+            for ref in _calculation_refs(node.calculation):
+                try:
+                    resolved_list.append(index.resolve_operand(ref))
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    node_failed = True
+            if node_failed:
+                continue
+            resolved = tuple(resolved_list)
+            if len(resolved) != len(set(resolved)):
+                errors.append(f"driver {node_key!r} contains duplicate resolved inputs")
+                continue
+            if node.children_role == "decomposition":
+                expected = index.children[node_key]
+                if set(resolved) != expected:
+                    errors.append(
+                        f"decomposition driver {node_key!r} must use every direct child exactly once; "
+                        f"expected {sorted(expected)}, got {sorted(resolved)}"
+                    )
+                    continue
+            dependencies = _node_dependencies(resolved)
+            try:
+                _validate_unit_relationship(
+                    node_key=node_key,
+                    node=node,
+                    resolved_refs=dependencies,
+                    index=index,
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            edges[node_key] = dependencies
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(key: str, path: tuple[str, ...]) -> None:
+            if key in visiting:
+                cycle_start = path.index(key) if key in path else 0
+                cycle = (*path[cycle_start:], key)
+                errors.append(
+                    f"cyclic driver relationship: {' -> '.join(cycle)}. Driver calculations "
+                    "must be acyclic; do not define a derived revenue-per-unit ratio from a "
+                    "revenue output that multiplies by that same driver. Use an external/manual "
+                    "historical residual instead"
+                )
+                return
+            if key in visited:
+                return
+            visiting.add(key)
+            for dependency in edges.get(key, ()):
+                visit(dependency, (*path, key))
+            visiting.remove(key)
+            visited.add(key)
+
+        for key in edges:
+            visit(key, ())
+        output_keys: list[str] = []
+        for output in segment.revenue_outputs:
+            try:
+                output_keys.append(index.resolve(output))
+            except ValueError as exc:
+                errors.append(str(exc))
+        if len(output_keys) != len(set(output_keys)):
+            errors.append(f"segment {segment.key!r} has duplicate revenue outputs")
+        if any(output not in index.top_level for output in output_keys):
+            errors.append(
+                f"segment {segment.key!r} revenue_outputs must reference top-level drivers"
+            )
+        for output in output_keys:
+            output_node = index.nodes[output]
+            if output_node.unit != "dollars":
+                errors.append(
+                    f"revenue output {output!r} must use dollars, got {output_node.unit!r}"
+                )
+            if isinstance(output_node.calculation, CommentaryCalculation):
+                errors.append(f"revenue output {output!r} cannot be commentary")
+    return tuple(dict.fromkeys(errors))
+
 def names_period_average(key: object, label: object, description: object = None) -> bool:
     """Whether a driver's own words (key, label, external description) name an average.
 

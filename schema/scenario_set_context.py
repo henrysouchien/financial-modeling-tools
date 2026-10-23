@@ -248,6 +248,10 @@ class ScenarioSetContextResponse(_Contract):
     default=None, exclude_if=lambda value: value is None
   )
   projection: ScenarioContextProjection
+  #: Requested driver details in item_keys order; absent on summary/singular reads.
+  items: tuple[ScenarioContextDriverDetail, ...] | None = Field(
+    default=None, exclude_if=lambda value: value is None
+  )
   #: What the door observed instead of refusing: an input not resolved yet,
   #: the FAS not accepted, the critical-factors judgment below the
   #: methodology, what the accepted set shows against its FAS.

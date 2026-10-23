@@ -1425,7 +1425,8 @@ def evaluate_rendered_historical_statement_integrity(
     ``printed_unit_dollars`` maps a historical period to the dollar size of one
     unit the filer printed that column's total assets in and what that size is read
     from (:class:`PrintedUnit`; derived where the bound facts are visible); it bounds
-    the filed footing gap.
+    the filed footing gap. A column without an entry has no filed rounding bound,
+    so a delta beyond the half-cent identity tolerance is an imbalance.
     """
 
     model.build_index()
@@ -1518,21 +1519,6 @@ def evaluate_rendered_projected_statement_integrity(
     )
 
 
-def _model_unit_bound(model: FinancialModel, printed: LineItem) -> float:
-    """One model unit of ``printed``'s row, in the delta's coordinates.
-
-    The template's ``model_scale`` bound (every dollar statement row is
-    ``millions``, so ``1.0`` for a standard model). It is what is known about a
-    column whose printed unit was not supplied: a measurement of that, stated as
-    ``bound_basis = model_unit`` on the finding, not a fallback that widens a bound
-    the filing supplied.
-    """
-
-    return _scale_multiplier(printed) / _scale_multiplier(
-        model._index.get(BALANCE_SHEET_ITEM_IDS[0])
-    )
-
-
 class PrintedUnit(NamedTuple):
     """The dollar size of one printed unit of a column's total assets, and its source.
 
@@ -1547,22 +1533,20 @@ class PrintedUnit(NamedTuple):
 
 def _footing_bound(
     model: FinancialModel,
-    printed: LineItem,
     *,
     period: int,
     printed_unit_dollars: Mapping[int, PrintedUnit],
-) -> tuple[float, str]:
-    """The footing bound of one column and what it is a bound of.
+) -> tuple[float | None, str]:
+    """The filing-derived footing bound of one column, in the delta's model scale.
 
-    One printed unit of the column's total assets when the validation assembly
-    supplied one (``printed_unit`` from the filer's ``decimals``, ``display_scale``
-    for a legacy fact without it), converted to the delta's model scale; otherwise
-    one model unit (``model_unit``).
+    ``printed_unit`` uses the filer's ``decimals``; ``display_scale`` uses a legacy
+    fact's printed scale when it has no decimals. Without a bound total-assets fact,
+    no filed precision is known and no non-zero delta can be attributed to rounding.
     """
 
     unit = printed_unit_dollars.get(period)
     if unit is None:
-        return _model_unit_bound(model, printed), "model_unit"
+        return None, "none"
     return unit.dollars / _scale_multiplier(model._index.get(BALANCE_SHEET_ITEM_IDS[0])), unit.basis
 
 
@@ -1616,12 +1600,12 @@ def _historical_balance_sheet_findings(
     """Historical balance-sheet identity to half a cent, with one informational case.
 
     A column in which at least one total is a printed (constant) value carries the
-    filer's own footing: a printed figure that does not foot to its neighbours is the
-    filer's rounding. Within one unit of the filer's printed precision for that column
-    (``_footing_bound``; one model unit when the column's printed unit is unknown) that
-    is recorded as ``filed_balance_sheet_footing_gap`` (informational), naming the
-    filed subtotal lines and the delta per year; a column whose totals are all
-    compositions of bound lines, or any delta beyond that bound, stays
+    filer's own footing. Within one unit of the bound total-assets fact's printed
+    precision (``_footing_bound``), a gap is recorded as
+    ``filed_balance_sheet_footing_gap`` (informational), naming the filed subtotal
+    lines and the delta per year. Without that fact's precision there is no filed
+    rounding to attribute a non-zero delta to. Such a delta, a column whose totals
+    are all compositions of bound lines, or a delta beyond the filed bound stays
     ``historical_balance_sheet_imbalance``.
     """
 
@@ -1633,6 +1617,7 @@ def _historical_balance_sheet_findings(
     unbalanced: list[tuple[int, float, float, float]] = []
     filed: list[tuple[int, float, float, float]] = []
     filed_bounds: dict[int, tuple[float, str]] = {}
+    bounds: dict[int, tuple[float | None, str]] = {}
     filed_lines: list[dict[str, Any]] = []
     for period in historical_periods:
         period_values = [values.get(item_id, {}).get(period) for item_id in BALANCE_SHEET_ITEM_IDS]
@@ -1644,15 +1629,15 @@ def _historical_balance_sheet_findings(
         if abs(delta) > tolerance:
             row = (period, assets, liabilities_and_equity, delta)
             printed = _printed_total(model, period)
-            bound = (
-                None if printed is None
-                else _footing_bound(model, printed, period=period, printed_unit_dollars=printed_unit_dollars)
+            bound, basis = _footing_bound(
+                model, period=period, printed_unit_dollars=printed_unit_dollars
             )
+            bounds[period] = (bound, basis)
             # One printed unit to half a cent: a gap of exactly one unit carries the float noise of
             # subtracting figures of different magnitude (35014.001 - 35014 is 1.0000000000218e-3).
-            if bound is not None and abs(delta) <= bound[0] + tolerance:
+            if printed is not None and bound is not None and abs(delta) <= bound + tolerance:
                 filed.append(row)
-                filed_bounds[period] = bound
+                filed_bounds[period] = (bound, basis)
                 filed_lines.extend(
                     _filed_subtotal_lines(model, values=values, period=period)
                 )
@@ -1701,6 +1686,7 @@ def _historical_balance_sheet_findings(
             )
         )
     if unbalanced:
+        unbalanced_bases = {bounds[period][1] for period, *_ in unbalanced}
         findings.append(
             ProjectedFinancialIntegrityFinding(
                 code="historical_balance_sheet_imbalance",
@@ -1715,6 +1701,18 @@ def _historical_balance_sheet_findings(
                 bound=tolerance,
                 statement=BALANCE_SHEET_STATEMENT,
                 observed_delta=max(unbalanced, key=lambda row: abs(row[3]))[3],
+                observed={
+                    "delta_by_period": json.dumps([
+                        {
+                            "period": period, "delta": delta,
+                            "bound": bounds[period][0], "bound_basis": bounds[period][1],
+                        }
+                        for period, _assets, _le, delta in unbalanced
+                    ]),
+                    "bound_basis": (
+                        next(iter(unbalanced_bases)) if len(unbalanced_bases) == 1 else "mixed"
+                    ),
+                },
             )
         )
     return set(BALANCE_SHEET_ITEM_IDS), findings

@@ -552,8 +552,8 @@ def printed_unit_dollars_by_period(
     were displayed in instead, one unit of ``display.scale`` — ``basis =
     display_scale``. The integrity evaluator converts it to the model scale of the
     row. A period whose total assets are not pinned to a filing-native fact is
-    absent: the evaluator then states what it knows, one model unit, as
-    ``bound_basis = model_unit``.
+    absent: there is no filed precision to attribute a non-zero delta to, so the
+    evaluator reports an imbalance with ``bound_basis = none``.
     """
 
     from .required_role_catalog import RequiredRoleUnknown, load_required_role_catalog

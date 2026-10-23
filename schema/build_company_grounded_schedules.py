@@ -7070,10 +7070,7 @@ def _retire_absent_role_schedules(
         # role that claims it is owed: a shared landing row stays with its live role.
         landing = tuple(
             item_id
-            for item_id in (
-                *lines.hff_fact_items,
-                *((_DIVIDEND_PAYABLE,) if role == "statement.cf.dividends_paid" else ()),
-            )
+            for item_id in lines.hff_fact_items
             if item_id in model._index
             and not item_id.startswith("tpl.fm.")
             and all(
@@ -7227,7 +7224,30 @@ def _retire_unclaimed_face_slots(
                 graph.build(model)
             for period in historical:
                 graph.retire(bridge_id, period)
-
+    payable = model._index.get(_DIVIDEND_PAYABLE)
+    if (
+        payable is not None
+        and payable.historical is None
+        and payable.projected is None
+        and not any(
+            (payable.overrides or {}).get(period) is not None
+            or (payable.values is not None and period in payable.values.values)
+            for period in (*historical, *projected)
+        )
+        and not any(
+            reader.id != _DIVIDEND_PAYABLE
+            and any(
+                spec is not None and _DIVIDEND_PAYABLE in _formula_ref_ids(spec.params)
+                for spec in (reader.historical, reader.projected, *(reader.overrides or {}).values())
+            )
+            for reader in model._index.values()
+        )
+    ):
+        if graph is None:
+            graph = DependencyGraph()
+            graph.build(model)
+        for period in (*historical, *projected):
+            graph.retire(_DIVIDEND_PAYABLE, period)
 
 _SGA_HOST_NOTE = "combined SG&A forecast: terminal SG&A share of revenue"
 _SGA_HOST_RATE_ITEM_ID = "tpl.a.operating_leverage.selling_general_and_administrative_pct_revenue"

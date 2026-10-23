@@ -877,10 +877,10 @@ def compile_model_intermediate(
     compile_findings.extend(
         business_model_validation_findings(business_model_revision)
     )
-    # Accepted HFF seeds are the sole authority for historical opening values
-    # required by exact BusinessModel self[-1] growth nodes.  Apply them after
-    # the identity channel so equal values are explicitly reconciled and a
-    # conflicting identity value fails closed rather than silently winning.
+    # Accepted HFF seeds are the primary authority for historical opening values
+    # required by exact BusinessModel self[-1] growth nodes, with cited
+    # BusinessModel historical_observations filling remaining unseeded historical
+    # years on compiled node and direct-segment lines.
     model_spec_seed_coverage.extend(
         apply_model_spec_historical_driver_seeds(
             model,
