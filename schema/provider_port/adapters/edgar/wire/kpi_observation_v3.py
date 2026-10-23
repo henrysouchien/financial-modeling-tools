@@ -45,6 +45,11 @@ class EdgarKpiObservationV3(TypedKpiObservation):
             **{name: getattr(self, name) for name in TypedKpiObservation.model_fields},
         )
 
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        data = super().model_dump(*args, **kwargs)
+        if data.get("xbrl_fact_ref") is None:
+            data.pop("xbrl_fact_ref", None)
+        return data
 
 class KpiObservationCaptureMetadataV3(BaseModel):
     """Envelope-level data; capture-specific transport details stay additive."""
