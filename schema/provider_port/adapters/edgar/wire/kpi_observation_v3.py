@@ -17,6 +17,7 @@ from .operational_kpi_driver_rows_v2 import (
     KpiLaneGap,
     OmittedTable,
     ReaderRecord,
+    TableContext,
     TypedKpiObservation,
 )
 
@@ -59,7 +60,7 @@ class KpiObservationCaptureMetadataV3(BaseModel):
     omitted_tables: tuple[OmittedTable, ...]
     lane_gaps: tuple[KpiLaneGap, ...]
     readers: tuple[ReaderRecord, ...]
-
+    table_context: tuple[TableContext, ...] = ()
 
 def validate_edgar_kpi_observation_v3(
     payload: Mapping[str, Any] | EdgarKpiObservationV3,
@@ -95,6 +96,7 @@ def assemble_edgar_kpi_observation_artifact(
             omitted_tables=capture.omitted_tables,
             lane_gaps=capture.lane_gaps,
             readers=capture.readers,
+            table_context=capture.table_context,
         )
     except (TypeError, ValueError) as exc:
         raise EdgarKpiObservationInvalid(f"invalid sealed KPI artifact: {exc}") from exc

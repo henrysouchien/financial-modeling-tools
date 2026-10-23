@@ -10,7 +10,16 @@ from typing import Annotated, Any, Literal
 
 from edgar_transport_contracts.dimensions import XbrlFactRef
 from edgar_transport_contracts.enums import MeasureUnit, ScaleProvenance
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from edgar_transport_contracts.kpi import KpiExplanation, TableContext
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
 
 from schema.business_model import ObservationBasis
 from schema.scale_conversion import Scale
@@ -141,7 +150,14 @@ class TypedKpiObservation(_KpiType):
     lane: Literal["table", "prose"]
     notes: tuple[str, ...] = ()
     xbrl_fact_ref: XbrlFactRef | None = None
+    explanations: tuple[KpiExplanation, ...] = ()
 
+    @model_serializer(mode="wrap")
+    def _omit_empty_explanations(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if not data.get("explanations"):
+            data.pop("explanations", None)
+        return data
     @model_validator(mode="after")
     def _bind_value(self) -> TypedKpiObservation:
         if self.value_semantic == "change_amount" and self.calculation_ready:
@@ -209,7 +225,14 @@ class KpiDriverRowsV2(_KpiType):
     omitted_tables: tuple[OmittedTable, ...]
     lane_gaps: tuple[KpiLaneGap, ...]
     readers: tuple[ReaderRecord, ...]
+    table_context: tuple[TableContext, ...] = ()
 
+    @model_serializer(mode="wrap")
+    def _omit_empty_table_context(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if not data.get("table_context"):
+            data.pop("table_context", None)
+        return data
 
 class _DriverRowsResponse(KpiDriverRowsV2):
     """The producer's additive HTTP envelope around the sealed artifact."""
@@ -243,6 +266,7 @@ def validate_edgar_operational_kpi_driver_rows_v2(
                 omitted_tables=response.omitted_tables,
                 lane_gaps=response.lane_gaps,
                 readers=response.readers,
+                table_context=response.table_context,
             )
         return KpiDriverRowsV2.model_validate_json(raw, strict=True)
     except (TypeError, ValueError, ValidationError) as exc:
@@ -263,7 +287,7 @@ __all__ = [
     "EdgarOperationalKpiDriverRowsContractError", "MeasureUnit",
     "ScaleProvenance", "MeasureType", "ScaledQuantity", "TypedPeriod",
     "CanonicalSeriesMatch", "KpiDate", "KpiGap", "KpiLocator", "XbrlFactRef",
-    "TypedKpiObservation",
+    "KpiExplanation", "TableContext", "TypedKpiObservation",
     "OmittedTable", "KpiLaneGap", "ReaderRecord", "KpiDriverRowsV2",
     "validate_edgar_operational_kpi_driver_rows_v2",
     "adapt_edgar_operational_kpi_driver_rows_payload",
