@@ -453,7 +453,7 @@ def _owner_and_call(
             item_id, addressed, research_file_id, cells=cells, formula_side=formula_side,
         )
 
-    if reason == MANUAL_INPUT_UNCITED:
+    if reason == MANUAL_INPUT_UNCITED or (finding_code or reason) == "cited_fact_value_mismatch":
         return "model_document", edit()
     # A ``bm.`` row's formula is the BusinessModel's, never a document edit: ``_apply_set_formula``
     # refuses every ``set_formula`` on one (``bm_row_protected``), so its formula reasons fall through
@@ -542,11 +542,14 @@ def owner_for(
     )
 
 
-def _cell_input(model: "FinancialModel", cell: CellKey) -> _CellInput:
+def _cell_input(
+    model: "FinancialModel", cell: CellKey, finding: "Finding | None" = None,
+) -> _CellInput:
     """What ``cell`` holds (``_CellInput``): the number of its value snapshot or, failing that, of a
-    constant override; the filing line the value's lineage stamp names (its ``source`` object when
-    the kind is ``filing_line``; an analyst's ``{kind: agent}``, a stage artifact or no stamp names
-    none); and whether it stores an override or snapshot at all."""
+    constant override (or the filed value of a ``cited_fact_value_mismatch`` finding); the filing line
+    the value's lineage stamp names (its ``source`` object when the kind is ``filing_line``; an
+    analyst's ``{kind: agent}``, a stage artifact or no stamp names none); and whether it stores an
+    override or snapshot at all."""
     from .models import FormulaType
 
     item = model._index.get(cell[0])
@@ -558,6 +561,10 @@ def _cell_input(model: "FinancialModel", cell: CellKey) -> _CellInput:
     if value is None and override is not None and override.type is FormulaType.constant:
         constant = (override.params or {}).get("value")
         value = float(constant) if isinstance(constant, (int, float)) and not isinstance(constant, bool) else None
+    if finding is not None and finding.code == "cited_fact_value_mismatch":
+        filed = finding.expected.get("value")
+        if isinstance(filed, (int, float)) and not isinstance(filed, bool):
+            value = float(filed)
     stamp = None if stored is None else stored.lineage_reference
     source = stamp.get("source") if isinstance(stamp, Mapping) else None
     line = dict(source) if isinstance(source, Mapping) and source.get("kind") == "filing_line" else None
@@ -1238,7 +1245,12 @@ def collect_root_causes_counted(
             research_file_id=research_file_id,
             finding_code=None if own is None else own.code,
             repair_owner=None if repair_owner is None else str(repair_owner),
-            cells={period: _cell_input(model, (item_id, period)) for period in edited},
+            cells={
+                period: _cell_input(
+                    model, (item_id, period), held.findings.get((item_id, period)) or own,
+                )
+                for period in edited
+            },
             formula_side=_formula_side(model, item, edited),
             projected=all(period in _projection_periods(model.time_structure) for period in edited),
             historical=all(period in _historical_periods(model.time_structure) for period in edited),
