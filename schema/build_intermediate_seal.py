@@ -2,8 +2,8 @@
 
 ``compile_model_intermediate`` (``schema/build.py``) returns a sealed copy:
 every field revalidated and the canonical projection digested into
-``content_digest``. ``finalize_compiled_model`` verifies that digest and
-revalidates field by field before it renders.
+``content_digest``. ``finalize_compiled_model`` verifies that digest before
+it renders.
 """
 
 from __future__ import annotations
