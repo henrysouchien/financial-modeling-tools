@@ -199,7 +199,7 @@ class DependencyGraph:
 
     def __init__(self) -> None:
         self.model: Optional[FinancialModel] = None
-        self.nodes: Set[str] = set()
+        self.nodes: Dict[str, LineItem] = {}
         self.adj: Dict[str, Set[str]] = {}
         self.time_edges: Dict[str, Set[LineItemRef]] = {}
         self.cycle_blocks: List[CycleBlock] = []
@@ -261,11 +261,11 @@ class DependencyGraph:
         self._unresolved_cone = set()
         self._period_anchor_last_nodes = set()
         if not model.sheets:
-            self.nodes = set()
+            self.nodes = {}
             return
 
         model.build_index()
-        self.nodes = set(model._index.keys())
+        self.nodes = dict(model._index)
         self._item_sheet_map = {
             item.id: sheet_name
             for sheet_name, sheet in model.sheets.items()
@@ -286,7 +286,7 @@ class DependencyGraph:
         self.time_edges = {node: set() for node in self.nodes}
         self.missing_refs = set()
 
-        for item in model._index.values():
+        for item in self.nodes.values():
             for spec in self._iter_formula_specs(item):
                 for _carrier, ref in self._read_refs(spec):
                     if ref.id not in self.nodes:
@@ -429,7 +429,7 @@ class DependencyGraph:
                         break
 
             for period in eval_periods:
-                for item_id, item in model._index.items():
+                for item_id, item in self.nodes.items():
                     if item_id in self._deferred_nodes:
                         continue
                     if not item.overrides or period not in item.overrides:
@@ -579,10 +579,7 @@ class DependencyGraph:
             )
 
         def target_period(ref: LineItemRef, period: int) -> Optional[int]:
-            try:
-                target_item = self._loaded_model.get_item(ref.id)
-            except KeyError:
-                target_item = None
+            target_item = self.nodes.get(ref.id)
             if target_item is not None and target_item.column is not None:
                 if int(ref.t) != 0:
                     return None
@@ -600,7 +597,7 @@ class DependencyGraph:
         def known_provenance(item_id: str, period: int) -> ValueProvenance:
             if item_id in inputs and period in inputs[item_id]:
                 return ValueProvenance.input
-            item = self._loaded_model.get_item(item_id)
+            item = self.nodes[item_id]
             if item.values is not None:
                 cell = item.values.values.get(period)
                 if cell is not None and cell.value is not None:
@@ -618,7 +615,7 @@ class DependencyGraph:
 
             visiting.add(key)
             try:
-                item = self._loaded_model.get_item(item_id)
+                item = self.nodes[item_id]
                 spec = self._spec_for_period(item, int(period))
                 numeric = results.get(item_id, {}).get(int(period))
                 if (
@@ -958,11 +955,7 @@ class DependencyGraph:
                         def is_all_history_absent(node_id: str) -> bool:
                             if node_id not in law4_all_history_absent:
                                 law4_all_history_absent[node_id] = False
-                                node_item = (
-                                    self._loaded_model.get_item(node_id)
-                                    if node_id in self.nodes
-                                    else None
-                                )
+                                node_item = self.nodes.get(node_id)
                                 owned_history = (
                                     ()
                                     if node_item is None
@@ -1292,7 +1285,7 @@ class DependencyGraph:
                 if cached_forced is not None:
                     results.setdefault(node_id, {})[period] = cached_forced
                     return True
-            item = self._loaded_model.get_item(node_id)
+            item = self.nodes[node_id]
             spec = self._spec_for_period(item, period)
             missing_dep = False
             if spec is not None and not self._is_sum_range_spec(spec):
@@ -1317,7 +1310,7 @@ class DependencyGraph:
                 return True
             return False
 
-        item = self._loaded_model.get_item(node_id)
+        item = self.nodes[node_id]
         spec = self._spec_for_period(item, period)
         missing_dep = False
         if spec is not None and not self._is_sum_range_spec(spec):
@@ -1362,7 +1355,7 @@ class DependencyGraph:
             node_id = comp.nodes[0]
             if results.get(node_id, {}).get(period) is not None:
                 continue
-            item = self._loaded_model.get_item(node_id)
+            item = self.nodes[node_id]
             spec = self._spec_for_period(item, period)
             missing_dep = False
             if spec is not None and not self._is_sum_range_spec(spec):
@@ -1400,7 +1393,7 @@ class DependencyGraph:
         unresolved_sum_range_nodes: Set[str] = set()
         period_anchor_last_nodes: Set[str] = set()
 
-        for item in self.model._index.values():
+        for item in self.nodes.values():
             for _path, spec in self._iter_all_formula_specs_with_paths(item):
                 if self._is_sum_range_spec(spec):
                     sum_range_nodes.add(item.id)
@@ -1410,9 +1403,8 @@ class DependencyGraph:
                 for _carrier, ref in self._read_refs(spec):
                     if ref.period_anchor != "last":
                         continue
-                    try:
-                        target_item = self.model.get_item(ref.id)
-                    except KeyError:
+                    target_item = self.nodes.get(ref.id)
+                    if target_item is None:
                         continue
                     if target_item.column is None:
                         period_anchor_last_nodes.add(item.id)
@@ -1490,9 +1482,8 @@ class DependencyGraph:
         if not self.model:
             return
         for node_id in sorted(self._deferred_nodes):
-            try:
-                item = self._loaded_model.get_item(node_id)
-            except KeyError:
+            item = self.nodes.get(node_id)
+            if item is None:
                 continue
             if item.column is None:
                 continue
@@ -1517,11 +1508,10 @@ class DependencyGraph:
         if ref is not None:
             if ref.period_anchor == "last":
                 return
-            try:
-                target_item = self._loaded_model.get_item(ref.id)
-            except KeyError:
+            target_item = self.nodes.get(ref.id)
+            if target_item is None:
                 return
-            if target_item is not None and target_item.column is not None:
+            if target_item.column is not None:
                 return
             raise ValueError(
                 f"Fixed-cell SUM_RANGE cone member {node_id!r} uses first-anchor "
@@ -1564,7 +1554,7 @@ class DependencyGraph:
         out: List[Tuple[FormulaRef, Tuple[str, int]]] = []
         for carrier, ref in self._read_refs(spec):
             if sum_range and carrier.role == "target":
-                if ref.id in model._index:
+                if ref.id in self.nodes:
                     out.extend(
                         (carrier, (ref.id, int(other)))
                         for other in self._sum_range_target_periods(ref.id)
@@ -1583,18 +1573,18 @@ class DependencyGraph:
         ``offset_scenario`` also reads the three rows below its anchor, which no param names, so
         those reads are carried by the ``anchor`` occurrence: removing the anchor removes them.
         """
-        model = self._loaded_model
         reads = [(formula_ref, formula_ref.ref) for formula_ref in spec.references()]
         if spec.type is FormulaType.valuation and spec.subtype == "offset_scenario":
             carrier = next((r for r, _ref in reads if r.role == "anchor"), None)
             anchor_ref = None if carrier is None else carrier.ref
             sheet = None if anchor_ref is None else self._item_sheet_map.get(anchor_ref.id)
-            if carrier is not None and anchor_ref is not None and anchor_ref.id in model._index:
+            anchor_item = None if anchor_ref is None else self.nodes.get(anchor_ref.id)
+            if carrier is not None and anchor_item is not None:
                 for offset in (1, 2, 3):
                     row_id = (
                         None
                         if sheet is None
-                        else self._row_item_id(sheet, int(model._index[anchor_ref.id].row) + offset)
+                        else self._row_item_id(sheet, int(anchor_item.row) + offset)
                     )
                     if row_id is not None:
                         reads.append((carrier, LineItemRef(id=row_id)))
@@ -1633,7 +1623,7 @@ class DependencyGraph:
         ``period``. ``None`` when the target is not in the model, or the shifted period is off
         the axis (an offset before the axis reads a stored input, no cell of it).
         """
-        target_item = self._loaded_model._index.get(ref.id)
+        target_item = self.nodes.get(ref.id)
         if target_item is None:
             return None
         if target_item.column is not None:
@@ -1719,7 +1709,7 @@ class DependencyGraph:
             retired[cell] = None
             source_id, source_period = cell
             for consumer_id in self._consumers_of(source_id):
-                consumer = model._index[consumer_id]
+                consumer = self.nodes[consumer_id]
                 for consumer_period in (int(other) for other in self._time_order()):
                     if (consumer_id, consumer_period) in retired:
                         continue
@@ -1743,7 +1733,7 @@ class DependencyGraph:
                         }
             # After the consumers are read: clearing a fixed-cell row moves its anchor, and a
             # read resolved afterwards would no longer name the cell that was retired.
-            self._clear_cell(model._index[source_id], source_period)
+            self._clear_cell(self.nodes[source_id], source_period)
         return tuple(retired)
 
     def get_dependents(self, line_item_id: str) -> List[str]:
@@ -1783,7 +1773,7 @@ class DependencyGraph:
             if inputs and node in inputs and period in inputs[node]:
                 frozen_nodes.add(node)
                 continue
-            item = self._loaded_model.get_item(node)
+            item = self.nodes[node]
             spec = self._spec_for_period(item, period)
             if spec and spec.type == FormulaType.constant:
                 value = self._eval(node, period, results, time_index, time_order)

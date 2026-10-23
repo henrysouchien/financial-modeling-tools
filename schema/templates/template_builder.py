@@ -992,18 +992,27 @@ def _build_template_from_config(
     return template
 
 
+_CACHED_SIA_TEMPLATE: Optional[FinancialModel] = None
+
+
 def load_sia_generic_template() -> FinancialModel:
     """Load the checked-in generic SIA template artifact."""
 
-    model = FinancialModel.model_validate_json(
-        SIA_GENERIC_TEMPLATE_PATH.read_text(encoding="utf-8")
-    )
-    apply_template_semantic_units(model)
-    _apply_required_role_stamps(model)
-    _apply_balance_sheet_section_roles(model)
-    _install_residual_histories(model)
-    _stamp_scenario_offset_labels(model)
-    return model
+    global _CACHED_SIA_TEMPLATE
+    if _CACHED_SIA_TEMPLATE is None:
+        model = FinancialModel.model_validate_json(
+            SIA_GENERIC_TEMPLATE_PATH.read_text(encoding="utf-8")
+        )
+        apply_template_semantic_units(model)
+        _apply_required_role_stamps(model)
+        _apply_balance_sheet_section_roles(model)
+        _install_residual_histories(model)
+        _stamp_scenario_offset_labels(model)
+        model._index = {}
+        _CACHED_SIA_TEMPLATE = model
+    clone = _CACHED_SIA_TEMPLATE.model_copy(deep=True)
+    clone.build_index()
+    return clone
 
 
 def build_sia_generic_template(

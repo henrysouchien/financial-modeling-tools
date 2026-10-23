@@ -25,7 +25,7 @@ def _active_adjs_for_period(self: Any, period: int) -> Tuple[Dict[str, Set[str]]
     cycle_adj: Dict[str, Set[str]] = {node: set() for node in self.nodes}
     if not self.model:
         return order_adj, cycle_adj
-    for item in self.model._index.values():
+    for item in self.nodes.values():
         spec = self._spec_for_period(item, period)
         if spec is None:
             continue
@@ -52,7 +52,7 @@ def _active_adjs_for_period_subset(
     if not self.model:
         return order_adj, cycle_adj
     for node in node_set:
-        item = self.model.get_item(node)
+        item = self.nodes[node]
         spec = self._spec_for_period(item, period)
         if spec is None:
             continue
@@ -95,7 +95,7 @@ def active_adjacency_for_periods(self: Any, periods: Iterable[int]) -> Dict[str,
     if not self.model or not active_periods:
         return adj
 
-    for item in self.model._index.values():
+    for item in self.nodes.values():
         for period in active_periods:
             spec = self._static_spec_for_period(item, period)
             if spec is None:

@@ -43,7 +43,7 @@ def _seed_inputs(
 
     if not self.model:
         return
-    for item_id, item in self.model._index.items():
+    for item_id, item in self.nodes.items():
         if results.get(item_id, {}).get(period) is not None:
             continue
         if self._compute_seed_results is not None and (not recompute or item_id not in recompute):
@@ -132,7 +132,11 @@ def _value_of(
         return None
     if isinstance(obj, LineItemRef):
         target_item = None
-        if self.model is not None:
+        if self.nodes:
+            target_item = self.nodes.get(obj.id)
+            if target_item is None:
+                return None
+        elif self.model is not None:
             try:
                 target_item = self.model.get_item(obj.id)
             except KeyError:
@@ -204,10 +208,7 @@ def _read_with_fallback(
     ):
         val = self._compute_seed_results.get(item_id, {}).get(target_period)
     if val is None and self.model is not None:
-        try:
-            target_item = self.model.get_item(item_id)
-        except KeyError:
-            target_item = None
+        target_item = self.nodes.get(item_id) if self.nodes else None
         if target_item is not None and target_item.column is not None and target_item.values:
             value_cell = target_item.values.values.get(target_period)
             if value_cell is not None and value_cell.value is not None:
@@ -229,7 +230,7 @@ def _row_item_id(self: Any, sheet_name: str, row: int) -> Optional[str]:
     if not item_ids:
         return None
     for item_id in item_ids:
-        item = self.model.get_item(item_id) if self.model else None
+        item = self.nodes.get(item_id) if self.nodes else (self.model.get_item(item_id) if self.model else None)
         if item is not None and item.column is None:
             return item_id
     return item_ids[0] if len(item_ids) == 1 else None
@@ -354,7 +355,7 @@ def _input_value_fallback(self: Any, line_item_id: str, target_period: int) -> O
     imported_edgar, imported_fmp). Never falls back to derived/computed
     cached values.
     """
-    item = self.model.get_item(line_item_id)
+    item = self.nodes.get(line_item_id) if self.nodes else self.model.get_item(line_item_id)
     if not item:
         return None
 
@@ -394,7 +395,7 @@ def _cached_value_for_period(
     existing = results.get(item_id, {}).get(period)
     if not self.model:
         return existing
-    item = self.model.get_item(item_id)
+    item = self.nodes[item_id] if item_id in self.nodes else self.model.get_item(item_id)
     if item.values:
         value_cell = item.values.values.get(period)
         if value_cell is not None and value_cell.value is not None:
@@ -413,7 +414,7 @@ def _cached_computed_value_for_period(
 ) -> Optional[float]:
     if not self.model:
         return None
-    item = self.model.get_item(item_id)
+    item = self.nodes[item_id] if item_id in self.nodes else self.model.get_item(item_id)
     if not item.values:
         return None
     value_cell = item.values.values.get(period)

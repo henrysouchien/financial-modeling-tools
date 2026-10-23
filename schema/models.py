@@ -762,9 +762,15 @@ class FinancialModel(BaseModel):
 
     def get_item(self, line_item_id: str) -> LineItem:
         """Get a line item by semantic ID (builds index if needed)."""
-        if not self._index:
+        priv = self.__pydantic_private__
+        idx = priv.get("_index") if priv is not None else None
+        if not idx:
             self.build_index()
-        return self._index[line_item_id]
+            priv = self.__pydantic_private__
+            idx = priv.get("_index") if priv is not None else None
+            if idx is None:
+                raise KeyError(line_item_id)
+        return idx[line_item_id]
 
     @field_validator("sheets", mode="before")
     @classmethod

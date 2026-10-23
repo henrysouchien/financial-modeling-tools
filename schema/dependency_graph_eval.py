@@ -56,7 +56,7 @@ def _eval(
     Uses FormulaType-specific handlers and delegates nested expressions
     to _eval_expr.
     """
-    item = self._loaded_model.get_item(line_item_id)
+    item = self.nodes[line_item_id]
     spec = self._spec_for_period(item, period)
     if spec is None:
         return None
@@ -117,10 +117,9 @@ def _eval_inner(
                     target_obj,
                 )
                 return None
-            try:
-                target_item = self._loaded_model.get_item(target_ref.id)
-            except KeyError as exc:
-                raise KeyError(f"SUM_RANGE target {target_ref.id!r} not found in model") from exc
+            target_item = self.nodes.get(target_ref.id)
+            if target_item is None:
+                raise KeyError(f"SUM_RANGE target {target_ref.id!r} not found in model")
 
             if target_item.column is not None:
                 return self._value_of(target_ref, period, results, time_index, time_order)
@@ -401,9 +400,8 @@ def _eval_offset_scenario(
     if selector_value != row_offset or row_offset not in {1, 2, 3}:
         return None
 
-    try:
-        anchor_item = self._loaded_model.get_item(anchor_ref.id)
-    except KeyError:
+    anchor_item = self.nodes.get(anchor_ref.id)
+    if anchor_item is None:
         return None
 
     anchor_sheet = self._item_sheet_map.get(anchor_ref.id)
@@ -442,7 +440,7 @@ def _eval_offset_scenario(
     if target_id is None:
         return None
 
-    target_item = self._loaded_model.get_item(target_id)
+    target_item = self.nodes[target_id]
     target_period = (
         self._fixed_cell_anchor_period(target_item)
         if target_item.column is not None

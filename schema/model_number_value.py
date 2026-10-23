@@ -12,6 +12,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -115,7 +116,11 @@ def _require_canonical_text(value: str, *, field_name: str) -> None:
     if (
         not value
         or value.strip() != value
-        or any(unicodedata.category(character).startswith("C") for character in value)
+        or (
+            not value.isprintable()
+            if value.isascii()
+            else any(unicodedata.category(character).startswith("C") for character in value)
+        )
     ):
         raise ValueError(f"{field_name} must be non-empty canonical text")
 
@@ -197,11 +202,11 @@ class ModelValueCauseBase(StrictModelNumberValueContract):
     period: FiscalPeriod
     expression_path: str
 
-    @model_validator(mode="after")
-    def _validate_base(self) -> "ModelValueCauseBase":
-        _require_canonical_text(self.node_id, field_name="node_id")
-        _require_canonical_text(self.expression_path, field_name="expression_path")
-        return self
+    @field_validator("node_id", "expression_path", mode="after")
+    @classmethod
+    def _validate_base(cls, value: str, info: ValidationInfo) -> str:
+        _require_canonical_text(value, field_name=str(info.field_name))
+        return value
 
 
 class MissingCause(ModelValueCauseBase):
