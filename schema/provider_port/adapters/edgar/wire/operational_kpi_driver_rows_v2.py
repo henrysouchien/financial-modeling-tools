@@ -8,11 +8,11 @@ from decimal import Decimal
 import json
 from typing import Annotated, Any, Literal
 
+from edgar_transport_contracts.dimensions import XbrlFactRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from schema.business_model import ObservationBasis
 from schema.scale_conversion import Scale
-
 
 EDGAR_OPERATIONAL_KPI_DRIVER_ROWS_CONTRACT_VERSION = "edgar-operational-kpi-driver-rows.v2"
 ScaleProvenance = Literal["row_label", "column_header", "table_caption", "monetary_preamble", "none"]
@@ -140,7 +140,7 @@ class TypedKpiObservation(_KpiType):
     calculation_ready: bool
     lane: Literal["table", "prose"]
     notes: tuple[str, ...] = ()
-
+    xbrl_fact_ref: XbrlFactRef | None = None
     @model_validator(mode="after")
     def _bind_value(self) -> TypedKpiObservation:
         if self.value_semantic == "change_amount" and self.calculation_ready:
@@ -261,7 +261,8 @@ __all__ = [
     "EDGAR_OPERATIONAL_KPI_DRIVER_ROWS_CONTRACT_VERSION",
     "EdgarOperationalKpiDriverRowsContractError", "MeasureUnit",
     "ScaleProvenance", "MeasureType", "ScaledQuantity", "TypedPeriod",
-    "CanonicalSeriesMatch", "KpiDate", "KpiGap", "KpiLocator", "TypedKpiObservation",
+    "CanonicalSeriesMatch", "KpiDate", "KpiGap", "KpiLocator", "XbrlFactRef",
+    "TypedKpiObservation",
     "OmittedTable", "KpiLaneGap", "ReaderRecord", "KpiDriverRowsV2",
     "validate_edgar_operational_kpi_driver_rows_v2",
     "adapt_edgar_operational_kpi_driver_rows_payload",
