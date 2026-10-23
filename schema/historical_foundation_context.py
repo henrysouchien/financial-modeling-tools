@@ -262,6 +262,11 @@ class HistoricalFoundationSeedRequirementSummary(_ContextContract):
     fact_candidates_shown: int = Field(ge=0)
     business_model_value_candidate_count: int = Field(ge=0)
     supporting_evidence_count: int = Field(ge=0)
+    #: Ordered keys into the summary projection's shared, source-scale fact pool.
+    fact_candidate_keys: tuple[ExactLookupKey, ...] = Field(default=(), max_length=5)
+    business_model_value_candidates: tuple[
+        HistoricalFoundationSeedBusinessModelValueCandidate, ...
+    ] = ()
 
 
 class HistoricalFoundationSeedFactCandidate(_ContextContract):
@@ -321,12 +326,28 @@ class HistoricalFoundationSeedRequirementProjection(_ContextContract):
         return self
 
 
+class HistoricalFoundationSeedRequirementReferences(_ContextContract):
+    """One batch member, referring to the projection's shared source-scale facts."""
+
+    requirement: HistoricalFoundationSeedRequirementSummary
+    fact_candidate_keys: tuple[ExactLookupKey, ...]
+    business_model_value_candidates: tuple[
+        HistoricalFoundationSeedBusinessModelValueCandidate, ...
+    ]
+    supporting_evidence_keys: tuple[ExactLookupKey, ...]
+    supporting_evidence_absent_reason: str | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+
 class HistoricalFoundationSeedRequirementsProjection(_ContextContract):
     kind: Literal["seed_requirements"] = "seed_requirements"
-    requirements: tuple[HistoricalFoundationSeedRequirementProjection, ...] = Field(
+    requirements: tuple[HistoricalFoundationSeedRequirementReferences, ...] = Field(
         min_length=1,
         max_length=MAX_BATCH_KEYS,
     )
+    #: Values retain the snapshot's scale; each requirement names its model_scale.
+    fact_candidates: dict[ExactLookupKey, HistoricalFoundationSeedFactCandidate]
 
 
 class HistoricalFoundationPeriodFactsProjection(_ContextContract):
@@ -344,6 +365,10 @@ class HistoricalFoundationContextSummaryProjection(_ContextContract):
     material_issue_keys: tuple[SemanticKey, ...]
     seed_requirements: tuple[HistoricalFoundationSeedRequirementSummary, ...] = ()
     unresolved_seed_requirement_keys: tuple[SeedRequirementKey, ...] = ()
+    #: Shared top-five tier-0/1 facts, in source scale, keyed by unchanged operand_key.
+    fact_candidates: dict[ExactLookupKey, HistoricalFoundationSeedFactCandidate] = Field(
+        default_factory=dict,
+    )
     annual_period_keys: tuple[SemanticKey, ...] = Field(
         default=(),
         max_length=MAX_PERIODS,
@@ -528,6 +553,7 @@ __all__ = [
     "HistoricalFoundationSeedFactCandidate",
     "HistoricalFoundationSeedBusinessModelValueCandidate",
     "HistoricalFoundationSeedRequirementProjection",
+    "HistoricalFoundationSeedRequirementReferences",
     "HistoricalFoundationSeedRequirementSummary",
     "HistoricalFoundationSeedRequirementsProjection",
     "HistoricalFoundationSourceEvidence",

@@ -870,10 +870,98 @@ def unclaimed_line_message(record: Mapping[str, object]) -> str:
     )
 
 
+
+def unclaimed_composite_offers(
+    unclaimed: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Offer multi-line bound changes for unclaimed lines that share a calculation parent and a single candidate role.
+
+    When a component is printed in a subset of the group's filings, its ``lines`` entry carries
+    explicit ``accessions`` and ``absent_accessions`` so one multi-filing batch applies the
+    composite without silently dropping an unresolved component.
+    """
+
+    groups: dict[str, list[Mapping[str, object]]] = {}
+    for record in unclaimed:
+        parent = record.get("calculation_parent_qname")
+        if isinstance(parent, str) and parent:
+            groups.setdefault(parent, []).append(record)
+    offers: list[dict[str, object]] = []
+    for parent, group in groups.items():
+        if len(group) < 2:
+            continue
+        shared_roles = set(cast(Sequence[str], group[0].get("candidate_roles") or ()))
+        for record in group[1:]:
+            shared_roles.intersection_update(
+                cast(Sequence[str], record.get("candidate_roles") or ())
+            )
+        if len(shared_roles) != 1:
+            continue
+        candidate_accessions = sorted({
+            str(acc)
+            for record in group
+            for acc in cast(Sequence[object], cast(Mapping[str, object], record["change"])["accessions"])
+        })
+        all_accessions = [
+            acc
+            for acc in candidate_accessions
+            if len(present := [
+                record
+                for record in group
+                if acc in {str(a) for a in cast(Sequence[object], cast(Mapping[str, object], record["change"])["accessions"])}
+            ]) >= 2
+            or (len(present) == 1 and present[0].get("calculation_weight") != -1)
+        ]
+        if not all_accessions:
+            continue
+        all_set = set(all_accessions)
+        lines: list[dict[str, object]] = []
+        for record in group:
+            change = cast(Mapping[str, object], record["change"])
+            rec_accessions = [
+                str(acc)
+                for acc in cast(Sequence[object], change["accessions"])
+                if str(acc) in all_set
+            ]
+            if not rec_accessions:
+                continue
+            weight = record.get("calculation_weight")
+            line_entry: dict[str, object] = {
+                "source_ref": change["source_ref"],
+                "sign": (
+                    int(weight)
+                    if isinstance(weight, (int, float)) and weight in (1, -1)
+                    else "<1|-1: the filing states no unit calculation weight for this line>"
+                ),
+            }
+            if set(rec_accessions) != all_set:
+                line_entry["accessions"] = rec_accessions
+                line_entry["absent_accessions"] = [
+                    acc for acc in all_accessions if acc not in set(rec_accessions)
+                ]
+            lines.append(line_entry)
+        if len(lines) < 2:
+            continue
+        offers.append({
+            "role": next(iter(shared_roles)),
+            "accessions": all_accessions,
+            "state": "bound",
+            "lines": lines,
+            "calculation_parent_qname": parent,
+            "note": (
+                "Calc-arc grouping offered for acceptance: substitute this composite change for "
+                "the grouped lines' single-line changes if the filed lines sum into this role; a "
+                "concrete sign is the filing's unit calculation weight, confirm it; a placeholder "
+                "sign is yours to choose."
+            ),
+        })
+    return offers
+
 __all__ = [
     "CHECKED_STATEMENTS",
     "UnclaimedFiledLine",
     "filed_lines_unclaimed",
+    "unclaimed_composite_offers",
     "unclaimed_line_message",
     "unclaimed_line_record",
 ]

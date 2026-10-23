@@ -1839,27 +1839,140 @@ def release_provisional(doc: ModelSheet) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------
 
 
-#: Keys every op takes: the agent's ``rationale`` (text) and ``source`` (free text, or an object —
-#: a judgment-row ref ``{kind: judgment_row, artifact, ref, row}``, evidence refs …).
-_NOTE_KEYS = ("rationale", "source")
-#: Each op's keys: (required, optional). ``add_line`` also reads ``statement`` as ``section``.
-OP_KEYS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-  "add_line": (("section", "label", "unit"), ("after_item_id", "formula", "inputs", *_NOTE_KEYS)),
-  "set_formula": (("item_id", "formula_expr"), ("apply_to", *_NOTE_KEYS)),
-  "set_input": (("item_id", "period", "value"), _NOTE_KEYS),
-  "clear_input": (("item_id", "period"), _NOTE_KEYS),
-  "remove_line": (("item_id",), _NOTE_KEYS),
-  "advance_period": (("new_actual_year",), _NOTE_KEYS),
-  "decline": (("item_id", "periods", "reason"), ()),
-  "note": (("text",), ()),
+def _source_schema() -> dict[str, Any]:
+  """Describe the source parser's known coordinates without closing its extension objects."""
+  variants = []
+  for cls, coordinates, required in (
+    (JudgmentRowSource, JUDGMENT_ROW_REF_KEYS, True),
+    (FilingLineSource, FILING_LINE_REF_KEYS, False),
+    (KpiSource, KPI_REF_KEYS, False),
+    (LineIdentitySource, LINE_IDENTITY_REF_KEYS, False),
+    (CaptureSource, CAPTURE_REF_KEYS, False),
+    (AbsenceCitationSource, ABSENCE_CITATION_REF_KEYS, False),
+    (ConstructionHelperSource, CONSTRUCTION_HELPER_REF_KEYS, True),
+  ):
+    coordinate_schema = (
+      {"type": "string", "pattern": r"\S"} if cls is ConstructionHelperSource else {"not": {"type": "null"}}
+    ) if required else {}
+    variant: dict[str, Any] = {
+      "type": "object",
+      "properties": {"kind": {"const": cls.kind}, **{key: coordinate_schema for key in coordinates}},
+      "required": ["kind", *coordinates] if required else ["kind"],
+      "additionalProperties": True,
+    }
+    if not required:
+      variant["anyOf"] = [{
+        "required": [key],
+        "properties": {key: {"not": {"enum": [None, "", {}, []]}}},
+      } for key in coordinates]
+    variants.append(variant)
+  return {"anyOf": [
+    {"type": "string"}, {"type": "null"}, *variants,
+    {
+      "type": "object",
+      "properties": {"kind": {"not": {"enum": [variant["properties"]["kind"]["const"] for variant in variants]}}},
+      "additionalProperties": True,
+      "description": "Other source kinds are open analyst extensions (for example analyst_note or assumption).",
+    },
+  ]}
+
+
+@dataclass(frozen=True)
+class _OpSpec:
+  required: Mapping[str, dict[str, Any]]
+  optional: Mapping[str, dict[str, Any]] = field(default_factory=dict)
+  forms: tuple[tuple[str, ...], ...] = ()
+  aliases: Mapping[str, str] = field(default_factory=dict)
+
+  @property
+  def properties(self) -> dict[str, dict[str, Any]]:
+    return {**self.required, **self.optional}
+
+
+_PERIOD_SCHEMA = {"anyOf": [{"type": "integer"}, {"type": "string"}]}
+_VALUE_SCHEMA = {"anyOf": [{"type": "number"}, {"type": "string"}, {"type": "null"}]}
+_ITEM_REF_SCHEMA = {"anyOf": [
+  {"type": "string"},
+  {"type": "object", "properties": {"$ref": {"type": "integer", "minimum": 0}}, "required": ["$ref"], "additionalProperties": False},
+]}
+_NOTE_FIELDS = {"rationale": {"type": ["string", "null"]}, "source": _source_schema()}
+
+#: The edit grammar's keys, alternative forms, field schemas and aliases. Both the parser and
+#: the model-facing tool schema read this authority; source coordinates remain source-owned.
+OP_SPECS: dict[str, _OpSpec] = {
+  "add_line": _OpSpec(
+    {"section": {"type": "string"}, "label": {"type": "string"}, "unit": {"type": "string"}},
+    {
+      "after_item_id": {"anyOf": [*_ITEM_REF_SCHEMA["anyOf"], {"type": "null"}]},
+      "formula": {"type": ["string", "null"]},
+      "inputs": {"anyOf": [
+        {"type": "object", "additionalProperties": {"anyOf": [{"type": "number"}, {"type": "string"}]}},
+        {"type": "array", "maxItems": 0}, {"type": "null"},
+      ]},
+      **_NOTE_FIELDS,
+    },
+    aliases={"statement": "section"},
+  ),
+  "set_formula": _OpSpec(
+    {"item_id": _ITEM_REF_SCHEMA, "formula_expr": {"type": "string"}},
+    {"apply_to": {"anyOf": [
+      {"type": "string", "enum": ["projected", "historical", "both", "all"]},
+      {"type": "array", "items": _PERIOD_SCHEMA, "minItems": 1},
+    ]}, **_NOTE_FIELDS},
+  ),
+  "set_input": _OpSpec(
+    {"item_id": _ITEM_REF_SCHEMA},
+    {
+      "period": _PERIOD_SCHEMA, "value": _VALUE_SCHEMA,
+      "values": {"type": "object", "additionalProperties": _VALUE_SCHEMA},
+      "periods": {"type": "array", "items": _PERIOD_SCHEMA}, **_NOTE_FIELDS,
+    },
+    forms=(("period", "value"), ("values",), ("periods", "value")),
+  ),
+  "clear_input": _OpSpec({"item_id": _ITEM_REF_SCHEMA, "period": _PERIOD_SCHEMA}, _NOTE_FIELDS),
+  "remove_line": _OpSpec({"item_id": _ITEM_REF_SCHEMA}, _NOTE_FIELDS),
+  "advance_period": _OpSpec({"new_actual_year": _PERIOD_SCHEMA}, _NOTE_FIELDS),
+  "decline": _OpSpec({
+    "item_id": _ITEM_REF_SCHEMA, "periods": {"type": "array", "items": _PERIOD_SCHEMA},
+    "reason": {"type": "string", "minLength": 1, "maxLength": FINDING_MESSAGE_MAX_LENGTH},
+  }),
+  "note": _OpSpec({"text": {"type": "string", "minLength": 1}}),
 }
-_KEY_ALIASES: dict[str, dict[str, str]] = {"add_line": {"statement": "section"}}
-_APPLY_TO = ("projected", "historical", "both")
+
+
+def edit_op_schema() -> dict[str, Any]:
+  """A fresh JSON Schema for one edit op, derived from ``OP_SPECS`` (including aliases)."""
+  variants: list[dict[str, Any]] = []
+  for kind, spec in OP_SPECS.items():
+    properties = spec.properties
+    branch: dict[str, Any] = {
+      "type": "object", "properties": {"op": {"const": kind}, **properties},
+      "required": ["op", *(key for key in spec.required if key not in spec.aliases.values())],
+      "additionalProperties": False,
+    }
+    if spec.forms:
+      form_keys = {key for form in spec.forms for key in form}
+      branch["oneOf"] = [{
+        "required": list(form),
+        "not": {"anyOf": [{"required": [key]} for key in sorted(form_keys - set(form))]},
+      } for form in spec.forms]
+    if spec.aliases:
+      branch["allOf"] = []
+      for alias, key in spec.aliases.items():
+        branch["properties"][alias] = properties[key]
+        branch["allOf"].append({"oneOf": [{"required": [key]}, {"required": [alias]}]})
+    variants.append(branch)
+  return copy.deepcopy({"oneOf": variants})
 
 
 def _expected_keys(kind: str) -> str:
-  required, optional = OP_KEYS[kind]
-  return ", ".join([*required, *(f"{key}?" for key in optional)])
+  spec = OP_SPECS[kind]
+  expected = ", ".join([*spec.required, *(f"{key}?" for key in spec.optional)])
+  if spec.forms:
+    expected += "; accepted shapes: " + " or ".join(
+      "(" + ", ".join([*spec.required, *form]) + ")" for form in spec.forms
+    )
+  return expected
 
 
 _FY_PERIOD_RE = re.compile(r"^(?:FY)?(\d{4})[AE]?$", re.IGNORECASE)
@@ -1938,8 +2051,10 @@ class SetFormulaOp(_EditOpBase):
 @dataclass(frozen=True)
 class SetInputOp(_EditOpBase):
   item_id: str = ""
-  period: int = 0
+  period: int | None = None
   value: float | None = None
+  values: dict[int, float | None] | None = None
+  periods: list[int] | None = None
   rationale: str | None = None
   source: CellSource | None = None
   op: Literal["set_input"] = "set_input"
@@ -2002,23 +2117,30 @@ def _parse_op(
   """Parse one op into its typed ``EditOp`` variant (``stored=False`` strict writer;
   ``stored=True`` tolerant reader)."""
   if not isinstance(raw, Mapping):
-    raise OpUsage(f"ops[{index}] must be an object with 'op' one of {', '.join(OP_KEYS)}")
+    raise OpUsage(f"ops[{index}] must be an object with 'op' one of {', '.join(OP_SPECS)}")
   op = dict(raw)
   kind = op.pop("op", None)
-  if kind not in OP_KEYS:
-    raise OpUsage(f"ops[{index}]: op must be one of {', '.join(OP_KEYS)}, not {kind!r}")
+  if kind not in OP_SPECS:
+    raise OpUsage(f"ops[{index}]: op must be one of {', '.join(OP_SPECS)}, not {kind!r}")
   where = f"ops[{index}] ({kind})"
-  for alias, key in _KEY_ALIASES.get(kind, {}).items():
+  spec = OP_SPECS[kind]
+  for alias, key in spec.aliases.items():
     if alias in op:
       if key in op:
         raise OpUsage(f"{where}: pass {key!r} or its alias {alias!r}, not both")
       op[key] = op.pop(alias)
-  required, optional = OP_KEYS[kind]
-  missing = [key for key in required if key not in op or (op[key] is None and key != "value")]
-  unknown = sorted(set(op) - set(required) - set(optional))
-  if missing or unknown:
+  missing = [key for key in spec.required if key not in op or op[key] is None]
+  unknown = sorted(set(op) - set(spec.properties))
+  form_keys = {key for form in spec.forms for key in form}
+  invalid_form = bool(spec.forms) and not any(
+    set(op) & form_keys == set(form)
+    and all(op[key] is not None or key == "value" for key in form)
+    for form in spec.forms
+  )
+  if missing or unknown or invalid_form:
     problems = [f"missing {missing}"] if missing else []
     problems += [f"unknown {unknown}"] if unknown else []
+    problems += ["pass exactly one input form"] if invalid_form else []
     raise OpUsage(f"{where}: {'; '.join(problems)}; expected keys: {_expected_keys(kind)}")
   for key in ("item_id", "after_item_id"):
     if key in op:
@@ -2047,6 +2169,13 @@ def _parse_op(
       op[key] = _op_int(where, key, op[key])
   if op.get("value") is not None:
     op["value"] = _op_float(where, "value", op["value"])
+  if "values" in op:
+    if not isinstance(op["values"], Mapping):
+      raise OpUsage(f"{where}: values must be an object {{period: value}}; {_expected_keys(kind)}")
+    op["values"] = {
+      _op_int(where, "values period", period): None if value is None else _op_float(where, f"values[{period}]", value)
+      for period, value in op["values"].items()
+    }
   if op.get("inputs") is not None:
     if isinstance(op["inputs"], Sequence) and not isinstance(op["inputs"], (str, bytes)) and len(op["inputs"]) == 0:
       op["inputs"] = {}
@@ -2058,14 +2187,15 @@ def _parse_op(
         for period, value in op["inputs"].items()
       }
   raw_apply_to = op.get("apply_to", "both")
+  apply_to_values = OP_SPECS["set_formula"].optional["apply_to"]["anyOf"][0]["enum"]
   if raw_apply_to == "all":
     op["apply_to"] = "both"
   elif isinstance(raw_apply_to, Sequence) and not isinstance(raw_apply_to, (str, bytes)):
     if not raw_apply_to:
-      raise OpUsage(f"{where}: apply_to must be one of {', '.join(_APPLY_TO)}, not {raw_apply_to!r}")
+      raise OpUsage(f"{where}: apply_to must be one of {', '.join(apply_to_values)}, not {raw_apply_to!r}")
     op["apply_to"] = sorted({_op_int(where, "apply_to", period) for period in raw_apply_to})
-  elif raw_apply_to not in _APPLY_TO:
-    raise OpUsage(f"{where}: apply_to must be one of {', '.join(_APPLY_TO)}, not {raw_apply_to!r}")
+  elif raw_apply_to not in apply_to_values:
+    raise OpUsage(f"{where}: apply_to must be one of {', '.join(apply_to_values)}, not {raw_apply_to!r}")
   if kind == "add_line":
     try:
       parse_unit(op["unit"])
@@ -2083,7 +2213,8 @@ def _parse_op(
     )
   if kind == "set_input":
     return SetInputOp(
-      _raw_dict=op, item_id=op["item_id"], period=op["period"], value=op.get("value"),
+      _raw_dict=op, item_id=op["item_id"], period=op.get("period"), value=op.get("value"),
+      values=op.get("values"), periods=op.get("periods"),
       rationale=op.get("rationale"), source=parsed_source,
     )
   if kind == "clear_input":
@@ -2125,7 +2256,7 @@ def parse_stored_op(
 def _read_op(
   index: int, raw: Any, results: Sequence[Mapping[str, Any]], *, stored: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-  """One op checked against ``OP_KEYS``: kind and its keys, ``$ref``s resolved, values typed. A
+  """One op checked against ``OP_SPECS``: kind and its keys, ``$ref``s resolved, values typed. A
   ``stored`` op is one the log already holds: what was admitted then is not re-judged here."""
   parsed = parse_stored_op(index, raw, results) if stored else parse_new_op(index, raw, results)
   return parsed.op, parsed.to_op_dict()
@@ -2580,7 +2711,7 @@ def apply_ops(doc: ModelSheet, ops: Sequence[Mapping[str, Any]], *, stored: bool
   in order (``advance_period``: ``advance_period``, the new actual year's provisional cells listed;
   ``decline`` / ``note``: ``record_declination`` / ``record_note``, recorded on ``doc.edits``, no cell written).
 
-  Keys per op are ``OP_KEYS``; a missing or unknown key is an ``OpUsage`` naming them. A later
+  Keys per op are ``OP_SPECS``; a missing or unknown key is an ``OpUsage`` naming them. A later
   op names an earlier ``add_line``'s line by its minted id (in any field or formula text) or
   by ``{"$ref": <op index>}`` in ``item_id`` / ``after_item_id``. The first invalid
   operation raises ``OpUsage`` carrying its zero-based ``op_index`` and original
@@ -2643,7 +2774,8 @@ def _resolve_apply_to(where: str, raw_apply_to: Any, time: Any) -> ApplyTo:
       f"{where}: set_formula applies to a whole side ('projected' {sorted(proj)}, 'historical' {sorted(hist)}, "
       f"or 'both'), not a subset of periods {sorted(periods)}; use set_input for single-period values"
     )
-  raise OpUsage(f"{where}: apply_to must be one of {', '.join(_APPLY_TO)}, not {raw_apply_to!r}")
+  accepted = OP_SPECS["set_formula"].optional["apply_to"]["anyOf"][0]["enum"]
+  raise OpUsage(f"{where}: apply_to must be one of {', '.join(accepted)}, not {raw_apply_to!r}")
 
 
 def _op_error_entry(index: int, raw: Any, exc: OpUsage | EditRefused) -> dict[str, Any]:
@@ -2712,30 +2844,43 @@ def _run_single_op(
         **({"replaced": cleared} if cleared else {}),
       })
     elif kind in ("set_input", "clear_input"):
-      cell = _input_cell(doc, op["item_id"], op["period"])
-      marker = (doc.model.get_item(cell[0]).overrides or {}).get(cell[1])
-      identities = _inclusion_role_items(doc) if marker is not None and marker.subtype == "not_separately_presented" else {}
-      included_role = (
-        marker.params.get("_not_separately_presented", {}).get("required_role")
-        or (doc.semantic.get(cell) or {}).get("required_role")
-        or doc.model.get_item(cell[0]).required_role
-      ) if marker is not None and marker.subtype == "not_separately_presented" else None
-      if kind == "set_input":
-        set_input(doc, op["item_id"], op["period"], op["value"], agent=agent)
+      if "values" in op:
+        values = op["values"]
+      elif "periods" in op:
+        values = {period: op["value"] for period in op["periods"]}
       else:
-        clear_input(doc, op["item_id"], op["period"], agent=agent)
-      restored = bool(doc.edits[-1].get("restored_baseline"))
-      if included_role is not None:
-        reconcile_inclusions(
-          doc, role_items=identities, cleared_role_periods=((included_role, cell[1]),),
-        )
-      graphs.written(cell[0] if included_role is None else None)
-      row = {"op": kind, "item_id": op["item_id"], "period": op["period"]}
+        values = {op["period"]: op.get("value")}
+      restored = False
+      superseded: list[list[Any]] = []
+      for period, value in values.items():
+        cell = _input_cell(doc, op["item_id"], period)
+        marker = (doc.model.get_item(cell[0]).overrides or {}).get(cell[1])
+        identities = _inclusion_role_items(doc) if marker is not None and marker.subtype == "not_separately_presented" else {}
+        included_role = (
+          marker.params.get("_not_separately_presented", {}).get("required_role")
+          or (doc.semantic.get(cell) or {}).get("required_role")
+          or doc.model.get_item(cell[0]).required_role
+        ) if marker is not None and marker.subtype == "not_separately_presented" else None
+        # Each cell's lineage points at the edit that actually records its displaced baseline.
+        cell_agent = _agent_note(op, len(doc.edits))
+        if kind == "set_input":
+          set_input(doc, op["item_id"], period, value, agent=cell_agent)
+        else:
+          clear_input(doc, op["item_id"], period, agent=cell_agent)
+        restored = bool(doc.edits[-1].get("restored_baseline")) or restored
+        if included_role is not None:
+          reconcile_inclusions(
+            doc, role_items=identities, cleared_role_periods=((included_role, cell[1]),),
+          )
+        graphs.written(cell[0] if included_role is None else None)
+        superseded.extend(_supersede_input_columns(doc, {cell}, graphs))
+      row = {"op": kind, "item_id": op["item_id"]}
+      row.update({"period": op["period"]} if "period" in op else {"periods": sorted(values)})
       if kind == "clear_input":
         row["cleared_by"] = "agent"
       if restored:
         row["restored_baseline"] = True
-      results.append({**row, "columns_superseded": _supersede_input_columns(doc, {cell}, graphs)})
+      results.append({**row, "columns_superseded": superseded})
     elif kind == "decline":
       record_declination(doc, op["item_id"], op["periods"], op["reason"], agent=agent)
       results.append({"op": kind, "item_id": op["item_id"], "periods": op["periods"]})
@@ -2764,7 +2909,7 @@ def _run_single_op(
     near = closest_items(doc.model, missing) if isinstance(missing, str) else []
     hint = f"; did you mean: {', '.join(near)}" if near else ""
     op_kind = raw.get("op") if isinstance(raw, Mapping) else None
-    prefix = f"ops[{index}] ({op_kind})" if isinstance(op_kind, str) and op_kind in OP_KEYS else f"ops[{index}]"
+    prefix = f"ops[{index}] ({op_kind})" if isinstance(op_kind, str) and op_kind in OP_SPECS else f"ops[{index}]"
     raise OpUsage(f"{prefix}: {missing!r} is not an item id of the document{hint}", op_index=index) from exc
   except ValueError as exc:
     raise OpUsage(str(exc), op_index=index) from exc

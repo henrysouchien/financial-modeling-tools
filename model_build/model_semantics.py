@@ -183,6 +183,13 @@ def model_semantics_handler(
   identity = dict(control_state.identity)
   full_semantics_hash = identity["model_semantics_hash"]
   has_semantics = identity["model_semantics_status"] == "success"
+  hold_back_valuation = sections is None and bool(
+    requested_item_ids or requested_driver_keys
+  )
+  if hold_back_valuation:
+    requested_sections = [
+      section for section in requested_sections if section != "valuation"
+    ]
   filters = {
     "sections": requested_sections,
     "item_ids": requested_item_ids,
@@ -251,6 +258,13 @@ def model_semantics_handler(
       has_semantics=has_semantics,
       request_warnings=request_warnings,
     )
+    if hold_back_valuation:
+      payload["held_back"] = {
+        "valuation": (
+          "Omitted on narrowed item_ids/driver_keys query; "
+          "pass sections=['valuation'] to include."
+        ),
+      }
     response_chars = _serialized_chars(payload)
     if response_chars <= _MODEL_SEMANTICS_MAX_RESPONSE_CHARS or page_size <= 1:
       payload["view"]["response_chars"] = response_chars

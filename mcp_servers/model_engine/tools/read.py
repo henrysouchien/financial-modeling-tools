@@ -359,12 +359,39 @@ def model_find_handler(
     *,
     deps: ModelReadDeps,
     file_path: str,
-    query: str,
+    query: list[str] | str = "",
     limit: int = 20,
     historical_cutoff_year: int | None = None,
+    queries: list[str] | str | None = None,
 ) -> dict[str, Any]:
     try:
         file_path = deps.validate_file_path(file_path)
+        if queries is not None or isinstance(query, list):
+            requested = queries if queries is not None else query
+            requested_queries = [requested] if isinstance(requested, str) else requested
+            by_query = {}
+            items = []
+            seen = set()
+            for term in dict.fromkeys(requested_queries):
+                matches = deps.find(
+                    file_path,
+                    term,
+                    limit=limit,
+                    historical_cutoff_year=historical_cutoff_year,
+                )
+                by_query[term] = matches
+                for item in matches:
+                    identity = item.get("item_id") or item.get("id") or item.get("key")
+                    if identity is None or identity not in seen:
+                        items.append(item)
+                        if identity is not None:
+                            seen.add(identity)
+            return {
+                "status": "ok",
+                "items": items,
+                "count": len(items),
+                "results_by_query": by_query,
+            }
         results = deps.find(
             file_path,
             query,
@@ -433,12 +460,31 @@ def model_drivers_handler(
     *,
     deps: ModelReadDeps,
     file_path: str,
-    item_id: str,
+    item_id: list[str] | str = "",
     depth: int = 3,
     historical_cutoff_year: int | None = None,
+    item_ids: list[str] | str | None = None,
 ) -> dict[str, Any]:
     try:
         file_path = deps.validate_file_path(file_path)
+        if item_ids is not None or isinstance(item_id, list):
+            requested = item_ids if item_ids is not None else item_id
+            ids = list(dict.fromkeys(
+                [requested] if isinstance(requested, str) else requested
+            ))
+            return {
+                "status": "ok",
+                "items": {
+                    iid: deps.drivers(
+                        file_path,
+                        iid,
+                        depth=depth,
+                        historical_cutoff_year=historical_cutoff_year,
+                    )
+                    for iid in ids
+                },
+                "count": len(ids),
+            }
         result = deps.drivers(
             file_path,
             item_id,
@@ -906,11 +952,12 @@ def build_model_read_tool_functions(
 
     def model_find(
         file_path: str | None = None,
-        query: str = "",
+        query: list[str] | str = "",
         limit: int = 20,
         historical_cutoff_year: int | None = None,
         current_model: dict[str, Any] | None = None,
         *,
+        queries: list[str] | str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Search for line items by name or ID substring match.
@@ -921,6 +968,9 @@ def build_model_read_tool_functions(
         Returned item ids feed model_values, model_drivers, and model_sensitivity.
         For thesis-factor scenario anchors, use model_find_scenario_anchor instead of
         generic line-item search.
+        Pass queries (or a list in query) to search several terms in one call.
+        Batched results include deduplicated items and results_by_query; limit
+        applies to each query. A string query keeps the single-query response.
         """
         return _execute_model_read(
             parent_namespace,
@@ -936,6 +986,7 @@ def build_model_read_tool_functions(
                 query=query,
                 limit=limit,
                 historical_cutoff_year=historical_cutoff_year,
+                queries=queries,
             ),
         )
 
@@ -985,11 +1036,12 @@ def build_model_read_tool_functions(
 
     def model_drivers(
         file_path: str | None = None,
-        item_id: str = "",
+        item_id: list[str] | str = "",
         depth: int = 3,
         historical_cutoff_year: int | None = None,
         current_model: dict[str, Any] | None = None,
         *,
+        item_ids: list[str] | str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
         """Trace the upstream driver tree for a line item.
@@ -998,6 +1050,8 @@ def build_model_read_tool_functions(
         current_model and omit file_path. Trusted-local operator calls may instead pass an explicit
         file_path. Use model_find or model_summarize(include_items=True) to obtain
         item_id. Increase depth only when the first trace misses relevant drivers.
+        Pass item_ids (or a list in item_id) for a batch keyed by item ID.
+        A string item_id keeps the single-item driver-tree response.
         """
         return _execute_model_read(
             parent_namespace,
@@ -1013,6 +1067,7 @@ def build_model_read_tool_functions(
                 item_id=item_id,
                 depth=depth,
                 historical_cutoff_year=historical_cutoff_year,
+                item_ids=item_ids,
             ),
         )
 

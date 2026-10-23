@@ -1534,8 +1534,11 @@ def release_unseeded_segment_revenue_cycles(
 
     A segment whose consolidation is one node compiles to a three-row loop: the node's
     history reads the face income-statement line, the face line reads the segment's
-    ``__rev`` row, and ``__rev`` sums the node. A year some row holds a value (a filed
-    face override, a seed) is seeded and computes; a year none holds is the loop with
+    ``__rev`` row, and ``__rev`` sums the node. Node seeds are mirrored to an empty
+    face cell, preserving their value, provenance and constant override. Seeded years
+    restore the revenue row's formula coverage and consecutive seeded years restore
+    the segment growth row's coverage. A year some row holds a value (a filed face
+    override, a seed) is seeded and computes; a year none holds is the loop with
     nothing in it (``cycle_seed_missing``) rather than the absence the sources state.
     A segment introduced mid-history is that case for every year before it, so the year
     leaves the ``formula_periods`` of all three rows and the cell is an unowned
@@ -1545,6 +1548,7 @@ def release_unseeded_segment_revenue_cycles(
     if not model._index:
         model.build_index()
     released: list[tuple[str, int]] = []
+    years = sorted({int(year) for year in years})
     faces = direct_segment_face_items(business_model, segment_mapping)
     for segment in business_model.segments:
         node_key = _direct_segment_revenue_node_key(segment)
@@ -1559,8 +1563,32 @@ def release_unseeded_segment_revenue_cycles(
             continue
         if (_ref_source_id(node), _ref_source_id(face)) != (face_id, revenue_id):
             continue
+        for year in years:
+            if not _holds_value(node, year) or _holds_value(face, year):
+                continue
+            if node.values is not None and year in node.values.values:
+                if face.values is None:
+                    face.values = ValueSeries()
+                face.values.values[year] = node.values.values[year].model_copy(deep=True)
+            override = (node.overrides or {}).get(year)
+            if override is not None and override.type is FormulaType.constant:
+                if face.overrides is None:
+                    face.overrides = {}
+                face.overrides[year] = override.model_copy(deep=True)
+        seeded_years = {
+            year for year in years if _holds_value(node, year) or _holds_value(face, year)
+        }
+        if seeded_years:
+            if revenue.formula_periods is not None:
+                revenue.formula_periods = sorted(set(revenue.formula_periods) | seeded_years)
+            growth = model._index.get(f"bm.{segment.id}.__growth")
+            if growth is not None and growth.formula_periods is not None:
+                growth.formula_periods = sorted(
+                    set(growth.formula_periods)
+                    | {year for year in seeded_years if year - 1 in seeded_years}
+                )
         rows = (node, face, revenue)
-        for year in sorted({int(year) for year in years}):
+        for year in years:
             if any(_holds_value(row, year) for row in rows):
                 continue
             for row in rows:

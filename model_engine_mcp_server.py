@@ -635,7 +635,9 @@ def build_model_semantics_tool_functions(
     pagination.requested_limit echoes the request and pagination.limit the page size used.
     A JSON-encoded list string is accepted for clients that stringify array
     arguments. Explicitly empty sections are rejected; omit sections to request
-    all three.
+    all three unless item_ids or driver_keys narrow the query. Narrowed default
+    reads hold back valuation and explain how to include it in held_back;
+    pass sections=["valuation"] (or include it with other sections) to retrieve it.
 
     Identity selection requires an authenticated research_file_id. The server
     resolves that stable selector through the current-model pointer; it never

@@ -453,7 +453,9 @@ class ForecastAssumptionsDriverSummary(_ContextContract):
     missing_reason: ShortText | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-
+    historical_values_by_period: dict[str, str] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
 
 class ForecastAssumptionsHistoricalDriverSeed(_ContextContract):
     """Accepted historical opening value, stripped of mechanical driver identity."""
@@ -600,7 +602,12 @@ class ForecastAssumptionsDriverProjection(_ContextContract):
     predecessor: ForecastDriverAssumption | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-
+    drivers: tuple[ForecastAssumptionsDriverDescriptor, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
+    items: tuple[dict[str, Any], ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
 class ForecastAssumptionsHistoricalBaseline(_ContextContract):
     """One reported fact of the period. ``evidence_key`` carries the filing's
@@ -682,7 +689,9 @@ class ForecastAssumptionsPeriodProjection(_ContextContract):
     coverage_note: Prose | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-
+    items: tuple[dict[str, Any], ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
     @model_validator(mode="after")
     def _bounded_anchor_handles(self) -> "ForecastAssumptionsPeriodProjection":
         handle_count = len(self.historical_baselines) + sum(
@@ -800,13 +809,18 @@ ForecastAssumptionsEvidence = Annotated[
 class ForecastAssumptionsEvidenceProjection(_ContextContract):
     kind: Literal["evidence"] = "evidence"
     item: ForecastAssumptionsEvidence
+    items: tuple[dict[str, Any], ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
 
 class ForecastAssumptionsGapProjection(_ContextContract):
     kind: Literal["gap"] = "gap"
     gap_key: SemanticKey
     gap: HistoricalFoundationGap
-
+    items: tuple[dict[str, Any], ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
 ForecastAssumptionsContextProjection = Annotated[
     ForecastAssumptionsContextSummaryProjection

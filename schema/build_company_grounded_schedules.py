@@ -2371,9 +2371,8 @@ def _remove_face_row(model: FinancialModel, row_id: str) -> None:
 def _face_row_schedules(model: FinancialModel, row_id: str) -> tuple[str, ...]:
     """The schedule lines that present a face balance row's balance.
 
-    A schedule presents the row when its historical cell is the row's own
-    cross-sheet reference (the template installs it so), or when the face-row
-    baseline pairs it with the row (`BALANCE_SHEET_FACE_ROWS`).
+    A schedule presents the row when either lane cross-references the other
+    row, or when the face-row baseline pairs them (`BALANCE_SHEET_FACE_ROWS`).
     """
 
     paired = {
@@ -2385,12 +2384,56 @@ def _face_row_schedules(model: FinancialModel, row_id: str) -> tuple[str, ...]:
         item.id
         for item in model._index.values()
         if item.id != row_id
-        and item.historical is not None
-        and item.historical.type is FormulaType.ref
-        and item.historical.subtype == "cross_sheet_ref"
-        and _formula_ref_ids(item.historical.params) == {row_id}
+        and any(
+            spec is not None
+            and spec.type is FormulaType.ref
+            and spec.subtype == "cross_sheet_ref"
+            and _formula_ref_ids(spec.params) == {row_id}
+            for spec in (item.historical, item.projected)
+        )
     }
-    return tuple(sorted(paired | mirrors))
+    row = model._index.get(row_id)
+    sources = {
+        source_id
+        for spec in (() if row is None else (row.historical, row.projected))
+        if spec is not None
+        and spec.type is FormulaType.ref
+        and spec.subtype == "cross_sheet_ref"
+        for source_id in _formula_ref_ids(spec.params)
+        if source_id.startswith("tpl.a.") and source_id in model._index
+    }
+    return tuple(sorted(paired | mirrors | sources))
+
+
+def _schedule_driver_ids(model: FinancialModel, schedule_id: str) -> set[str]:
+    schedule = model._index.get(schedule_id)
+    if schedule is None:
+        return set()
+    sources = {
+        driver_id
+        for spec in (schedule.historical, schedule.projected, *(schedule.overrides or {}).values())
+        if spec is not None
+        for driver_id in _formula_ref_ids(spec.params)
+        if driver_id != schedule_id
+    }
+    return {
+        item.id
+        for item in model._index.values()
+        if item.id.startswith("tpl.a.")
+        and item.item_type in (ItemType.input, ItemType.derived)
+        and not any(
+            role.role == "section_total" for role in item.statement_section_roles or ()
+        )
+        and (
+            item.id in sources
+            or any(
+                spec is not None
+                and spec.type in (FormulaType.ratio, FormulaType.driver)
+                and schedule_id in _formula_ref_ids(spec.params)
+                for spec in (item.historical, item.projected, *(item.overrides or {}).values())
+            )
+        )
+    }
 
 
 def _remove_unowed_face_row(model: FinancialModel, row_id: str) -> None:
@@ -2402,34 +2445,20 @@ def _remove_unowed_face_row(model: FinancialModel, row_id: str) -> None:
     """
 
     schedule_ids = _face_row_schedules(model, row_id)
+    drivers: set[str] = set()
+    for schedule_id in schedule_ids:
+        drivers.update(_schedule_driver_ids(model, schedule_id))
     _remove_face_row(model, row_id)
     for schedule_id in schedule_ids:
-        schedule = model._index.get(schedule_id)
-        if schedule is None:
+        if schedule_id not in model._index:
             continue
-        drivers = {
-            driver_id
-            for spec in (schedule.historical, schedule.projected, *(schedule.overrides or {}).values())
-            if spec is not None
-            for driver_id in _formula_ref_ids(spec.params)
-            if driver_id != schedule_id
-            and driver_id in model._index
-            and model._index[driver_id].item_type is ItemType.input
-        }
-        drivers.update(
-            item.id
-            for item in model._index.values()
-            if item.item_type is ItemType.input
-            and any(
-                spec is not None
-                and spec.type is FormulaType.ratio
-                and schedule_id in _formula_ref_ids(spec.params)
-                for spec in (item.historical, item.projected, *(item.overrides or {}).values())
-            )
-        )
         _remove_source_empty_placeholder(model, schedule_id)
+    while drivers:
+        removed: set[str] = set()
         for driver_id in sorted(drivers):
-            if driver_id in model._index and not any(
+            if driver_id not in model._index:
+                removed.add(driver_id)
+            elif not any(
                 reader.id != driver_id
                 and any(
                     spec is not None and driver_id in _formula_ref_ids(spec.params)
@@ -2438,6 +2467,10 @@ def _remove_unowed_face_row(model: FinancialModel, row_id: str) -> None:
                 for reader in model._index.values()
             ):
                 _remove_source_empty_placeholder(model, driver_id)
+                removed.add(driver_id)
+        if not removed:
+            break
+        drivers.difference_update(removed)
 
 
 def _remove_orphan_face_row_cash_flow_legs(model: FinancialModel) -> list[str]:
@@ -5372,12 +5405,97 @@ def _apply_nci_share_policy(
     return [nci.id, rate.id]
 
 
+def _route_combined_common_stock_credit(
+    model: FinancialModel,
+    historical: tuple[int, ...],
+    projected: tuple[int, ...],
+    role_dispositions: RoleDispositionTable | None,
+) -> list[str]:
+    """Credit the issuer's combined common-stock/APIC presentation for non-cash SBC."""
+    apic_role = "statement.bs.additional_paid_in_capital"
+    common_role = "statement.bs.common_stock"
+    terminal = (
+        None if role_dispositions is None else _terminal_rows(role_dispositions).get(apic_role)
+    )
+    combined = (
+        terminal is not None
+        and terminal.state == "not_separately_presented"
+        and terminal.included_in == common_role
+    )
+    last = max(historical, default=None)
+    for item_id in (
+        "tpl.fm.balance_sheet.additional_paid_in_capital",
+        "tpl.a.dividends_shares.additional_paid_in_capital",
+    ):
+        item = model._index.get(item_id)
+        marker = None if item is None or last is None else (item.overrides or {}).get(last)
+        combined = combined or (
+            marker is not None
+            and marker.subtype == "not_separately_presented"
+            and marker.params.get("included_in") == common_role
+        )
+    face = model._index.get("tpl.fm.balance_sheet.common_stock")
+    if not combined or face is None or _CASH_FLOW_SBC not in model._index:
+        return []
+    schedule_id = "tpl.a.dividends_shares.common_stock"
+    target = face
+    if (
+        face.projected is not None
+        and face.projected.type is FormulaType.ref
+        and face.projected.subtype == "cross_sheet_ref"
+        and _formula_ref_ids(face.projected.params) == {schedule_id}
+        and schedule_id in model._index
+    ):
+        target = model.get_item(schedule_id)
+    additions = [LineItemRef(id=_CASH_FLOW_SBC)]
+    proceeds = model._index.get(_EMPLOYEE_PLAN_PROCEEDS)
+    if (
+        proceeds is not None
+        and (
+            proceeds.formula_periods is None
+            or bool(set(projected) & set(proceeds.formula_periods))
+        )
+        and (
+            proceeds.projected is None
+            or proceeds.projected.subtype not in ("not_applicable", "not_separately_presented")
+        )
+    ):
+        additions.append(LineItemRef(id=proceeds.id))
+    target.projected = FormulaSpec(
+        type=FormulaType.roll_forward,
+        subtype="ending_balance",
+        params={
+            "beginning": LineItemRef(id=target.id, t=-1),
+            "additions": additions,
+        },
+        note="SBC equity credit follows the filed combined common-stock/APIC presentation",
+    )
+    # The template's first forecast column can hold its own lagged-reference
+    # override; it must follow the same equity credit as the lane.
+    for period in projected:
+        override = (target.overrides or {}).get(period)
+        if (
+            override is not None
+            and override.type is FormulaType.ref
+            and override.params.get("source") == LineItemRef(id=target.id, t=-1)
+            and not override.params.get("adjustment")
+        ):
+            target.overrides = {
+                **(target.overrides or {}),
+                period: target.projected.model_copy(deep=True),
+            }
+    _set_periods(target, (*historical, *projected) if target.historical is not None else projected)
+    return [target.id]
+
+
 def _apply_share_policy(
     model: FinancialModel,
     values: ComputedValues,
     revision: BusinessModelRevision,
     historical: tuple[int, ...],
     projected: tuple[int, ...],
+    *,
+    role_dispositions: RoleDispositionTable | None = None,
 ) -> list[str]:
     required = {
         _REVENUE,
@@ -5394,7 +5512,9 @@ def _apply_share_policy(
         _FM_EMPLOYEE_PLAN_PROCEEDS,
     }
     if not required <= set(model._index):
-        return []
+        return _route_combined_common_stock_credit(
+            model, historical, projected, role_dispositions,
+        )
     repurchase_ratio = _latest_repurchases_beyond_sbc_offset_ratio(
         values, historical
     )
@@ -5571,6 +5691,22 @@ def _apply_share_policy(
             note="filed cash-flow dividends paid",
         )
         _set_periods(dividends, (*historical, *projected))
+        if _DIVIDEND_PAYABLE in model._index:
+            payable = model.get_item(_DIVIDEND_PAYABLE)
+            if not any(
+                (payable.overrides or {}).get(period) is not None
+                or (payable.values is not None and period in payable.values.values)
+                for period in historical
+            ):
+                payable_zero = FormulaSpec(
+                    type=FormulaType.constant,
+                    params={"value": 0.0},
+                    note="no reported dividend payable balance",
+                )
+                payable.historical = payable_zero
+                payable.projected = payable_zero.model_copy(deep=True)
+                _set_periods(payable, (*historical, *projected))
+                wired.append(payable.id)
     else:
         # No reported latest-year amount to project from, whether or not the
         # BusinessModel names a dividend mechanism: the rows hold at zero so every
@@ -5630,6 +5766,9 @@ def _apply_share_policy(
                     )
                 }
             )
+    wired.extend(_route_combined_common_stock_credit(
+        model, historical, projected, role_dispositions,
+    ))
     return wired
 
 
@@ -6918,7 +7057,7 @@ def _retire_absent_role_schedules(
     historical: tuple[int, ...],
     projected: tuple[int, ...],
 ) -> None:
-    """Step 7b: a balance-sheet or cash-flow role the filing cites has no schedule.
+    """Step 7b: a statement role the filing cites has no schedule.
 
     A role whose terminal state is ``not_applicable`` keeps only its cited face
     cells: every other line of the role (population and schedule rows) retires
@@ -6940,7 +7079,7 @@ def _retire_absent_role_schedules(
     for role, terminal in terminal_rows.items():
         if terminal.state not in ("not_applicable", "not_separately_presented"):
             continue
-        if catalog.role(role).statement not in ("balance_sheet", "cash_flow"):
+        if catalog.role(role).statement not in ("balance_sheet", "cash_flow", "income_statement"):
             continue
         lines = role_items[role]
         # A role's filing-fact row (``hff_fact_items``) is its own schedule row when no
@@ -6968,6 +7107,11 @@ def _retire_absent_role_schedules(
             if item_id in face:
                 continue
             item = model.get_item(item_id)
+            driver_ids = (
+                sorted(_schedule_driver_ids(model, item_id) - set(owned))
+                if item_id.startswith("tpl.a.")
+                else []
+            )
             for period in (*historical, *projected):
                 if terminal.state == "not_applicable":
                     cell = rows.get((role, f"FY{period}"))
@@ -6985,6 +7129,10 @@ def _retire_absent_role_schedules(
                 )
                 if retires and not kept_number:
                     graph.retire(item_id, period)
+                    for driver_id in driver_ids:
+                        driver_item = model._index.get(driver_id)
+                        if driver_item is not None and not _authored_periods(driver_item, (period,)):
+                            graph.retire(driver_id, period)
         if terminal.state == "not_applicable":
             citation = cast(AbsenceCitation, terminal.absence_citation).model_dump(mode="json")
             for item_id in sorted(face & model._index.keys()):
@@ -6993,18 +7141,26 @@ def _retire_absent_role_schedules(
                     (
                         item_id.startswith(_FACE_BALANCE_SHEET_PREFIX)
                         or (item_id.startswith("tpl.fm.cash_flow.") and item.projected is None)
+                        or (item_id.startswith(_FACE_INCOME_STATEMENT_PREFIX) and item.projected is None)
                     )
                     and item.historical is None
                     and not any(
-                        (item.overrides or {}).get(period) is not None
-                        or (item.values is not None and period in item.values.values)
+                        (
+                            (override := (item.overrides or {}).get(period)) is not None
+                            and override.subtype not in ("not_applicable", "not_separately_presented")
+                        )
+                        or (
+                            item.values is not None
+                            and (cell := item.values.values.get(period)) is not None
+                            and cell.value is not None
+                        )
                         for period in historical
                     )
                 ):
                     # The face cell stays cited in the forecast: the marker is the
                     # citation, never a number, and the tax bridge reads it as absent.
-                    # (A cash-flow flow with no forecast gets it too: its cell would
-                    # otherwise have no provenance.)
+                    # An income-statement or cash-flow flow with no forecast gets
+                    # the marker too, rather than an input with no provenance.
                     item.projected = FormulaSpec(
                         type=FormulaType.raw,
                         subtype="not_applicable",
@@ -7063,7 +7219,7 @@ def _retire_unclaimed_face_slots(
             and not _has_known_historical_value(values_before_removals(), item_id=item.id, periods=historical)
             and not _forecast_reads_authored_control(model, item, projected, nonzero_only=True)
         ):
-            _remove_face_row(model, item.id)
+            _remove_unowed_face_row(model, item.id)
     # A wholly unreported bridge component has no historical cells, not a series of
     # unknown inputs: its separately authored forecast still owns its projected cells.
     model.build_index()
@@ -7383,7 +7539,10 @@ def _lower_cited_operands(
     }
     # A cited-absent balance a writer projects as a number (the debt schedule) is that number.
     balance_lines = {item_id for role in balance_roles for item_id in lines.get(role, ())}
-    wired: list[str] = []
+    wired = _route_combined_common_stock_credit(
+        model, historical, projected, role_dispositions,
+    )
+    equity_credit_readers = frozenset(wired)
 
     role_lines_all = {item_id for role_lines in lines.values() for item_id in role_lines}
     marker_rows: dict[str, RoleDisposition] = {}
@@ -7644,6 +7803,11 @@ def _lower_cited_operands(
                 for formula_ref, target in terms
                 if formula_ref.role in ("additive", "subtractive", "minuend")
                 and (row := cited_by_period.get(target, {}).get(formula_ref.ref.id)) is not None
+                and not (
+                    period in projection
+                    and reader.id in equity_credit_readers
+                    and formula_ref.ref.id in (_CASH_FLOW_SBC, _EMPLOYEE_PLAN_PROCEEDS)
+                )
                 and (
                     row.state == "not_applicable"
                     and not (
@@ -8022,6 +8186,7 @@ def apply_company_grounded_schedule_policies(
             business_model_revision,
             historical,
             projected,
+            role_dispositions=role_dispositions,
         ),
         *_apply_balance_sheet_policy(
             model,

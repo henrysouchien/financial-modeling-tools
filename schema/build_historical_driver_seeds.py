@@ -1,9 +1,9 @@
 """Apply accepted historical-foundation driver seeds to compiled model state.
 
-An ``opening`` seed sets the terminal historical level of a growth node.  A
-``segment_revenue`` seed is the filed history of a segment revenue node: its
-terminal value, and in every earlier historical period the same combination
-of the same required roles, read from the ModelSpec's HFF fact projection.
+An ``opening`` seed sets the terminal historical level of a growth node. A
+direct segment-revenue node also replays its filed history across the historical
+window, regardless of its forecast driver or seed scope. Cited BusinessModel
+observations supply historical cells not covered by the HFF series.
 """
 
 from __future__ import annotations
@@ -11,7 +11,12 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, NoReturn
 
-from .business_model import DriverNode, SumParams, node_measure
+from .business_model import (
+    DriverNode,
+    SumParams,
+    business_model_observation_claim_key,
+    node_measure,
+)
 from .business_model_revision import BusinessModelRevision
 from .build_model_product_contracts import (
     ModelSpec,
@@ -299,7 +304,24 @@ def segment_revenue_series(
     scopes = {row.driver_key: row.history_scope for row in requirements}
     series: dict[str, tuple[tuple[Decimal, str], ...]] = {}
     for seed in seeds:
-        if scopes[seed.driver_key] != "segment_revenue":
+        scope = scopes.get(seed.driver_key)
+        if (
+            scope not in {"segment_revenue", "opening"}
+            or seed.unit is not Unit.dollars
+            or not all(
+                operand.observation_basis == "period_flow"
+                and operand.fact_id is not None
+                and operand.fact_id in requirement_by_fact_id
+                for operand in seed.derivation_operands
+            )
+        ):
+            continue
+        if scope == "opening" and not any(
+            requirement_by_fact_id[operand.fact_id].endswith(".statement.is.revenue")
+            or operand.coefficient is not None
+            for operand in seed.derivation_operands
+            if operand.fact_id is not None
+        ):
             continue
         terms = tuple(
             (
@@ -616,6 +638,20 @@ def _direct_segment_revenue_item_id(
     return None
 
 
+def _extend_segment_revenue_periods(
+    model: FinancialModel, segment_id: str, seeded_years: set[int]
+) -> None:
+    revenue = model._index.get(f"bm.{segment_id}.__rev")
+    if revenue is not None and revenue.formula_periods is not None:
+        revenue.formula_periods = sorted(set(revenue.formula_periods) | seeded_years)
+    growth = model._index.get(f"bm.{segment_id}.__growth")
+    if growth is not None and growth.formula_periods is not None:
+        growth.formula_periods = sorted(
+            set(growth.formula_periods)
+            | {year for year in seeded_years if year - 1 in seeded_years}
+        )
+
+
 def _apply_segment_revenue_seed(
     model: FinancialModel,
     *,
@@ -653,6 +689,7 @@ def _apply_segment_revenue_seed(
     values: dict[str, tuple[Decimal, tuple[str, ...]]] = {
         seed.period_id: (seed.value, seed.fact_ids)
     }
+    observation_evidence: dict[str, tuple[str, ...]] = {}
     for period_id in fiscal_years:
         if series is None or period_id == seed.period_id:
             continue
@@ -675,6 +712,27 @@ def _apply_segment_revenue_seed(
                 sorted(row.fact.fact_id for row in period_observations if row is not None)
             ),
         )
+    if revision.stage_metadata is not None:
+        evidence_by_claim = {
+            binding.claim_key: binding.evidence_ids
+            for binding in revision.stage_metadata.claim_evidence_bindings
+        }
+        node = _nodes_by_key(revision).get(seed.driver_key)
+        for observation in (() if node is None else node.historical_observations):
+            evidence_ids = evidence_by_claim.get(
+                business_model_observation_claim_key(
+                    seed.driver_key, observation.period_id
+                )
+            )
+            if (
+                observation.period_id in fiscal_years
+                and observation.period_id not in values
+                and evidence_ids
+            ):
+                values[observation.period_id] = (
+                    observation.value, tuple(evidence_ids)
+                )
+                observation_evidence[observation.period_id] = tuple(evidence_ids)
 
     note = (
         "accepted_historical_foundation_segment_revenue:"
@@ -726,23 +784,21 @@ def _apply_segment_revenue_seed(
             row.update(
                 {"period_id": period_id, "value": str(value), "fact_ids": list(fact_ids)}
             )
+            if period_id in observation_evidence:
+                row.update({
+                    "fact_ids": [],
+                    "evidence_ids": list(observation_evidence[period_id]),
+                    "evidence_value_ids": [],
+                    "supporting_evidence_ids": [],
+                    "disposition": "observed",
+                    "derivation_kind": "direct",
+                    "derivation_rationale": "Cited BusinessModel historical observation.",
+                })
             coverage.append(row)
     if segment_item_id is not None:
         segment_id, _, _ = seed.driver_key.partition(".")
         seeded_years = {fiscal_years[period_id] for period_id in values}
-        rev_item = model._index.get(f"bm.{segment_id}.__rev")
-        if rev_item is not None and rev_item.formula_periods is not None:
-            rev_item.formula_periods = sorted(
-                set(rev_item.formula_periods) | seeded_years
-            )
-        growth_item = model._index.get(f"bm.{segment_id}.__growth")
-        if growth_item is not None and growth_item.formula_periods is not None:
-            growth_years = {
-                year for year in seeded_years if (year - 1) in seeded_years
-            }
-            growth_item.formula_periods = sorted(
-                set(growth_item.formula_periods) | growth_years
-            )
+        _extend_segment_revenue_periods(model, segment_id, seeded_years)
     return coverage
 
 
@@ -806,7 +862,14 @@ def apply_model_spec_historical_driver_seeds(
         node = nodes.get(seed.driver_key)
         entry = plan_entries.get(seed.driver_key)
         fiscal_period = period_by_id.get(seed.period_id)
-        if requirement.history_scope == "segment_revenue":
+        if requirement.history_scope == "segment_revenue" or (
+            _direct_segment_revenue_item_id(
+                revision, compiled_registry, seed.driver_key
+            ) is not None
+            and node is not None
+            and node.unit is Unit.dollars
+            and requirement.observation_basis == "period_flow"
+        ):
             if (
                 node is None
                 or entry is None
@@ -934,6 +997,87 @@ def apply_model_spec_historical_driver_seeds(
                 legacy_anchor_reconciled=reconciled,
             )
         )
+    if revision.stage_metadata is not None:
+        evidence_by_claim = {
+            binding.claim_key: binding.evidence_ids
+            for binding in revision.stage_metadata.claim_evidence_bindings
+        }
+        for segment in revision.business_model.segments:
+            segment_years: set[int] = set()
+            for node in _iter_nodes(segment.revenue_model.decomposition):
+                node_key = f"{segment.id}.{node.id}"
+                item_id = compiled_registry.node_items.get(node_key)
+                if item_id is None:
+                    continue
+                target_ids = [item_id]
+                direct_segment_id = _direct_segment_revenue_item_id(
+                    revision, compiled_registry, node_key
+                )
+                if direct_segment_id is not None and direct_segment_id in model._index:
+                    target_ids.append(direct_segment_id)
+                for observation in node.historical_observations:
+                    evidence_ids = evidence_by_claim.get(
+                        business_model_observation_claim_key(
+                            node_key, observation.period_id
+                        )
+                    )
+                    if observation.period_id not in fiscal_years or not evidence_ids:
+                        continue
+                    year = fiscal_years[observation.period_id]
+                    for target_id in target_ids:
+                        if (target_id, year) in resolved_cells:
+                            if target_id == direct_segment_id:
+                                segment_years.add(year)
+                            continue
+                        target = model.get_item(target_id)
+                        existing = (
+                            None if target.values is None
+                            else target.values.values.get(year)
+                        )
+                        if existing is not None and (
+                            existing.value is None
+                            or Decimal(str(existing.value)) != observation.value
+                        ):
+                            continue
+                        note = (
+                            "accepted_business_model_observation:"
+                            f"{revision.ref.content_sha256}:{node_key}:"
+                            f"{observation.period_id}"
+                        )
+                        if target.values is None:
+                            target.values = ValueSeries()
+                        target.values.values[year] = ValueCell(
+                            period=year,
+                            value=float(observation.value),
+                            provenance=ValueProvenance.historical_foundation,
+                            note=note,
+                        )
+                        if target.overrides is None:
+                            target.overrides = {}
+                        target.overrides[year] = FormulaSpec(
+                            type=FormulaType.constant,
+                            params={"value": float(observation.value)},
+                            note=note,
+                        )
+                        resolved_cells.add((target_id, year))
+                        if target_id == direct_segment_id:
+                            segment_years.add(year)
+                        coverage.append({
+                            "driver_key": node_key,
+                            "resolved_item_id": target_id,
+                            "periods": [year],
+                            "period_id": observation.period_id,
+                            "value": str(observation.value),
+                            "unit": observation.unit.value,
+                            "model_scale": observation.model_scale,
+                            "observation_basis": node.observation_basis,
+                            "disposition": "observed",
+                            "evidence_ids": list(evidence_ids),
+                            "fact_ids": [],
+                            "confidence": observation.confidence,
+                        })
+            if segment_years:
+                _extend_segment_revenue_periods(model, segment.id, segment_years)
     return coverage
 
 
