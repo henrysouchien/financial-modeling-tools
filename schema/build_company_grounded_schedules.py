@@ -5691,22 +5691,6 @@ def _apply_share_policy(
             note="filed cash-flow dividends paid",
         )
         _set_periods(dividends, (*historical, *projected))
-        if _DIVIDEND_PAYABLE in model._index:
-            payable = model.get_item(_DIVIDEND_PAYABLE)
-            if not any(
-                (payable.overrides or {}).get(period) is not None
-                or (payable.values is not None and period in payable.values.values)
-                for period in historical
-            ):
-                payable_zero = FormulaSpec(
-                    type=FormulaType.constant,
-                    params={"value": 0.0},
-                    note="no reported dividend payable balance",
-                )
-                payable.historical = payable_zero
-                payable.projected = payable_zero.model_copy(deep=True)
-                _set_periods(payable, (*historical, *projected))
-                wired.append(payable.id)
     else:
         # No reported latest-year amount to project from, whether or not the
         # BusinessModel names a dividend mechanism: the rows hold at zero so every
@@ -7086,7 +7070,10 @@ def _retire_absent_role_schedules(
         # role that claims it is owed: a shared landing row stays with its live role.
         landing = tuple(
             item_id
-            for item_id in lines.hff_fact_items
+            for item_id in (
+                *lines.hff_fact_items,
+                *((_DIVIDEND_PAYABLE,) if role == "statement.cf.dividends_paid" else ()),
+            )
             if item_id in model._index
             and not item_id.startswith("tpl.fm.")
             and all(
