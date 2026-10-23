@@ -9,6 +9,7 @@ import json
 from typing import Annotated, Any, Literal
 
 from edgar_transport_contracts.dimensions import XbrlFactRef
+from edgar_transport_contracts.enums import MeasureUnit, ScaleProvenance
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from schema.business_model import ObservationBasis
@@ -16,8 +17,6 @@ from schema.scale_conversion import Scale
 
 
 EDGAR_OPERATIONAL_KPI_DRIVER_ROWS_CONTRACT_VERSION = "edgar-operational-kpi-driver-rows.v2"
-ScaleProvenance = Literal["row_label", "column_header", "table_caption", "monetary_preamble", "none"]
-MeasureUnit = Literal["dollars", "count", "share_count", "percentage", "ratio", "multiple", "days", "per_count", "per_share"]
 
 
 class EdgarOperationalKpiDriverRowsContractError(ValueError):
