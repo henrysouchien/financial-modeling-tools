@@ -336,8 +336,6 @@ class EdgarKpiAdapter:
                 if row.period is None:
                     unperiodized.append(row.model_dump_json())
                     continue
-                if row.period.temporal_kind != "instant" and row.period.period_type != "annual":
-                    continue
                 period = (
                     DatePeriod(kind="date", date=row.period.period_end.isoformat())
                     if row.period.temporal_kind == "instant"
