@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 import json
 
 from industry_slice_core.profile_normalization import ProviderCapability
@@ -16,13 +17,13 @@ from schema.provider_port.adapters.edgar.wire.operational_kpi_driver_rows_v2 imp
     KpiDriverRowsV2,
     KpiGap,
     KpiLaneGap,
+    KpiLocator,
     MeasureType,
     OmittedTable,
     ReaderRecord,
     ScaledQuantity,
     TypedKpiObservation,
-    _four_quarter_series_key as _wire_four_quarter_series_key,
-    derive_four_quarter_annual_kpi_observations as _wire_derive_four_quarter_annual_kpi_observations,
+    TypedPeriod,
     validate_edgar_operational_kpi_driver_rows_v2,
 )
 from schema.provider_port.contracts import (
@@ -108,14 +109,154 @@ def _series_variant(row: TypedKpiObservation) -> str:
     )
 
 
+_KPI_SCALE_FACTORS: Mapping[str, Decimal] = {
+    "units": Decimal(1),
+    "thousands": Decimal("1e3"),
+    "millions": Decimal("1e6"),
+    "billions": Decimal("1e9"),
+}
+_FOUR_QUARTER_SUM_UNITS = frozenset({"dollars", "count", "share_count"})
+
+
 def _four_quarter_series_key(row: TypedKpiObservation) -> tuple[object, ...]:
-    return _wire_four_quarter_series_key(row)
+    assert isinstance(row.value, ScaledQuantity)
+    measure = row.value.measure
+    return (
+        row.series.issuer_series_key,
+        tuple(sorted(row.dimensions.items())),
+        measure.unit,
+        measure.observation_basis,
+        measure.currency,
+        measure.counted_entity,
+        row.value_semantic,
+    )
 
 
 def derive_four_quarter_annual_kpi_observations(
     rows: Sequence[TypedKpiObservation],
 ) -> tuple[TypedKpiObservation, ...]:
-    return _wire_derive_four_quarter_annual_kpi_observations(rows)
+    """Derive annual Q1+Q2+Q3+Q4 KPI observations carrying all four citations.
+
+    Governing ruling ``DURATION-KPI-FOUR-QUARTER-ANNUAL-SUM``: a duration KPI in
+    dollars/count with all four quarters disclosed and no annual column derives
+    the annual as ``Q1+Q2+Q3+Q4`` carrying all four citations.
+    """
+    annual_present: set[tuple[tuple[object, ...], int]] = set()
+    by_series_year: dict[
+        tuple[tuple[object, ...], int], dict[int, list[TypedKpiObservation]]
+    ] = {}
+    for row in rows:
+        if (
+            row.period is None
+            or not isinstance(row.value, ScaledQuantity)
+            or row.value_semantic != "level"
+            or row.period.temporal_kind != "duration"
+            or row.value.measure.unit not in _FOUR_QUARTER_SUM_UNITS
+            or row.value.measure.observation_basis != "period_flow"
+        ):
+            continue
+        key = (_four_quarter_series_key(row), row.period.fiscal_year)
+        if row.period.period_type == "annual":
+            annual_present.add(key)
+        elif (
+            row.calculation_ready
+            and row.period.period_type == "quarterly"
+            and row.period.quarter in (1, 2, 3, 4)
+        ):
+            by_series_year.setdefault(key, {}).setdefault(row.period.quarter, []).append(row)
+
+    derived: list[TypedKpiObservation] = []
+    for (series_key, fiscal_year), by_quarter in by_series_year.items():
+        if (series_key, fiscal_year) in annual_present:
+            continue
+        if set(by_quarter) != {1, 2, 3, 4}:
+            continue
+        quarters: list[TypedKpiObservation] = []
+        disagreed = False
+        for q_num in (1, 2, 3, 4):
+            candidates = by_quarter[q_num]
+            first_q = candidates[0]
+            assert isinstance(first_q.value, ScaledQuantity)
+            first_val = Decimal(normalize_decimal_v1(first_q.value.canonical_value))
+            if any(
+                Decimal(normalize_decimal_v1(other.value.canonical_value)) != first_val
+                for other in candidates[1:]
+                if isinstance(other.value, ScaledQuantity)
+            ):
+                disagreed = True
+                break
+            quarters.append(first_q)
+        if disagreed:
+            continue
+        q1, q2, q3, q4 = quarters
+        assert isinstance(q1.value, ScaledQuantity) and isinstance(q4.value, ScaledQuantity)
+        scales = {
+            q.value.presentation_scale
+            for q in quarters
+            if isinstance(q.value, ScaledQuantity)
+        }
+        if len(scales) != 1:
+            continue
+        canonical_sum = sum(
+            (
+                Decimal(normalize_decimal_v1(q.value.canonical_value))
+                for q in quarters
+                if isinstance(q.value, ScaledQuantity)
+            ),
+            Decimal(0),
+        )
+        scale_factor = _KPI_SCALE_FACTORS.get(q4.value.presentation_scale, Decimal(1))
+        scaled_sum = canonical_sum / scale_factor
+        assert q1.period is not None and q4.period is not None
+        derived.append(
+            TypedKpiObservation(
+                observation_id=",".join(q.observation_id for q in quarters),
+                metric_name=q4.metric_name,
+                series=q4.series,
+                period=TypedPeriod(
+                    fiscal_year=fiscal_year,
+                    period_type="annual",
+                    temporal_kind="duration",
+                    period_start=q1.period.period_start,
+                    period_end=q4.period.period_end,
+                    quarter=None,
+                    inferred=True,
+                ),
+                value=ScaledQuantity(
+                    measure=q4.value.measure,
+                    canonical_value=canonical_sum,
+                    presentation_scale=q4.value.presentation_scale,
+                    scale_provenance=q4.value.scale_provenance,
+                    scale_evidence=q4.value.scale_evidence,
+                ),
+                value_raw=normalize_decimal_v1(scaled_sum),
+                locator=KpiLocator(
+                    accession=q1.locator.accession,
+                    section=q1.locator.section,
+                    table_id=q1.locator.table_id,
+                    row=q1.locator.row,
+                    column=q1.locator.column,
+                    span=";".join(q.locator.span for q in quarters),
+                ),
+                additional_locators=(
+                    q1.locator,
+                    q2.locator,
+                    q3.locator,
+                    q4.locator,
+                    *(loc for q in quarters for loc in q.additional_locators),
+                ),
+                dimensions=dict(q4.dimensions),
+                value_semantic=q4.value_semantic,
+                grounded=all(q.grounded for q in quarters),
+                calculation_ready=True,
+                lane=q4.lane,
+                notes=(
+                    *dict.fromkeys(note for q in quarters for note in q.notes),
+                    "derived_annual:four_quarter_sum",
+                ),
+            )
+        )
+    return tuple(derived)
 
 
 class EdgarKpiAdapter:
@@ -146,7 +287,7 @@ class EdgarKpiAdapter:
             self._payloads[accession] = envelope
         variants: dict[tuple[str, str], set[str]] = {}
         for accession, payload in self._payloads.items():
-            for row in payload.rows:
+            for row in (*payload.rows, *derive_four_quarter_annual_kpi_observations(payload.rows)):
                 if row.locator.accession != accession:
                     raise ValueError(
                         "KPI artifact accession key does not match row locator accession: "
@@ -189,7 +330,7 @@ class EdgarKpiAdapter:
             omitted_tables.extend(payload.omitted_tables)
             lane_gaps.extend(payload.lane_gaps)
             readers.extend(payload.readers)
-            for row in payload.rows:
+            for row in (*payload.rows, *derive_four_quarter_annual_kpi_observations(payload.rows)):
                 if isinstance(row.value, ScaledQuantity):
                     units[row.observation_id] = row.value.measure
                 if row.period is None:
