@@ -151,12 +151,15 @@ class TypedKpiObservation(_KpiType):
     notes: tuple[str, ...] = ()
     xbrl_fact_ref: XbrlFactRef | None = None
     explanations: tuple[KpiExplanation, ...] = ()
+    constituent_observation_ids: tuple[str, ...] = ()
 
     @model_serializer(mode="wrap")
     def _omit_empty_explanations(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         data: dict[str, Any] = handler(self)
         if not data.get("explanations"):
             data.pop("explanations", None)
+        if not data.get("constituent_observation_ids"):
+            data.pop("constituent_observation_ids", None)
         return data
     @model_validator(mode="after")
     def _bind_value(self) -> TypedKpiObservation:

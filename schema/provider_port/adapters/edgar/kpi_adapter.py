@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
 import json
 
 from industry_slice_core.profile_normalization import ProviderCapability
@@ -208,9 +209,14 @@ def derive_four_quarter_annual_kpi_observations(
         scale_factor = _KPI_SCALE_FACTORS.get(q4.value.presentation_scale, Decimal(1))
         scaled_sum = canonical_sum / scale_factor
         assert q1.period is not None and q4.period is not None
+        constituent_ids = tuple(q.observation_id for q in quarters)
+        derived_obs_id = "observation:" + hashlib.sha256(
+            json.dumps(["derived:four_quarter_sum", list(constituent_ids)], separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         derived.append(
             TypedKpiObservation(
-                observation_id=",".join(q.observation_id for q in quarters),
+                observation_id=derived_obs_id,
+                constituent_observation_ids=constituent_ids,
                 metric_name=q4.metric_name,
                 series=q4.series,
                 period=TypedPeriod(
@@ -334,7 +340,7 @@ class EdgarKpiAdapter:
             constituent_ids = {
                 obs_id
                 for derived_row in derived_rows
-                for obs_id in derived_row.observation_id.split(",")
+                for obs_id in derived_row.constituent_observation_ids
             }
             for row in (*payload.rows, *derived_rows):
                 if isinstance(row.value, ScaledQuantity):
