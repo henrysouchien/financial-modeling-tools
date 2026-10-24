@@ -330,11 +330,19 @@ class EdgarKpiAdapter:
             omitted_tables.extend(payload.omitted_tables)
             lane_gaps.extend(payload.lane_gaps)
             readers.extend(payload.readers)
-            for row in (*payload.rows, *derive_four_quarter_annual_kpi_observations(payload.rows)):
+            derived_rows = derive_four_quarter_annual_kpi_observations(payload.rows)
+            constituent_ids = {
+                obs_id
+                for derived_row in derived_rows
+                for obs_id in derived_row.observation_id.split(",")
+            }
+            for row in (*payload.rows, *derived_rows):
                 if isinstance(row.value, ScaledQuantity):
                     units[row.observation_id] = row.value.measure
                 if row.period is None:
                     unperiodized.append(row.model_dump_json())
+                    continue
+                if row.observation_id in constituent_ids:
                     continue
                 period = (
                     DatePeriod(kind="date", date=row.period.period_end.isoformat())
