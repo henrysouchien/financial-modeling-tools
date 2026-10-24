@@ -149,7 +149,6 @@ def derive_four_quarter_annual_kpi_observations(
         if (
             row.period is None
             or not isinstance(row.value, ScaledQuantity)
-            or not row.calculation_ready
             or row.value_semantic != "level"
             or row.period.temporal_kind != "duration"
             or row.value.measure.unit not in _FOUR_QUARTER_SUM_UNITS
@@ -159,7 +158,11 @@ def derive_four_quarter_annual_kpi_observations(
         key = (_four_quarter_series_key(row), row.period.fiscal_year)
         if row.period.period_type == "annual":
             annual_present.add(key)
-        elif row.period.period_type == "quarterly" and row.period.quarter in (1, 2, 3, 4):
+        elif (
+            row.calculation_ready
+            and row.period.period_type == "quarterly"
+            and row.period.quarter in (1, 2, 3, 4)
+        ):
             by_series_year.setdefault(key, {}).setdefault(row.period.quarter, []).append(row)
 
     derived: list[TypedKpiObservation] = []
