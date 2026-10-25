@@ -14,8 +14,10 @@ from enum import Enum
 from typing import Any
 from urllib.parse import quote, unquote_to_bytes, urlsplit
 
+from agent_workflow_contracts.research_file_contract import is_research_file_id
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .model_ref import SqliteInt64Id
 from .ticker_contract import require_canonical_contract_ticker
 
 
@@ -71,7 +73,10 @@ def parse_positive_decimal(value: str, *, field_name: str) -> int:
 
     if not isinstance(value, str) or _POSITIVE_DECIMAL_RE.fullmatch(value) is None:
         raise ValueError(f"{field_name} must be a positive canonical decimal")
-    return int(value)
+    parsed = int(value)
+    if not is_research_file_id(parsed):
+        raise ValueError(f"{field_name} must be a positive canonical integer")
+    return parsed
 
 
 def _validate_decoded_segment(value: str, *, field_name: str) -> None:
@@ -102,11 +107,11 @@ class CurrentModelIdentity(BaseModel):
         strict=True,
     )
 
-    research_file_id: int = Field(gt=0)
+    research_file_id: SqliteInt64Id
     ticker: str
     model_id: str = Field(min_length=1)
-    version: int = Field(gt=0)
-    pointer_epoch: int = Field(gt=0)
+    version: SqliteInt64Id
+    pointer_epoch: SqliteInt64Id
     workbook_xlsx_sha256: str
     model_spec_sha256: str
 
@@ -127,7 +132,7 @@ class ModelStateWriteContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     user_id: str
-    research_file_id: int = Field(gt=0)
+    research_file_id: SqliteInt64Id
     ticker: str
     scope: ModelStateScope
     workspace_id: str | None = None
@@ -163,9 +168,9 @@ class ModelStateRef(BaseModel):
     uri: str
     scope: ModelStateScope
     user_id: str
-    research_file_id: int = Field(gt=0)
+    research_file_id: SqliteInt64Id
     ticker: str
-    revision: int = Field(gt=0)
+    revision: SqliteInt64Id
     content_hash: str
     workspace_id: str | None = None
     canonical_base_hash: str | None = None
@@ -229,9 +234,9 @@ def format_model_state_uri(
         scope = ModelStateScope(scope)
     except (TypeError, ValueError) as exc:
         raise ValueError("unsupported model-state scope") from exc
-    if isinstance(research_file_id, bool) or research_file_id <= 0:
+    if not is_research_file_id(research_file_id):
         raise ValueError("research_file_id must be positive")
-    if isinstance(revision, bool) or revision <= 0:
+    if not is_research_file_id(revision):
         raise ValueError("revision must be positive")
     user = encode_uri_segment(user_id, field_name="user_id")
     ticker_segment = encode_uri_segment(

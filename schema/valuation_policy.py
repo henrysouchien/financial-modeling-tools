@@ -526,7 +526,7 @@ class ValuationObservedInput(_Contract):
         if self.input_name == "stock_price":
             valid = self.value > 0
         elif self.input_name == "raw_beta":
-            valid = Decimal("0") < self.value <= Decimal("4")
+            valid = self.value.is_finite()
         else:
             valid = Decimal("0") < self.value <= Decimal("0.25")
         if not valid:
@@ -996,15 +996,14 @@ class ValuationPolicyArtifact(_Contract):
             )
 
         if self.status == "accepted":
-            if observed_names != _REQUIRED_OBSERVED_INPUTS:
-                raise ValueError(
-                    "accepted valuation policy requires all observed inputs"
-                )
             if policy_names != ("beta_floor",):
                 raise ValueError(
                     "accepted valuation policy requires exact policy inputs"
                 )
-            if derived_names != _REQUIRED_DERIVED_INPUTS:
+            if (
+                {"raw_beta", "risk_free_rate", "equity_risk_premium"} <= set(observed)
+                and derived_names != _REQUIRED_DERIVED_INPUTS
+            ):
                 raise ValueError(
                     "accepted valuation policy requires derived input closure"
                 )

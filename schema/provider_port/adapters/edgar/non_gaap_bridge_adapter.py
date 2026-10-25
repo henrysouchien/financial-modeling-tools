@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Literal
 
 from industry_slice_core.profile_normalization import ProviderCapability
@@ -110,7 +110,6 @@ def _line_fact(
     source_ref = mint_source_fact_ref(
         ref, "non_gaap_bridge", suffix=f"edgar{form}.{coordinate}"
     )
-    factor = VALUE_SCALE_FACTORS[bridge.value_scale]
     raw_dec = Decimal(line.value)
     raw_curr = (bridge.currency_label or "USD").strip().upper()
     currency = (
@@ -128,7 +127,7 @@ def _line_fact(
         canonical_val = normalize_decimal_v1(raw_dec)
         display = NumericDisplaySpec(numeric_kind="percentage")
     else:
-        canonical_val = normalize_decimal_v1(raw_dec * factor)
+        canonical_val = normalize_decimal_v1(raw_dec)
         display = NumericDisplaySpec(
             numeric_kind="currency",
             scale="unit" if bridge.value_scale == "units" else bridge.value_scale,
@@ -229,7 +228,6 @@ def _v3_line_fact(
             if is_usd_currency_label(bridge.currency_label) or len(raw_curr) < 3
             else raw_curr[:3]
         )
-    canonical_val = normalize_decimal_v1(quantity_value.canonical_value)
     scale_map: dict[str, Literal["unit", "thousands", "millions", "billions"]] = {
         "units": "unit",
         "unit": "unit",
@@ -252,11 +250,17 @@ def _v3_line_fact(
             currency=currency,
             unit_label=currency,
         )
+    scale_factor = VALUE_SCALE_FACTORS["units" if display.scale == "unit" else display.scale]
+    with localcontext() as context:
+        context.prec = max(
+            context.prec, len(quantity_value.canonical_value.as_tuple().digits),
+        )
+        declared_val = normalize_decimal_v1(quantity_value.canonical_value / scale_factor)
     return FilingLineFact(
         line=ref,
         value=Quantity.model_validate(
             {
-                "value": canonical_val,
+                "value": declared_val,
                 "display": display,
             },
             strict=True,

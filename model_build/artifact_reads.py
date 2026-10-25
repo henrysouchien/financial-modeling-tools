@@ -31,6 +31,7 @@ from schema.build_model_product_contracts import (
   ModelSpec,
   ModelVersion,
   ProvenanceMap,
+  ProvenanceMapRebuildRequired,
   SourceBundle,
   SourceBundleBindingError,
   SourceBundleRebuildRequired,
@@ -46,6 +47,8 @@ from schema.valuation_evidence_validation import (
 from schema.model_ref import ModelVersionRef
 from schema.model_semantic_document import (
   ModelSemanticDocument,
+  ModelSemanticDocumentRebuildRequired,
+  StoredProvenancePairMismatchError,
   validate_stored_provenance_pair,
 )
 from schema.model_spec_decoder import (
@@ -705,17 +708,18 @@ def _decode_artifacts(
     role="validation_report",
   )
   try:
-    # A stored 3.2 sidecar travels with a 2.1 report, refused below as
-    # rebuild-required rather than as malformed.
-    if semantic_payload.get("schema_version") not in {"3.2", "3.3"}:
-      raise ValueError("semantic sidecar must use schema version 3.2 or 3.3")
-    if provenance_payload.get("schema_version") != "1.1":
-      raise ValueError("provenance map must use exact schema version 1.1")
     semantic_document, provenance = validate_stored_provenance_pair(
       semantic_payload,
       provenance_payload,
     )
-  except (TypeError, ValueError, ValidationError) as exc:
+  except (ModelSemanticDocumentRebuildRequired, ProvenanceMapRebuildRequired) as exc:
+    _rebuild(
+      exc.code,
+      "stored semantic sidecar or ProvenanceMap requires a current rebuild",
+      exc,
+      fix=PRE_CUT_REBUILD_REPAIR,
+    )
+  except StoredProvenancePairMismatchError as exc:
     _integrity(
       "semantic_provenance_malformed",
       "stored semantic sidecar and provenance do not form an exact current pair",
@@ -730,7 +734,7 @@ def _decode_artifacts(
       exc,
       fix=PRE_CUT_REBUILD_REPAIR,
     )
-  except (TypeError, ValueError, ValidationError) as exc:
+  except ValidationError as exc:
     _integrity(
       "validation_report_malformed",
       "stored ValidationReport is malformed",

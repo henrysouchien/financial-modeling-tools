@@ -303,6 +303,8 @@ def _append_valuation_evidence_status_block(
 def _render_compiler_inputs(
     *,
     source_bundle: SourceBundle,
+    source_bundle_payload: Mapping[str, Any],
+    source_bundle_content_sha256: str,
     model_spec: ModelSpec,
     source_bundle_id: str | None = None,
     source_bundle_identity_digest: str | None = None,
@@ -313,8 +315,8 @@ def _render_compiler_inputs(
     compiler_inputs: dict[str, object] = {
         "source_bundle": CompilerInput(
             ticker=source_bundle.ticker,
-            content_hash=compiler_input_content_hash(source_bundle),
-            payload=source_bundle.model_dump(mode="json"),
+            content_hash=f"sha256:{source_bundle_content_sha256}",
+            payload=dict(source_bundle_payload),
             bundle_id=source_bundle_id,
             identity_digest=source_bundle_identity_digest,
         ).model_dump(mode="json"),

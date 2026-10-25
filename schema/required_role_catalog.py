@@ -1000,7 +1000,7 @@ def _decode_role(row: Mapping[str, Any], *, source: str, index: int) -> Required
         # catalog semantics — docs/reference/rulings-index.md rows
         # DISCLOSURE-ADAPTS-ACCOUNTING-FIXED and FUNCTIONAL-EXPENSE-SPLIT-OPTIONAL;
         # a data-integrity refusal at the catalog owner (C1 decision 2026-10-18,
-        # docs/queue/bcgs-consumes-role-disposition-single-pass.md).
+        # docs/closed/bcgs-consumes-role-disposition-single-pass.md).
         _invalid(
             source,
             f"{field}.presentation_optional",

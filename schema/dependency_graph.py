@@ -30,6 +30,7 @@ from .dependency_graph_algorithms import (
 )
 from .coverage_profile import AbsenceCitation
 from .dependency_graph_eval import (
+    SCENARIO_SNAPSHOT_SUBTYPE,
     _apply_scale_fn,
     _eval,
     _eval_expr,
@@ -436,6 +437,13 @@ class DependencyGraph:
                         continue
                     spec = item.overrides[period]
                     if spec.type == FormulaType.constant:
+                        if (
+                            spec.subtype == SCENARIO_SNAPSHOT_SUBTYPE
+                            and self._spec_for_period(item, period) is spec
+                        ):
+                            # The value is seeded above; evaluating the snapshot records
+                            # the read of its source row, and the number it returns is dropped.
+                            self._eval(item_id, period, results, time_index, time_order)
                         continue
                     value = self._eval(item_id, period, results, time_index, time_order)
                     if value is not None:
@@ -1150,6 +1158,53 @@ class DependencyGraph:
                     memo[key] = value
                     return value
                 if (
+                    spec.type is FormulaType.constant
+                    and spec.subtype == SCENARIO_SNAPSHOT_SUBTYPE
+                    and (spec.params or {}).get("value") is None
+                ):
+                    # A scenario snapshot the computation produced no value for: it is as
+                    # unknown as the row it snapshots, so it carries that row's causes, and
+                    # names the row itself when the row is known but the computation gave
+                    # the snapshot nothing. A case no scenario was authored for
+                    # (``params["unresolved"]``) is owed to the scenario door, not to its
+                    # source row: the snapshot cell is the blank input itself, typed as
+                    # any blank input is (``source_value_unavailable``).
+                    if (spec.params or {}).get("unresolved"):
+                        value = unavailable(
+                            "missing", "source_value_unavailable", item_id, int(period),
+                        )
+                        memo[key] = value
+                        return value
+                    source_ref = line_item_ref_from_obj((spec.params or {}).get("expr"))
+                    source_period = (
+                        None if source_ref is None else target_period(source_ref, int(period))
+                    )
+                    if (
+                        source_ref is not None
+                        and source_period is not None
+                        and source_ref.id in self.nodes
+                    ):
+                        source_state = classify(source_ref.id, source_period)
+                        if source_state.state != "known":
+                            value = source_state
+                        else:
+                            value = unavailable(
+                                "missing",
+                                "scenario_output_source_unavailable",
+                                source_ref.id,
+                                source_period,
+                            )
+                    else:
+                        value = unavailable(
+                            "missing",
+                            "scenario_output_source_unavailable",
+                            item_id if source_ref is None else source_ref.id,
+                            int(period) if source_period is None else source_period,
+                        )
+                    memo[key] = value
+                    return value
+
+                if (
                     spec.type is FormulaType.valuation
                     and spec.subtype in DECLARED_DOMAIN_VALUATION_SUBTYPES
                 ):
@@ -1283,6 +1338,7 @@ class DependencyGraph:
             if self._compute_has_recompute and self._compute_propagate is None:
                 cached_forced = self._cached_value_for_period(node_id, period, results)
                 if cached_forced is not None:
+                    self._eval(node_id, period, results, time_index, time_order)
                     results.setdefault(node_id, {})[period] = cached_forced
                     return True
             item = self.nodes[node_id]
@@ -1541,9 +1597,10 @@ class DependencyGraph:
     ) -> List[Tuple[FormulaRef, Tuple[str, int]]]:
         """``(carrier, cell)`` for each cell ``(item, period)`` reads: the spec that period
         selects (an override, else the historical or projected formula, ``formula_periods``
-        honoured; a constant reads nothing) through ``_read_refs``, each ref resolved to a cell by
-        ``resolve_ref_period`` (a ``SUM_RANGE`` target to every period of its row). ``carrier`` is
-        the ref of the spec whose removal removes the read."""
+        honoured; a constant reads nothing, a scenario snapshot's source row included: that read
+        is recorded only when the graph evaluates the snapshot) through ``_read_refs``, each ref
+        resolved to a cell by ``resolve_ref_period`` (a ``SUM_RANGE`` target to every period of
+        its row). ``carrier`` is the ref of the spec whose removal removes the read."""
         model = self._loaded_model
         if not item_owns_cell(model, item, int(period)):
             return []

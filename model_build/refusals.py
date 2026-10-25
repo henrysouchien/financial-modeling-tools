@@ -101,4 +101,9 @@ def refusal_row(
     row["status"] = status
   if stage is not None or status is not None:
     row["message"] = str(exc)[:2000]
+    if hasattr(exc, "field") and hasattr(exc, "fix"):
+      row["field"] = getattr(exc, "field", None)
+      row["got"] = getattr(exc, "raw_got", getattr(exc, "got", None))
+      row["fix"] = getattr(exc, "fix", None)
+      row["example"] = getattr(exc, "example", None)
   return row

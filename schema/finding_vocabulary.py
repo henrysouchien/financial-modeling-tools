@@ -78,6 +78,9 @@ FINDING_SEVERITY_MAP: Final[Mapping[str, FindingRule]] = MappingProxyType(
         # B: source bundle, provenance and offline validation.
         **_rows(("source_absence_evidenced",), "warning", ("pinned",), "declination"),
         **_rows(("missing_source",), "error", ("pinned", "rendered"), "repair"),
+        # RULE-I1: a ``set_input`` citing a filing line whose filed value differs from the
+        # authored one. A declination of a wrong citation would be a rubber stamp: repair only.
+        **_rows(("cited_fact_value_mismatch",), "error", ("pinned", "rendered"), "repair"),
         **_rows(
             ("historical_foundation_evidence_diverges",),
             "error",
@@ -523,11 +526,13 @@ FINDING_SEVERITY_MAP: Final[Mapping[str, FindingRule]] = MappingProxyType(
             ("authored",),
             "repair",
         ),
+        **_rows(("observed_input_lagged_print", "observed_input_cache_corrupt"), "warning", ("pinned",), "none"),
         # Info: judgment flags with no correct answer (spec §4.2). Shown on
         # every surface, never in the verdict, never cleared.
         **_rows(
             (
                 "forecast_driver_uncited",
+                "analyst_note_uncited",
                 "critical_factor_unevidenced",
                 "scenario_live_coverage",
             ),

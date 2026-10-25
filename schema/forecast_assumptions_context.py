@@ -3,6 +3,8 @@
 The surface carries economic semantics and exact immutable lineage only.  It
 cannot express workbook coordinates, current-model identities, compiler row
 IDs, or stable control IDs.
+
+Consumed by ``api/research/forecast_assumptions_context_service.py``.
 """
 
 from __future__ import annotations

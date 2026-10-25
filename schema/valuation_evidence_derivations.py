@@ -65,6 +65,85 @@ from .build_model_product_contracts import (
 from .coverage_profile import ValuationRequirement
 from .ticker_contract import normalize_contract_ticker
 
+MARKET_INPUT_FIELD_BY_METRIC: Final[
+    dict[
+        str,
+        Literal[
+            "stock_price",
+            "raw_beta",
+            "risk_free_rate",
+            "equity_risk_premium",
+        ],
+    ]
+] = {
+    "quote": "stock_price",
+    "beta": "raw_beta",
+    "risk_free_10y": "risk_free_rate",
+    "erp": "equity_risk_premium",
+}
+MARKET_PLANE_POINT_IN_TIME_METRICS: Final[frozenset[str]] = frozenset(
+    MARKET_INPUT_FIELD_BY_METRIC
+)
+
+
+def market_plane_locator_as_of_date(locator: str | None) -> date | None:
+    """Extract the dated print ``as_of_date`` from a market-plane locator, or None."""
+
+    if not isinstance(locator, str) or not locator.strip():
+        return None
+    base = locator.strip().split("#", 1)[0]
+    if not base.startswith(("fmp:", "fred:", "damodaran:")):
+        return None
+    token = base.rsplit(":", 1)[-1]
+    try:
+        return date.fromisoformat(token[:10])
+    except ValueError:
+        return None
+
+
+def observation_market_print_date(item: ValuationObservation) -> date | None:
+    """Return the earliest dated market-plane print date feeding ``item``."""
+
+    dates: list[date] = []
+    if item.raw_market_date is not None:
+        dates.append(item.raw_market_date)
+    for ref in (item.raw_ref, item.raw_close_ref, item.split_history_ref):
+        ref_date = market_plane_locator_as_of_date(ref)
+        if ref_date is not None:
+            dates.append(ref_date)
+    return min(dates) if dates else None
+
+
+def is_market_plane_print_admissible(
+    *,
+    locator: str | None = None,
+    as_of_date: date | None = None,
+    as_of_close: date,
+    observed_at: datetime,
+    cutoff_at: datetime,
+) -> bool:
+    """Single owner of Ratified Ruling D chronology for market-plane prints.
+
+    A dated market-plane print is admissible iff its ``as_of_date <= as_of_close``
+    (regardless of fetch/store time ``observed_at > cutoff_at``; look-ahead prints
+    dated after ``as_of_close`` are inadmissible). ``fmp:stock_splits:`` is a
+    historical event series whose rows carry their own split event dates and are
+    filtered to ``<= as_of_close`` at selection/projection, so a split-history
+    response fetched after ``as_of_close`` (carrying its true fetch date) is
+    admissible. Sources without a dated market-plane locator require
+    ``observed_at <= cutoff_at``.
+    """
+
+    if isinstance(locator, str) and locator.strip().startswith("fmp:stock_splits:"):
+        return True
+    resolved_as_of = (
+        as_of_date
+        if as_of_date is not None
+        else market_plane_locator_as_of_date(locator)
+    )
+    if resolved_as_of is not None:
+        return resolved_as_of <= as_of_close
+    return observed_at <= cutoff_at
 
 def derive_observation_dated_enterprise_value(
     observations: Sequence[ValuationObservation],
@@ -255,7 +334,12 @@ def _is_exact_fmp_official_close_source(source: SourceRecord) -> bool:
         source.provider == "fmp"
         and source.endpoint_or_filing_id == "historical_price_eod"
         and key_fields.get("native_field") == "close"
-        and _FMP_PROVIDER_LINEAGE_FIELDS <= set(key_fields)
+        and (
+            _FMP_PROVIDER_LINEAGE_FIELDS <= set(key_fields)
+            or str(key_fields.get("logical_locator") or "").startswith(
+                "fmp:historical_price_eod:"
+            )
+        )
     )
 
 
@@ -379,28 +463,93 @@ def _valuation_coverage_reasons(
 
     failed: list[ValuationShortfallReason] = []
     sessions = market_calendar.completed_session_dates
-    if item.retrieved_at > cutoff_at:
-        failed.append("cutoff_violation")
-    expected_market_date: date | None = item.as_of_close
-    last_bond = next(
-        (session for session in reversed(market_calendar.bond_session_dates)
-         if session <= item.as_of_close),
-        None,
-    )
-    if (
-        item.metric == "risk_free_10y"
+    point_in_time_date = (
+        item.raw_market_date
+        if item.metric in MARKET_PLANE_POINT_IN_TIME_METRICS
         and item.fiscal_basis == "point_in_time"
-        and item.as_of_close not in market_calendar.bond_session_dates
-        and last_bond is not None
+        and item.retrieved_at > cutoff_at
+        else None
+    )
+    admissibility_locator = (
+        item.split_history_ref
+        if item.metric == "ev_component:shares" and item.split_history_ref is not None
+        else item.raw_ref
+    )
+    if not is_market_plane_print_admissible(
+        locator=admissibility_locator,
+        as_of_date=point_in_time_date,
+        as_of_close=item.as_of_close,
+        observed_at=item.retrieved_at,
+        cutoff_at=cutoff_at,
     ):
-        expected_market_date = last_bond
-    if item.raw_market_date is not None and item.raw_market_date != expected_market_date:
+        failed.append("cutoff_violation")
+    # The expected market date(s) for the observation's print. Row 9 (Henry 2026-10-04,
+    # clarified 2026-10-24, ``docs/reference/rulings-index.md``): ``as_of_close`` is the
+    # valuation root date; for a point-in-time ``risk_free_10y`` the print is the Treasury
+    # par-yield of a bond session, published after that session's close, so the rate in
+    # force at the close is the last *published* bond-session print at or before it — the
+    # close's own session when the close is a bond session, or the session before it
+    # (the close's print posts after the close; the observation's ``retrieved_at`` is the
+    # corpus retrieval time, ``api/research/dec08_snapshot.py`` ``normalized_at``, not the
+    # macro capture's, so it cannot tell which). A print two sessions back is never the
+    # rate in force; ``stale_close`` below bounds the root date itself.
+    expected_market_dates: set[date] = {item.as_of_close}
+    if item.metric == "risk_free_10y" and item.fiscal_basis == "point_in_time":
+        bond_sessions = market_calendar.bond_session_dates
+        last_bond = next(
+            (session for session in reversed(bond_sessions) if session <= item.as_of_close),
+            None,
+        )
+        if last_bond is not None:
+            expected_market_dates = {last_bond}
+            # The close's own print is published after the close: when the close is a
+            # bond session, the session before it holds the last published print.
+            if last_bond == item.as_of_close:
+                prior_bond = next(
+                    (session for session in reversed(bond_sessions) if session < last_bond),
+                    None,
+                )
+                if prior_bond is not None:
+                    expected_market_dates.add(prior_bond)
+    # A dated forward-estimate print (``fmp:``/``fred:``/``damodaran:`` locator) carries
+    # its own ``as_of_date`` in ``raw_market_date``: a lagged or on-close print is
+    # conforming (no session-count cap on estimates/splits), a print after the root date
+    # is look-ahead. Un-dated locators keep the root-date checks.
+    dated_forward_print = (
+        item.metric in {"fwd_pe", "fwd_ev_adj_ebitda"}
+        and market_plane_locator_as_of_date(item.raw_ref) is not None
+    )
+    look_ahead_forward_print = (
+        dated_forward_print
+        and item.raw_market_date is not None
+        and item.raw_market_date > item.as_of_close
+    )
+    if dated_forward_print:
+        if look_ahead_forward_print:
+            failed.append("wrong_close_date")
+    elif (
+        item.raw_market_date is not None
+        and item.raw_market_date not in expected_market_dates
+    ):
         failed.append("wrong_close_date")
     if item.metric in {"fwd_pe", "fwd_ev_adj_ebitda"} and item.raw_close is None:
         failed.append("wrong_close_date")
+    # ``stale_close`` bounds the root date and, for a dated print, the print itself:
+    # a print after the close is not the rate in force at it, and one more than five
+    # completed sessions before the close is outside the staleness window (so a
+    # lagged print resolves only when it is at-or-before the close and within the
+    # bound, LAGGED-MACRO-PRINT-IS-A-WARNING).
     if item.as_of_close not in sessions or (
         sessions
         and len([d for d in sessions if item.as_of_close <= d <= sessions[-1]]) > 5
+    ):
+        failed.append("stale_close")
+    elif dated_forward_print:
+        if look_ahead_forward_print:
+            failed.append("stale_close")
+    elif item.raw_market_date is not None and (
+        item.raw_market_date > item.as_of_close
+        or len([d for d in sessions if item.raw_market_date < d <= item.as_of_close]) > 5
     ):
         failed.append("stale_close")
     if item.metric in {"fwd_pe", "fwd_ev_adj_ebitda"}:
@@ -469,8 +618,6 @@ def _valuation_eligibility_reasons(
     if not value.is_finite():
         reasons.append("value_nonconforming")
     elif item.metric in {"quote", "fwd_pe", "fwd_ev_adj_ebitda"} and value <= 0:
-        reasons.append("value_nonconforming")
-    elif item.metric == "beta" and not (Decimal("0") < value <= Decimal("4")):
         reasons.append("value_nonconforming")
     elif item.metric in {"risk_free_10y", "erp"} and not (
         Decimal("0") < value <= Decimal("0.25")
@@ -668,6 +815,7 @@ def derive_covered_market_inputs(
 ) -> CoveredMarketInputs:
     """Resolve exactly one L2-eligible observation for each market input."""
 
+    source_by_id = {source.id: source for source in sources}
     verdicts = {
         item.observation_id: verdict
         for item, verdict in zip(
@@ -686,27 +834,13 @@ def derive_covered_market_inputs(
     requirement_by_metric = {
         requirement.metric: requirement
         for requirement in requirements
-        if requirement.metric in {"quote", "beta", "risk_free_10y", "erp"}
+        if requirement.metric in MARKET_PLANE_POINT_IN_TIME_METRICS
     }
-    if set(requirement_by_metric) != {"quote", "beta", "risk_free_10y", "erp"}:
+    if set(requirement_by_metric) != MARKET_PLANE_POINT_IN_TIME_METRICS:
         raise ValueError("profile must define one requirement for every market input")
     resolved: dict[str, CoveredMarketInput] = {}
-    field_by_metric: dict[
-        str,
-        Literal[
-            "stock_price",
-            "raw_beta",
-            "risk_free_rate",
-            "equity_risk_premium",
-        ],
-    ] = {
-        "quote": "stock_price",
-        "beta": "raw_beta",
-        "risk_free_10y": "risk_free_rate",
-        "erp": "equity_risk_premium",
-    }
     focal = normalize_contract_ticker(focal_ticker)
-    for metric, field_name in field_by_metric.items():
+    for metric, field_name in MARKET_INPUT_FIELD_BY_METRIC.items():
         requirement = requirement_by_metric[metric]
         requirement_id = requirement.requirement_id
         candidates = tuple(
@@ -721,8 +855,38 @@ def derive_covered_market_inputs(
             for item in candidates
             if verdicts[item.observation_id].selection_eligible
         )
-        if len(eligible) == 1:
-            item = eligible[0]
+        # MARKET-DATA-IS-NOT-CORPUS (Henry 2026-10-24, docs/reference/rulings-index.md):
+        # a print dated on or before the root date is the rate in force and resolves
+        # (carrying ``wrong_close_date`` / ``stale_close`` when off the close); reject
+        # only future/look-ahead prints (``raw_market_date > as_of_close``), and when
+        # two or more candidate prints exist, take the newest on or before the root date.
+        lagged = tuple(
+            item
+            for item in candidates
+            if (item.raw_market_date is None or item.raw_market_date <= item.as_of_close)
+            and set(verdicts[item.observation_id].coverage_reasons)
+            <= {"wrong_close_date", "stale_close"}
+            and set(verdicts[item.observation_id].eligibility_reasons)
+            <= (
+                {"wrong_close_date"}
+                if item.metric == "quote"
+                and item.raw_close is not None
+                and item.raw_close == item.value
+                and not _has_fmp_provider_lineage(source_by_id[item.source_id])
+                else set()
+            )
+        )
+        pool = eligible or lagged
+        if pool:
+            item = max(
+                pool,
+                key=lambda obs: (
+                    obs.raw_market_date or obs.as_of_close,
+                    obs.as_of_close,
+                    obs.retrieved_at,
+                    obs.observation_id,
+                ),
+            )
             result = CoveredMarketInput(
                 requirement_id=requirement_id,
                 field_name=field_name,
@@ -730,6 +894,11 @@ def derive_covered_market_inputs(
                 value=item.value,
                 observation_id=item.observation_id,
                 source_id=item.source_id,
+                reasons=(
+                    ()
+                    if verdicts[item.observation_id].selection_eligible
+                    else ("wrong_close_date",)
+                ),
             )
         else:
             candidate_reasons: tuple[ValuationEligibilityReason, ...] = tuple(
@@ -740,13 +909,11 @@ def derive_covered_market_inputs(
                     *verdicts[item.observation_id].eligibility_reasons,
                 )
             )
-            reasons: tuple[ValuationEligibilityReason, ...]
-            if len(eligible) > 1:
-                reasons = ("duplicate_conforming_observation",)
-            elif candidate_reasons:
-                reasons = tuple(dict.fromkeys(candidate_reasons))
-            else:
-                reasons = ("missing",)
+            reasons: tuple[ValuationEligibilityReason, ...] = (
+                tuple(dict.fromkeys(candidate_reasons))
+                if candidate_reasons
+                else ("missing",)
+            )
             result = CoveredMarketInput(
                 requirement_id=requirement_id,
                 field_name=field_name,
@@ -1017,9 +1184,9 @@ def derive_relative_selection(
 def derive_valuation_evidence_status(
     bundle: "SourceBundle",
     peer_policy: ValuationPeerPolicy | None = None,
+    *,
+    bundle_content_sha256: str,
 ) -> ValuationEvidenceStatus:
-    from .render_state import compiler_input_content_hash
-
     if peer_policy is None:
         selected_basis = bundle.coverage_profile.selected_relative_fiscal_basis
         if selected_basis == "next_four_quarters":
@@ -1054,7 +1221,7 @@ def derive_valuation_evidence_status(
         selected_fiscal_basis=(bundle.coverage_profile.selected_relative_fiscal_basis),
     )
     return ValuationEvidenceStatus(
-        bundle_digest=compiler_input_content_hash(bundle),
+        bundle_digest=f"sha256:{bundle_content_sha256}",
         methods=tuple(
             ValuationMethodEvidenceStatus(
                 method=item.method,

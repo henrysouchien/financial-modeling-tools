@@ -162,6 +162,19 @@ def company_grounded_schedules(bundle: Any, *, opening: Any, grounded_rows: Any)
     return _digest("company_grounded_schedules", _facts(bundle), _text(held), _dispositions(bundle), _text(grounded_rows))
 
 
+def three_statement_spine(bundle: Any, *, opening: Any) -> str | None:
+    """``_normalize_three_statement_spine(model, opening_balances=opening or {})``: from the bundle only the pin's
+    opening balance per role — its requirement id and the evidence it names (the first-year balance delta's pinned
+    operand and its ``source_bundle_opening_balance`` coverage row). ``opening`` is ``opening_balances(bundle)``'s result."""
+    if bundle is None:
+        return None
+    held = None if opening is None else {
+        role: (balance.requirement_id, balance.evidence.model_dump(mode="json", exclude=_PREPARED_AT))
+        for role, balance in opening.items()
+    }
+    return _digest("three_statement_spine", _text(held))
+
+
 def scenario_targets(spec: Any) -> str | None:
     """``partition_model_spec_scenario_workbook_targets`` / ``lower_model_spec_scenario_curves`` /
     ``lower_model_spec_direct_scenario_inputs`` over the spec."""

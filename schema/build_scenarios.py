@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from .build_formula_refs import _extract_ref_ids as _formula_extract_ref_ids
 from .build_model_items import _iter_items as _model_iter_items
-from .dependency_graph import DependencyGraph
+from .dependency_graph import DependencyGraph, formula_owned_recompute_ids
 from .handle import ComputedValues
 from .build_value_writers import _write_default_unless_authored
 from .required_role_catalog import pass_through_counterparts
@@ -118,8 +118,8 @@ def _select_scenario_output_item_id(
 
 
 class _ScenarioOutputsDict(dict[str, dict[str, dict[int, float]]]):
-    base_eval_reads: dict[tuple[str, int], tuple[tuple[str, int], ...]]
-    unavailable_sources: dict[tuple[str, str], str]
+    control_ids: dict[str, tuple[str, ...]]
+    case_eval_reads: dict[str, dict[tuple[str, int], tuple[tuple[str, int], ...]]]
 
 
 def compute_scenario_outputs(
@@ -130,10 +130,12 @@ def compute_scenario_outputs(
     """Run Bull/Base/Bear scenario computations for decision-critical outputs.
 
     Returns each resolved case's output values by field and, beside them, the row
-    each field was read from. Unresolved cases are not computed. A field whose
-    selected source row holds no finite projection value is dropped and named in
-    ``unavailable_sources[(case, field)]`` by that source row, so the writer can
-    stamp the unwritten output cell with why it is unwritten.
+    each field was read from, whether or not that row held a finite projection
+    value: a snapshot cell names its source row either way. ``control_ids[case]``
+    are the target rows the case's scenario controls override. ``case_eval_reads``
+    carries each resolved case's selected operands, including reads of seeded
+    base cells. An unresolved case is not computed (no outputs or reads) but
+    still names its source rows, with no controls.
     """
 
     if not model._index:
@@ -141,11 +143,11 @@ def compute_scenario_outputs(
     dependency_graph_cls = DependencyGraph
     graph = dependency_graph_cls()
     graph.build(model)
-    base_results = graph.compute({})
-    initial_eval_reads = dict(graph.last_eval_reads)
+    base_results = graph.compute({}, recompute=formula_owned_recompute_ids(model))
+    base_eval_reads = graph.last_eval_reads
     scenario_outputs = _ScenarioOutputsDict()
-    scenario_outputs.base_eval_reads = dict(initial_eval_reads)
-    scenario_outputs.unavailable_sources = {}
+    scenario_outputs.control_ids = {}
+    scenario_outputs.case_eval_reads = {}
     scenario_output_item_ids: dict[str, dict[str, str]] = {}
     projection_periods = [int(period) for period in model.time_structure.projection_periods]
     scenario_output_requirements = _MODEL_SCENARIO_OUTPUT_REQUIREMENTS
@@ -155,8 +157,26 @@ def compute_scenario_outputs(
     select_scenario_output_item_id = _select_scenario_output_item_id
     finite_projection_values = _finite_projection_values
 
+    def selected_sources(values: ComputedValues) -> dict[str, str]:
+        sources: dict[str, str] = {}
+        for field_name, candidate_item_ids in (
+            *scenario_output_requirements,
+            ("publication_eps", _SCENARIO_PUBLICATION_EPS_ITEM_IDS),
+        ):
+            item_id = select_scenario_output_item_id(
+                model, values, candidate_item_ids, projection_periods,
+            )
+            if item_id is not None:
+                sources[field_name] = item_id
+        return sources
+
     for case in ("bull", "base", "bear"):
         if case in unresolved_cases:
+            # No outputs are computed for an unresolved case, but its snapshot cells
+            # still name the rows they would be read from; the candidate selection
+            # does not depend on the case.
+            scenario_outputs.control_ids[case] = ()
+            scenario_output_item_ids[case] = selected_sources(base_results)
             continue
         overrides = build_scenario_overrides(model, case, base_results=base_results)
         recompute = downstream_item_ids(graph, set(overrides))
@@ -165,48 +185,27 @@ def compute_scenario_outputs(
             scenario_inputs,
             recompute=recompute,
             seed_results=base_results,
-            propagate_roots=set(overrides),
+            propagate_roots=set(overrides) | recompute,
             periods=set(projection_periods),
         )
-        if case == "base":
-            scenario_outputs.base_eval_reads = {
-                **initial_eval_reads,
-                **graph.last_eval_reads,
-            }
+        # Seeded cells retain the reads that obtained their base values; overridden
+        # and recomputed cells replace those reads with the operands selected in this case.
+        overridden_or_recomputed = set(overrides) | recompute
+        case_reads = {
+            identity: reads for identity, reads in base_eval_reads.items()
+            if identity[0] not in overridden_or_recomputed or identity[1] not in projection_periods
+        }
+        case_reads.update(_offset_scenario_case_reads(model, case, projection_periods, base_results))
+        case_reads.update(graph.last_eval_reads)
+        scenario_outputs.case_eval_reads[case] = case_reads
         case_outputs: dict[str, dict[int, float]] = {}
-        case_item_ids: dict[str, str] = {}
-        for field_name, candidate_item_ids in scenario_output_requirements:
-            item_id = select_scenario_output_item_id(
-                model,
-                results,
-                candidate_item_ids,
-                projection_periods,
-            )
-            if item_id is None:
-                continue
+        case_item_ids = selected_sources(results)
+        for field_name, item_id in case_item_ids.items():
             field_values = finite_projection_values(results.get(item_id, {}), projection_periods)
             if field_values:
                 case_outputs[field_name] = field_values
-                case_item_ids[field_name] = item_id
-            else:
-                scenario_outputs.unavailable_sources[(case, field_name)] = item_id
-        publication_eps_item_id = select_scenario_output_item_id(
-            model,
-            results,
-            _SCENARIO_PUBLICATION_EPS_ITEM_IDS,
-            projection_periods,
-        )
-        if publication_eps_item_id is not None:
-            publication_eps = finite_projection_values(
-                results.get(publication_eps_item_id, {}),
-                projection_periods,
-            )
-            if publication_eps:
-                case_outputs["publication_eps"] = publication_eps
-                case_item_ids["publication_eps"] = publication_eps_item_id
-            else:
-                scenario_outputs.unavailable_sources[(case, "publication_eps")] = publication_eps_item_id
         scenario_outputs[case] = case_outputs
+        scenario_outputs.control_ids[case] = tuple(sorted(overrides))
         scenario_output_item_ids[case] = case_item_ids
 
     return scenario_outputs, scenario_output_item_ids
@@ -246,28 +245,8 @@ def scenario_results_payload(
     }
 
 
-def _populate_scenario_eps(
-    model: FinancialModel,
-    eps_by_case: dict[str, dict[int, float]],
-    base_source_id: str | None,
-    *,
-    existing_seed_coverage: Sequence[Mapping[str, Any]] = (),
-    base_eval_reads: Mapping[tuple[str, int], tuple[tuple[str, int], ...]] | None = None,
-) -> list[dict[str, object]]:
-    if not model._index:
-        model.build_index()
-    scenario_eps_limit = _SCENARIO_EPS_LIMIT
-    scenario_eps_item_re = _SCENARIO_EPS_ITEM_RE
-    iter_items = _model_iter_items
-    value_series_cls = ValueSeries
-    value_cell_cls = ValueCell
-    value_provenance = ValueProvenance
-    projection_periods = [int(period) for period in model.time_structure.projection_periods[:scenario_eps_limit]]
-    # The base snapshot is the publication row itself at its year, so it keeps
-    # that row (the one compute_scenario_outputs read it from) as its input
-    # expression beside the value, as a constant does. Bull/bear substitute case
-    # controls that no rendered cell holds.
-    period_index = {
+def _period_index(model: FinancialModel) -> dict[int, int]:
+    return {
         int(period): index
         for index, period in enumerate(
             (
@@ -277,157 +256,113 @@ def _populate_scenario_eps(
         )
     }
 
+
+def _scenario_snapshot_spec(
+    *,
+    value: float | None,
+    source_id: str,
+    offset: int,
+    case: str,
+    control_ids: Sequence[str],
+    unresolved: bool = False,
+) -> FormulaSpec:
+    """The derivation a scenario snapshot cell is a snapshot of.
+
+    ``expr`` is the source row the scenario computation read the value from, at
+    the value's period; ``value`` is the computed number and is absent when the
+    computation produced none, so the cell still names the row it lacks.
+    ``unresolved`` marks a case no scenario was authored for.
+    """
+
+    params: dict[str, Any] = {}
+    if value is not None:
+        params["value"] = float(value)
+    params["expr"] = LineItemRef(id=source_id, t=offset)
+    params["case"] = case
+    if unresolved:
+        params["unresolved"] = True
+    return FormulaSpec(
+        type=FormulaType.constant,
+        subtype="scenario_snapshot",
+        params=params,
+        note="scenario_output_snapshot",
+        derivation=FormulaDerivation(
+            owner="build_scenarios",
+            strategy="scenario_output_snapshot",
+            dependencies=(source_id, *sorted(control_ids)),
+        ),
+    )
+
+
+def _populate_scenario_eps(
+    model: FinancialModel,
+    eps_by_case: Mapping[str, Mapping[int, float]],
+    source_ids: Mapping[str, str],
+    *,
+    control_ids: Mapping[str, Sequence[str]],
+) -> None:
+    """Write each resolved case's EPS snapshot cells with their derivation.
+
+    ``source_ids[case]`` is the publication row the case's EPS was read from; a
+    case without one is unresolved and writes nothing. A snapshot cell carries
+    the row, period, case and controls it is a snapshot of whether or not the
+    computation produced a value for its year.
+    """
+
+    if not model._index:
+        model.build_index()
+    scenario_eps_limit = _SCENARIO_EPS_LIMIT
+    scenario_eps_item_re = _SCENARIO_EPS_ITEM_RE
+    iter_items = _model_iter_items
+    value_series_cls = ValueSeries
+    value_cell_cls = ValueCell
+    value_provenance = ValueProvenance
+    projection_periods = [int(period) for period in model.time_structure.projection_periods[:scenario_eps_limit]]
+    period_index = _period_index(model)
+
     for item_obj in iter_items(model):
         match = scenario_eps_item_re.match(item_obj.id)
         if match is None:
             continue
         case = match.group(1)
+        source_id = source_ids.get(case)
+        if source_id is None:
+            continue
         index = int(match.group(2)) - 1
         if index < 0 or index >= len(projection_periods):
             continue
         value_period = projection_periods[index]
         value = eps_by_case.get(case, {}).get(value_period)
-        if value is None:
-            continue
         period = (
             int(item_obj.formula_periods[0])
             if item_obj.formula_periods
             else value_period
         )
-        if item_obj.values is None:
-            item_obj.values = value_series_cls()
         storage_periods = {int(period)}
         if item_obj.column is not None:
             storage_periods.add(int(projection_periods[0]))
+        if item_obj.overrides is None:
+            item_obj.overrides = {}
         for storage_period in storage_periods:
-            item_obj.values.values[storage_period] = value_cell_cls(
-                period=storage_period,
-                value=float(value),
-                provenance=value_provenance.computed,
-            )
-            if case == "base" and base_source_id is not None:
-                if item_obj.overrides is None:
-                    item_obj.overrides = {}
-                item_obj.overrides[storage_period] = FormulaSpec(
-                    type=FormulaType.constant,
-                    params={
-                        "value": float(value),
-                        "expr": LineItemRef(
-                            id=base_source_id,
-                            t=period_index[value_period] - period_index[storage_period],
-                        ),
-                    },
-                    note="base_scenario_eps_snapshot",
+            if value is not None:
+                if item_obj.values is None:
+                    item_obj.values = value_series_cls()
+                item_obj.values.values[storage_period] = value_cell_cls(
+                    period=storage_period,
+                    value=float(value),
+                    provenance=value_provenance.computed,
                 )
-    coverage: list[dict[str, object]] = []
-    if base_source_id is not None and existing_seed_coverage:
-        if base_eval_reads is None:
-            dependency_graph_cls = DependencyGraph
-            graph = dependency_graph_cls()
-            graph.build(model)
-            base_results = graph.compute({})
-            eval_reads = dict(graph.last_eval_reads)
-            build_scenario_overrides = _build_scenario_overrides
-            downstream_item_ids = _downstream_item_ids
-            scenario_compute_inputs = _scenario_compute_inputs
-            overrides = build_scenario_overrides(model, "base", base_results=base_results)
-            recompute = downstream_item_ids(graph, set(overrides))
-            scenario_inputs = scenario_compute_inputs(model, overrides)
-            graph.compute(
-                scenario_inputs,
-                recompute=recompute,
-                seed_results=base_results,
-                propagate_roots=set(overrides),
-                periods={int(p) for p in model.time_structure.projection_periods},
+            elif item_obj.values is not None:
+                item_obj.values.values.pop(storage_period, None)
+            item_obj.overrides[storage_period] = _scenario_snapshot_spec(
+                value=value,
+                source_id=source_id,
+                offset=period_index[value_period] - period_index[storage_period],
+                case=case,
+                control_ids=control_ids.get(case, ()),
+                unresolved=case not in eps_by_case,
             )
-            eval_reads.update(graph.last_eval_reads)
-        else:
-            eval_reads = dict(base_eval_reads)
-        rows_by_cell: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
-        for row in existing_seed_coverage:
-            resolved_id = str(row.get("resolved_item_id") or "")
-            source_kind = str(row.get("source_kind") or "")
-            if not resolved_id or source_kind not in {
-                "business_model_node_identity",
-                "source_bundle_adjusted_ebitda_bridge",
-                "source_bundle_opening_balance",
-                "source_bundle_schedule_disclosure",
-            }:
-                continue
-            for cov_period in row.get("periods", ()):
-                rows_by_cell.setdefault((resolved_id, int(cov_period)), []).append(row)
 
-        def _consumed_cells(start_cells: Iterable[tuple[str, int]]) -> set[tuple[str, int]]:
-            visited: set[tuple[str, int]] = set()
-            stack = list(start_cells)
-            while stack:
-                curr = stack.pop()
-                if curr in visited:
-                    continue
-                visited.add(curr)
-                for nxt in eval_reads.get(curr, ()):
-                    if nxt not in visited:
-                        stack.append(nxt)
-            return visited
-
-        target_roots: list[tuple[str, list[int], list[tuple[str, int]]]] = []
-        for idx, val_period in enumerate(projection_periods[:2], start=1):
-            snap_id = f"tpl.s.earnings_scenarios.eps_base_{idx}"
-            if snap_id in model._index:
-                snap_item = model.get_item(snap_id)
-                snap_periods = (
-                    [int(p) for p in snap_item.formula_periods]
-                    if snap_item.formula_periods
-                    else [val_period]
-                )
-                if snap_item.column is not None and projection_periods:
-                    snap_periods = sorted({*snap_periods, int(projection_periods[0])})
-                target_roots.append((snap_id, snap_periods, [(base_source_id, val_period)]))
-        if len(projection_periods) >= 2:
-            fy12_roots = [
-                (base_source_id, int(projection_periods[0])),
-                (base_source_id, int(projection_periods[1])),
-            ]
-            for growth_id in (
-                "tpl.s.earnings_scenarios.eps_growth_base_2",
-                "tpl.s.valuation_scenarios.base_growth",
-            ):
-                if growth_id in model._index:
-                    g_item = model.get_item(growth_id)
-                    g_periods = (
-                        [int(p) for p in g_item.formula_periods]
-                        if g_item.formula_periods
-                        else [int(projection_periods[0])]
-                    )
-                    if g_item.column is not None and projection_periods:
-                        g_periods = sorted({*g_periods, int(projection_periods[0])})
-                    target_roots.append((growth_id, g_periods, fy12_roots))
-
-        seen_records: set[tuple[str, str, str, int]] = set()
-        for target_id, target_periods, roots in target_roots:
-            reached = _consumed_cells(roots)
-            for cell_key in sorted(reached):
-                for row in rows_by_cell.get(cell_key, ()):
-                    source_kind = str(row.get("source_kind") or "")
-                    ident_key = str(
-                        row.get("evidence_id")
-                        or row.get("fact_id")
-                        or row.get("canonical_driver_key")
-                        or ""
-                    )
-                    for target_period in target_periods:
-                        dedup = (target_id, source_kind, ident_key, target_period)
-                        if dedup in seen_records:
-                            continue
-                        seen_records.add(dedup)
-                        coverage.append(
-                            {
-                                **dict(row),
-                                "resolved_item_id": target_id,
-                                "periods": [target_period],
-                            }
-                        )
-    return coverage
 
 _THESIS_SNAPSHOT_FIELDS = (
     "adj_eps",
@@ -442,12 +377,17 @@ _THESIS_SNAPSHOT_TERMINAL_YEAR_ID = "tpl.s.thesis_snapshot.terminal_year"
 def _populate_thesis_snapshot(
     model: FinancialModel,
     scenario_output_values: Mapping[str, Mapping[str, Mapping[int, float]]],
+    source_ids: Mapping[str, Mapping[str, str]],
+    *,
+    control_ids: Mapping[str, Sequence[str]],
 ) -> None:
     """Write each case's terminal-year scenario outputs into the Thesis Snapshot.
 
     The terminal year is the last projection period, the year scenario-output
-    readiness judges. A field ``compute_scenario_outputs`` did not produce for
-    that year stays unwritten.
+    readiness judges. Every field with a source row (``source_ids[case][field]``)
+    gets its snapshot cell with the derivation it is a snapshot of; the value is
+    written when ``compute_scenario_outputs`` produced one for that year, and the
+    cell still names its source row when it did not.
     """
 
     projection_periods = [
@@ -458,30 +398,55 @@ def _populate_thesis_snapshot(
     terminal = projection_periods[-1]
     if not model._index:
         model.build_index()
+    period_index = _period_index(model)
 
-    def write(item_id: str, value: float) -> None:
+    def write(
+        item_id: str,
+        value: float | None,
+        snapshot_of: tuple[str, str, Sequence[str], bool] | None = None,
+    ) -> None:
         if item_id not in model._index:
             return
         item_obj = model.get_item(item_id)
         storage_period = _fixed_cell_anchor_period(model, item_obj)
         if storage_period is None:
             return
-        item_obj.values = ValueSeries(
-            values={
-                storage_period: ValueCell(
-                    period=storage_period,
-                    value=float(value),
-                    provenance=ValueProvenance.computed,
-                )
-            }
-        )
+        if value is not None:
+            item_obj.values = ValueSeries(
+                values={
+                    storage_period: ValueCell(
+                        period=storage_period,
+                        value=float(value),
+                        provenance=ValueProvenance.computed,
+                    )
+                }
+            )
+        elif item_obj.values is not None:
+            item_obj.values.values.pop(storage_period, None)
+        if snapshot_of is not None:
+            source_id, case, controls, unresolved = snapshot_of
+            if item_obj.overrides is None:
+                item_obj.overrides = {}
+            item_obj.overrides[storage_period] = _scenario_snapshot_spec(
+                value=value,
+                source_id=source_id,
+                offset=period_index[terminal] - period_index[storage_period],
+                case=case,
+                control_ids=controls,
+                unresolved=unresolved,
+            )
 
     for case in ("bull", "base", "bear"):
         case_outputs = scenario_output_values.get(case, {})
         for field_name in _THESIS_SNAPSHOT_FIELDS:
-            value = case_outputs.get(field_name, {}).get(terminal)
-            if value is not None:
-                write(f"tpl.s.thesis_snapshot.{case}_{field_name}", value)
+            source_id = source_ids.get(case, {}).get(field_name)
+            if source_id is None:
+                continue
+            write(
+                f"tpl.s.thesis_snapshot.{case}_{field_name}",
+                case_outputs.get(field_name, {}).get(terminal),
+                (source_id, case, control_ids.get(case, ()), case not in scenario_output_values),
+            )
     write(_THESIS_SNAPSHOT_TERMINAL_YEAR_ID, float(terminal))
 
 
@@ -1639,18 +1604,55 @@ def _projected_formula_refs_any(item_obj: LineItem, item_ids: set[str]) -> bool:
     return bool(extract_ref_ids(spec.params or {}) & item_ids)
 
 
+def _offset_scenario_case_reads(
+    model: FinancialModel,
+    case: str,
+    projection_periods: Sequence[int],
+    base_results: ComputedValues,
+) -> dict[tuple[str, int], tuple[tuple[str, int], ...]]:
+    """Case-selected scenario-table reads for unlowered offset_scenario rows on Assumptions."""
+    reads: dict[tuple[str, int], tuple[tuple[str, int], ...]] = {}
+    formula_type = FormulaType
+    line_item_ref_from_obj = _line_item_ref_from_obj
+    for sheet in model.sheets.values():
+        if sheet.name != "Assumptions":
+            continue
+        for section in sheet.sections:
+            for item_obj in section.line_items:
+                spec = item_obj.projected
+                if spec is None or spec.type != formula_type.valuation or spec.subtype != "offset_scenario":
+                    continue
+                params = spec.params or {}
+                anchor_ref = line_item_ref_from_obj(params.get("anchor"))
+                if anchor_ref is None:
+                    continue
+                value_row_id = find_scenario_value_row(model, anchor_ref.id, case)
+                if value_row_id is None:
+                    continue
+                row_results = base_results.get(value_row_id)
+                if row_results is None:
+                    continue
+                for period in projection_periods:
+                    if row_results.get(period) is not None:
+                        reads[(item_obj.id, int(period))] = ((value_row_id, int(period)),)
+    return reads
+
+
 def _downstream_item_ids(graph: DependencyGraph, roots: set[str]) -> set[str]:
+    time_adj: dict[str, set[str]] = {}
+    for item_id, refs in graph.time_edges.items():
+        for ref in refs:
+            time_adj.setdefault(ref.id, set()).add(item_id)
     downstream: set[str] = set()
     stack = list(roots)
     while stack:
         node = stack.pop()
-        for child in graph.adj.get(node, set()):
+        for child in (*graph.adj.get(node, ()), *time_adj.get(node, ())):
             if child in downstream:
                 continue
             downstream.add(child)
             stack.append(child)
     return downstream
-
 
 __all__ = [
     "_SCENARIO_EPS_ITEM_RE",

@@ -39,6 +39,8 @@ def _model_engine_root() -> Path:
 ROOT = _model_engine_root()
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "api"))
+if str(ROOT / "packages" / "model-authority") not in sys.path:
+    sys.path.insert(0, str(ROOT / "packages" / "model-authority"))
 
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
@@ -46,8 +48,10 @@ sys.stdout = sys.stderr
 import bootstrap_env
 
 from pydantic import ValidationError
-from fastmcp.server.context import Context
-
+from fastmcp.server.context import Context, _current_context
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from model_authority.spend_ledger import resolve_attribution, spend_context
+from spend_process import configure_api_spend_process
 import schema.business_model_validate as business_model_validate_schema
 from schema.business_model import BusinessModel
 from schema.handle_token import (
@@ -165,13 +169,84 @@ from model_build.valuation_summary import (
 _MODEL_ENGINE_OVERRIDES_DIR_ENV = schema_overrides.MODEL_ENGINE_OVERRIDES_DIR_ENV
 
 
+def _request_meta(ctx: Context | None) -> dict[str, Any]:
+  request_context = ctx.request_context if ctx is not None else None
+  if request_context is None or not request_context.meta:
+    return {}
+  raw_meta = request_context.meta
+  items = (
+    raw_meta.items()
+    if isinstance(raw_meta, dict)
+    else getattr(raw_meta, "model_dump", lambda: {})().items()
+  )
+  # FastMCP exposes raw wire metadata; progress alone is not hosted authority.
+  return {
+    key: value
+    for key, value in items
+    if key != "progressToken" and value is not None
+  }
+
+
+def _extract_spend_attribution(
+    ctx: Context | None,
+    message: Any = None,
+) -> dict[str, str]:
+    meta = _request_meta(ctx)
+    if not meta and message is not None:
+        raw_msg_meta = getattr(message, "meta", None)
+        if not isinstance(raw_msg_meta, dict):
+            params = getattr(message, "params", None)
+            raw_msg_meta = getattr(params, "_meta", None) if params is not None else None
+        if isinstance(raw_msg_meta, dict):
+            meta = {
+                key: value
+                for key, value in raw_msg_meta.items()
+                if key != "progressToken" and value is not None
+            }
+    attribution: dict[str, str] = {}
+    session_id = str(meta.get("session_id") or "").strip()
+    run_id = str(meta.get("skill_run_id") or "").strip()
+    if session_id:
+        attribution["session_id"] = session_id
+    if run_id:
+        attribution["run_id"] = run_id
+    return attribution
+
+
+class _SpendAttributionMiddleware(Middleware):
+    async def on_call_tool(self, context: MiddlewareContext, call_next: Any) -> Any:
+        attribution = _extract_spend_attribution(
+            getattr(context, "fastmcp_context", None),
+            getattr(context, "message", None),
+        )
+        with spend_context(**attribution):
+            return await call_next(context)
+
+
+def _active_spend_attribution() -> dict[str, str]:
+    attribution: dict[str, str] = {}
+    for field in ("session_id", "run_id", "request_id", "ticker"):
+        value = resolve_attribution(field)
+        if value:
+            attribution[field] = value
+    attribution.update(_extract_spend_attribution(_current_context.get()))
+    return attribution
+
+
 def _make_edgar_financials_fetcher() -> Any:
     """Load the EDGAR adapter only when a fetch-backed read tool executes."""
 
     from research.financials_fetch import make_edgar_financials_fetcher
 
-    return make_edgar_financials_fetcher()
+    raw_fetcher = make_edgar_financials_fetcher()
+    bound_attribution = _active_spend_attribution()
 
+    def _attributed_fetcher(*args: Any, **kwargs: Any) -> Any:
+        attribution = {**bound_attribution, **_active_spend_attribution()}
+        with spend_context(**attribution):
+            return raw_fetcher(*args, **kwargs)
+
+    return _attributed_fetcher
 
 def _apply_override_directory_env() -> Path | None:
     return _apply_override_directory_env_impl(
@@ -185,24 +260,12 @@ def _apply_override_directory_env() -> Path | None:
 sys.stdout = _real_stdout
 
 mcp = _create_mcp()
+mcp.add_middleware(_SpendAttributionMiddleware())
 
 
 def _validate_file_path(file_path: str) -> str:
     """Expand ``~`` and verify that the model file exists."""
     return _validate_file_path_impl(file_path, os_path=os.path)
-
-
-def _request_meta(ctx: Context | None) -> dict[str, Any]:
-  request_context = ctx.request_context if ctx is not None else None
-  if request_context is None or not request_context.meta:
-    return {}
-  # FastMCP exposes raw wire metadata; progress alone is not hosted authority.
-  return {
-    key: value
-    for key, value in request_context.meta.items()
-    if key != "progressToken"
-  }
-
 
 def _authenticated_model_reader_user(ctx: Context | None) -> str:
     raw_user_id = _request_meta(ctx).get("user_id")
@@ -714,9 +777,9 @@ model_find_scenario_anchor = _bridge_tool_functions.model_find_scenario_anchor
 def main() -> None:
     """Validate serving configuration, apply runtime overrides, and run stdio."""
     bootstrap_env.bootstrap(required=["EDGAR_API_KEY"])
+    configure_api_spend_process(service="model-engine")
     _apply_override_directory_env()
     _run_mcp(mcp)
-
 
 if __name__ == "__main__":
     main()

@@ -425,6 +425,8 @@ def _source_projection(
   artifacts: ExactBuildArtifacts,
 ) -> SourceBuildProjectionV1:
   provenance = artifacts.provenance
+  from schema.model_queries import SCENARIO_ASSUMPTION_PREFIX
+
   cells = tuple(provenance.cells)
   return SourceBuildProjectionV1(
     bundle_id=artifacts.source_bundle_lineage.bundle_id,
@@ -437,7 +439,13 @@ def _source_projection(
     observation_count=len(
       {item for cell in cells for item in cell.observation_ids}
     ),
-    assumption_count=len({item for cell in cells for item in cell.assumption_ids}),
+    assumption_count=len({
+      item.removeprefix(SCENARIO_ASSUMPTION_PREFIX).partition(":")[2]
+      if item.startswith(SCENARIO_ASSUMPTION_PREFIX)
+      else item
+      for cell in cells
+      for item in cell.assumption_ids
+    }),
   )
 
 

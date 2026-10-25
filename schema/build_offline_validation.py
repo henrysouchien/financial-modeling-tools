@@ -23,7 +23,7 @@ import numbers
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable, Collection, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, NamedTuple, Sequence, get_args
 
 from .build_findings import (
     CompileStageEvidence,
@@ -40,6 +40,7 @@ from .build_findings import (
 )
 from .build_model_product_contracts import (
     BuildDiagnostic,
+    CoveredMarketInputs,
     ModelSpec,
     OfflineValidation,
     ProvenanceMap,
@@ -49,6 +50,7 @@ from .build_model_product_contracts import (
     _WORKBOOK_METADATA_ITEM_IDS,
     decode_source_bundle_payload,
 )
+from .build_valuation_inputs import _VALUATION_ECONOMIC_INPUTS
 from .finding_vocabulary import (
     Declination,
     DeclinationAuthor,
@@ -59,6 +61,7 @@ from .finding_vocabulary import (
     derive_build_verdict,
 )
 from .models import FormulaSpec, FormulaType, ItemType, LineItemRef, shift_period
+from .model_number_value import MissingReasonCode
 from .presentation_captions import WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS
 from .projected_financial_integrity import PrintedUnit
 from .refs import line_item_ref_from_obj
@@ -66,6 +69,13 @@ from .renderer_columns import AbsoluteColumnMapper
 from value_semantics_core import CONVENTIONS_IR_V1
 
 _SEMANTIC_TOLERANCE = 1e-9
+_VALUELESS_MISSING_STATUSES: frozenset[str] = (
+    frozenset(get_args(MissingReasonCode)) - {"business_model_node_unresolved"}
+)
+_COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID: dict[str, str] = {
+    _VALUATION_ECONOMIC_INPUTS[field_name]: field_name
+    for field_name in CoveredMarketInputs.model_fields
+}
 
 
 def provenance_diagnostics_for_map(
@@ -76,10 +86,12 @@ def provenance_diagnostics_for_map(
 ) -> tuple[BuildDiagnostic, ...]:
     """Check the ``ProvenanceMap`` emitted by ``target_build.project_provenance_map``.
 
-    Every rendered cell with ``lineage_status == 'missing_source'`` emits one
-    ``missing_source`` ``BuildDiagnostic``; ``source_absence_evidenced``, cited
-    inclusions and ``business_model_node_unresolved`` (the node's own finding is the
-    record) are never a missing-source diagnostic.
+    Every rendered cell with ``lineage_status == 'missing_source'`` (a write path
+    admitted a value without an origin) emits one ``missing_source``
+    ``BuildDiagnostic``. ``source_absence_evidenced``, cited inclusions and the typed
+    valueless ``MissingReasonCode`` statuses (``source_observation_absent``,
+    ``required_dependency_missing``, ``business_model_node_unresolved``, ...) are never a
+    ``missing_source`` diagnostic: the typed reason (and the node's own finding) is the record.
     """
     period_by_cell: dict[tuple[str, str], int] = {}
     required_role_by_item: dict[str, str | None] = {}
@@ -125,6 +137,16 @@ def provenance_diagnostics_for_map(
             continue
         period = period_by_cell.get((str(cell.sheet), str(cell.cell).upper()))
         formula = cell.formula
+        if (
+            cell.semantic_item_id in _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID
+            and formula is None
+            and model is not None
+            and period is not None
+            and (item := model._index.get(cell.semantic_item_id)) is not None
+            and not (item.overrides and period in item.overrides)
+            and not (item.values is not None and period in item.values.values)
+        ):
+            continue
         observed: dict[str, FindingScalar] = {
             "formula_type": formula.type.value if formula is not None else None,
             "formula_subtype": formula.subtype if formula is not None else None,
@@ -534,9 +556,12 @@ def pin_unbound_accessions(source_bundle: SourceBundle) -> dict[int, str]:
 
 
 def printed_unit_dollars_by_period(
-    source_bundle: SourceBundle, *, total_assets_item_id: str,
+    source_bundle: SourceBundle | None, *, total_assets_item_id: str,
 ) -> dict[int, PrintedUnit]:
     """The dollar size of one printed unit of each historical column's total assets.
+
+    No bundle pins nothing (``owned_cell_gaps`` reads an absent bundle the same way): every
+    period is absent, so the evaluator attributes no delta to filed rounding.
 
     The bound total-assets fact of a period is the statement fact its role's pin
     names (``AnnualSourceRequirement.pinned_columns``). The requirement is found
@@ -558,6 +583,8 @@ def printed_unit_dollars_by_period(
 
     from .required_role_catalog import RequiredRoleUnknown, load_required_role_catalog
 
+    if source_bundle is None:
+        return {}
     try:
         total_assets_role = load_required_role_catalog().role_for_template_item(
             total_assets_item_id
@@ -991,6 +1018,8 @@ def _computed_working_model(
     findings: Iterable[Finding],
     *,
     requires_native: bool,
+    typed_values: Mapping[str, Mapping[int, Any]] | None = None,
+    unresolved_market_inputs: Collection[tuple[str, int]] = (),
 ) -> bool:
     """Read numeric statements, DCF and identity evidence from this evaluation.
 
@@ -1025,7 +1054,14 @@ def _computed_working_model(
         for period in (*historical, *projected)
     ):
         return False
-    if not values.get("tpl.v.dcf.equity_value_per_share"):
+    if not values.get("tpl.v.dcf.equity_value_per_share") and not (
+        unresolved_market_inputs
+        and typed_values is not None
+        and any(
+            _unavailable_only_from_source_absence(cell, set(unresolved_market_inputs))
+            for cell in typed_values.get("tpl.v.dcf.equity_value_per_share", {}).values()
+        )
+    ):
         return False
     return not any(
         finding.severity == "error"
@@ -1440,6 +1476,12 @@ def validate_offline_build_artifacts(
     source_absence_evidenced = _source_absence_evidenced_identities(
         provenance, render_plan, model=model
     )
+    unresolved_market_input_identities: set[tuple[str, int]] = set()
+    valueless_missing_by_coord = {
+        (str(cell.sheet), str(cell.cell).upper()): str(cell.lineage_status)
+        for cell in getattr(provenance, "cells", ())
+        if getattr(cell, "lineage_status", None) in _VALUELESS_MISSING_STATUSES
+    }
     unitless_semantic_values: list[tuple[str, int]] = []
     nonknown_semantic_values: list[tuple[str, int, str, str, tuple[str, ...]]] = []
     from .build_company_grounded_schedules import OWED_READOUT_REASON, owed_operand_roles
@@ -1455,6 +1497,24 @@ def validate_offline_build_artifacts(
     }
     for _sheet, _cell, item, period, spec in _semantic_cells(model, None):
         if spec is None:
+            valueless_reason = valueless_missing_by_coord.get(
+                (str(_sheet), str(_cell).upper())
+            )
+            if item.id in _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID:
+                if valueless_reason is not None or (
+                    not (item.overrides and period in item.overrides)
+                    and not (item.values is not None and period in item.values.values)
+                ):
+                    unresolved_market_input_identities.add((item.id, int(period)))
+                continue
+            if valueless_reason is None or item.id in _WORKBOOK_METADATA_ITEM_IDS:
+                continue
+            if int(period) in unbound_accessions:
+                unbound_facts.append((item.id, int(period), "semantic_value_not_known"))
+                continue
+            nonknown_semantic_values.append((
+                item.id, period, "missing", valueless_reason, (),
+            ))
             continue
         # Caption rows and formulas that resolve only to display text are
         # workbook presentation metadata, not financial semantic values.  No
@@ -1491,7 +1551,7 @@ def validate_offline_build_artifacts(
             or (
                 not owed_roles
                 and _unavailable_only_from_source_absence(
-                    value, source_absence_evidenced
+                    value, source_absence_evidenced | unresolved_market_input_identities
                 )
             )
         ):
@@ -1717,6 +1777,8 @@ def validate_offline_build_artifacts(
         computed_model=not graph_failed and _computed_working_model(
             model, recalculated_semantics, native_evidence, findings,
             requires_native=requires_native,
+            typed_values=typed_computed,
+            unresolved_market_inputs=unresolved_market_input_identities,
         ),
         basis="native" if requires_native else "graph",
     )

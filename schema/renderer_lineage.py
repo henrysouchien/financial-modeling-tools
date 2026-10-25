@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, assert_never
+from typing import TYPE_CHECKING, Any
 
 from .formatter import ModelFormatter
 from .models import FormulaType, LineItem, operation_kind
 from .renderer_columns import AbsoluteColumnMapper
 from .renderer_payload import _index_to_col
 from .renderer_summary import _unique_sheet_name
+from .model_number_value import MissingReasonCode
 from .renderer_types import CellFormat, CellWrite, RenderPlan, SheetSetup
 
 if TYPE_CHECKING:
@@ -197,8 +198,9 @@ def append_lineage_index(
                     and lineage.formula.type != FormulaType.constant
                 ):
                     lineage_type = f"Formula over {lineage_type}"
-            case unreachable:
-                assert_never(unreachable)
+            case missing_reason:
+                reason_code: MissingReasonCode = missing_reason
+                lineage_type = f"Unresolved — {reason_code.replace('_', ' ')}"
         rationale = _join(
             (
                 *(reference.rationale for reference in assumptions),

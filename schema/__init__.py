@@ -407,6 +407,7 @@ if TYPE_CHECKING:
         ModelRecordLineage,
         ModelRecordWriter,
         ModelVersionRef,
+        SqliteInt64Id,
     )
     from .model_state_identity import CurrentModelIdentity
     from .model_insights import (
@@ -950,6 +951,7 @@ _EXPORTS: dict[str, tuple[str, str | None]] = {
     'ModelRecordLineage': ('schema.model_ref', 'ModelRecordLineage'),
     'ModelRecordWriter': ('schema.model_ref', 'ModelRecordWriter'),
     'ModelVersionRef': ('schema.model_ref', 'ModelVersionRef'),
+    'SqliteInt64Id': ('schema.model_ref', 'SqliteInt64Id'),
     'CurrentModelIdentity': ('schema.model_state_identity', 'CurrentModelIdentity'),
     'DriverSensitivity': ('schema.model_insights', 'DriverSensitivity'),
     'ImpliedAssumption': ('schema.model_insights', 'ImpliedAssumption'),

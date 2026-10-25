@@ -85,6 +85,7 @@ from schema.model_number_value import (
   MissingReasonCode,
   ZeroDisposition,
 )
+from schema.model_queries import ANALYST_NOTE_ARTIFACT
 from schema.modify_core import OperationResult, _dispatch_op, validate_operation
 from schema.published_model_readback import writer_numeric_equal
 from schema.renderer import (
@@ -383,12 +384,20 @@ class OpUsage(ValueError):
   The CLI reports it as a usage error (exit 2) whose message names the expected keys or forms.
   """
 
-  def __init__(self, message: str, *, op_index: int | None = None):
+  def __init__(
+    self,
+    message: str,
+    *,
+    op_index: int | None = None,
+    reason: str = "op_usage",
+    next_call: Mapping[str, Any] | None = None,
+  ):
     super().__init__(message)
     self.op_index = op_index
+    self.reason = reason
+    self.next_call = None if next_call is None else dict(next_call)
     self.op_errors: list[dict[str, Any]] = []
     self.valid_op_indices: list[int] = []
-
 
 _SCALES: dict[str, ModelScale] = {
   "millions": "millions", "million": "millions", "mm": "millions", "m": "millions", "units": "units",
@@ -601,23 +610,13 @@ def _apply_set_formula_with_columns(
       if line.values is not None:
         line.values.values.pop(row["period"], None)
 
-  with transaction(doc) as trial:
-    if prior is not None and prior.formula_periods is not None and not prior.formula_periods:
-      ts = trial.time_structure
-      written_periods: set[int] = set()
-      if apply_to in ("projected", "both"):
-        written_periods.update(int(p) for p in (ts.projection_periods or ts.projection_years or ()))
-      if apply_to in ("historical", "both"):
-        written_periods.update(int(p) for p in (ts.historical_periods or ts.historical_years or ()))
-      if written_periods:
-        trial.get_item(item_id).formula_periods = sorted(written_periods)
-    _apply(
-      doc,
-      {"type": "set_formula", "item_id": item_id, "formula": spec.model_dump(mode="json"), "apply_to": apply_to},
-      then=_clear_inputs,
-      source=source,
-      agent=agent,
-    )
+  _apply(
+    doc,
+    {"type": "set_formula", "item_id": item_id, "formula": spec.model_dump(mode="json"), "apply_to": apply_to},
+    then=_clear_inputs,
+    source=source,
+    agent=agent,
+  )
   if cleared and agent is not None:
     doc.edits[-1]["replaced"] = cleared
   if agent is not None and replaced_formula is not None:
@@ -652,6 +651,112 @@ def _input_origin(source: Any) -> str:
   partial/legacy opaque, absent)."""
   parsed = parse_stored_source(source)
   return "cited_input" if parsed is not None and parsed.origin == "cited_input" else "manual_input"
+
+#: The typed ``source`` object kinds with which an agent gives an input as its own judgment
+#: (``{kind: analyst_note | assumption, note: <text>}``); ``ANALYST_NOTE_ARTIFACT`` names the
+#: judgment artifact the minted row belongs to (``analyst_note_judgment``).
+ANALYST_NOTE_KINDS = frozenset({"analyst_note", "assumption"})
+_ANALYST_NOTE_PROSE_HANDLE_RE = re.compile(
+  r"\[S_?([1-9]\d*)\]|(?<![A-Za-z0-9_])(src_[1-9]\d*)(?![A-Za-z0-9_])"
+)
+_SINGLE_SOURCE_HANDLE_RE = re.compile(r"^(?:\[S_?([1-9]\d*)\]|S_?([1-9]\d*)|(src_[1-9]\d*))$")
+
+
+def _canonical_source_handle(raw: str) -> str | None:
+  match = _SINGLE_SOURCE_HANDLE_RE.fullmatch(raw.strip())
+  if match is None:
+    return None
+  num = match.group(1) or match.group(2)
+  return f"src_{int(num)}" if num is not None else match.group(3)
+
+def _parse_analyst_note_source_refs(raw_refs: Any, *, where: str) -> list[str]:
+  if not isinstance(raw_refs, Sequence) or isinstance(raw_refs, (str, bytes)):
+    raise OpUsage(
+      f"{where}: source.source_refs must be a list of '[Sn]' or 'src_<n>' handles, not {raw_refs!r}"
+    )
+  normalized: list[str] = []
+  for item in raw_refs:
+    if not isinstance(item, str):
+      raise OpUsage(
+        f"{where}: source.source_refs entries must be '[Sn]' or 'src_<n>' strings, not {item!r}"
+      )
+    canon = _canonical_source_handle(item)
+    if canon is None:
+      raise OpUsage(
+        f"{where}: source.source_refs entries must match '[Sn]' or 'src_<n>', not {item!r}"
+      )
+    normalized.append(canon)
+  return list(dict.fromkeys(normalized))
+
+
+def extract_analyst_note_handles(
+  note: str | None, source_refs: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+  """The canonical ``src_<n>`` ``SourceId`` handles an analyst note cites (from ``[Sn]``, ``[S_n]``,
+  or ``src_<n>`` in ``note``, or ``[Sn]`` / ``Sn`` / ``src_<n>`` in ``source_refs``)."""
+  handles: list[str] = []
+  if isinstance(note, str):
+    for match in _ANALYST_NOTE_PROSE_HANDLE_RE.finditer(note):
+      handles.append(f"src_{int(match.group(1))}" if match.group(1) is not None else match.group(2))
+  if isinstance(source_refs, Sequence) and not isinstance(source_refs, (str, bytes)):
+    for ref in source_refs:
+      if isinstance(ref, str):
+        canon = _canonical_source_handle(ref)
+        if canon is not None:
+          handles.append(canon)
+  return tuple(dict.fromkeys(handles))
+
+
+def is_historical_statement_cell(model: FinancialModel, item_id: str, period: int) -> bool:
+  """Whether ``(item_id, period)`` is a historical ``tpl.fm.*`` financial-statement cell."""
+  if not str(item_id).startswith("tpl.fm."):
+    return False
+  time = model.time_structure
+  historical = {int(p) for p in (time.historical_periods or time.historical_years or ())}
+  return int(period) in historical
+def analyst_note_judgment(
+  doc: ModelSheet, source: Any, item_id: str, period: int, edit_index: Any,
+) -> dict[str, Any] | None:
+  """The ``judgment_row`` source a typed ``{kind: analyst_note | assumption, note: <non-empty text>}``
+  object becomes on the cell ``(item_id, period)``, else ``None`` (free text, ``{kind: agent}``, a
+  note-less object, a historical ``tpl.fm.*`` statement cell and every other kind stay as they are).
+  It is the shape a judgment artifact's row gives a cell, so publish records the cell's assumption
+  (``document_judgment``) and the cell publishes ``complete`` by the analyst's own judgment:
+  ``{kind: judgment_row, artifact: analyst_note, ref: <assumption_id>, row: {assumption_id,
+  rationale: <note>, kind: <given kind>}}``. The ``assumption_id`` is minted
+  ``analyst_note:<item_id>:<period>:<edit_index>`` — one per written cell, using the anchor period
+  for a fixed-cell line, and the same on every replay of the log (``edit_index`` is the edit's
+  position in it)."""
+  if not isinstance(source, Mapping) or source.get("kind") not in ANALYST_NOTE_KINDS:
+    return None
+  note = source.get("note")
+  if not isinstance(note, str) or not note.strip():
+    return None
+  cell_item_id, cell_period = _input_cell(doc, item_id, period)
+  if is_historical_statement_cell(doc.model, cell_item_id, cell_period):
+    return None
+  assumption_id = f"{ANALYST_NOTE_ARTIFACT}:{item_id}:{cell_period}:{edit_index}"
+  row: dict[str, Any] = {
+    "assumption_id": assumption_id,
+    "rationale": note.strip(),
+    "kind": source["kind"],
+  }
+  raw_refs = source.get("source_refs")
+  if isinstance(raw_refs, Sequence) and not isinstance(raw_refs, (str, bytes)):
+    explicit_refs = [
+      canon
+      for ref in raw_refs
+      if isinstance(ref, str) and (canon := _canonical_source_handle(ref)) is not None
+    ]
+    if explicit_refs:
+      row["source_refs"] = list(dict.fromkeys(explicit_refs))
+  return {
+    "kind": "judgment_row",
+    "artifact": ANALYST_NOTE_ARTIFACT,
+    "ref": assumption_id,
+    "row": row,
+  }
+
 
 def _cell_state(doc: ModelSheet, cell: CellKey) -> dict[str, Any]:
   """What an agent input at ``cell`` replaces: ``{item_id, period, column, override, value}`` — the
@@ -742,7 +847,10 @@ def set_inputs(
   ``edit_index``): stored on the edit as ``agent`` and as each cell's column ``{cell: input,
   origin, **agent}`` — ``origin`` is ``cited_input`` when the agent's ``source`` is an object of a
   ``CITED_SOURCE_KINDS`` kind (a filing line, KPI, line identity or capture citation), else
-  ``manual_input`` (free text, ``{kind: agent}``, any other object). A ``sources`` column with no
+  ``manual_input`` (free text, ``{kind: agent}``, any other object); a typed ``{kind: analyst_note |
+  assumption, note}`` source is the analyst's judgment and the column's ``source`` is its
+  ``analyst_note_judgment`` row (``origin`` stays ``manual_input``, the edit keeps the source as
+  given). A ``sources`` column with no
   ``origin`` of its own whose ``kind`` is cited takes ``cited_input`` the same way. A fixed-cell
   line takes exactly one value, stored at its anchor
   period. Beside each constant the line's value series holds the value (``ValueCell``, provenance
@@ -757,7 +865,11 @@ def set_inputs(
   touched is an input like any other (an agent column), and a fixed-cell line is never restored."""
   if agent is not None:
     origin = _input_origin(agent.get("source"))
-    sources = {int(period): {"origin": origin, **dict(agent)} for period in values}
+    columns: dict[int, dict[str, Any]] = {}
+    for period in values:
+      judgment = analyst_note_judgment(doc, agent.get("source"), item_id, int(period), agent.get("edit_index"))
+      columns[int(period)] = {"origin": origin, **dict(agent), **({} if judgment is None else {"source": judgment})}
+    sources = columns
   elif sources is not None:
     sources = {
       int(period): {"origin": "cited_input", **row}
@@ -1097,24 +1209,6 @@ def unavailable_reasons(doc: ModelSheet) -> dict[tuple[str, int], CellUnavailabl
     out[key] = cast_reason(reason)
   return out
 
-def scenario_output_sources(doc: ModelSheet) -> dict[tuple[str, int], str]:
-  """``(item_id, period)`` → the source row a scenario-output unavailable stamp names:
-  a ``cell: unavailable`` column whose ``source`` is a scenario-output source naming
-  (``kind: scenario_output_source``, as ``target_build.mark_scenario_output_unavailable``
-  stamps an output cell its source row left unwritten). The stamp's typed cause is
-  that source row, not the output cell (``_declared_reason``)."""
-  out: dict[tuple[str, int], str] = {}
-  for key, row in doc.semantic.items():
-    if row.get("cell") != "unavailable":
-      continue
-    source = row.get("source")
-    if not isinstance(source, Mapping) or source.get("kind") != "scenario_output_source":
-      continue
-    source_id = source.get("source_item_id")
-    if isinstance(source_id, str) and source_id:
-      out[key] = source_id
-  return out
-
 
 def cast_reason(reason: str) -> CellUnavailableReason:
   """The typed code for a reason text already checked against ``CellUnavailableReason``."""
@@ -1176,7 +1270,12 @@ PROVISIONAL = "provisional_projection"
 FORECAST_RECORD = "forecast_record"
 
 
-#: Coordinate keys required by each structured ``CellSource`` kind at live write admission.
+from model_build.keyed_dump import _FILING_LINE_PREFIX, parse_filing_line_id
+
+#: Coordinate keys owned here for each structured ``CellSource`` kind at live write admission.
+#: For ``filing_line``: ``ref`` and ``capture_id`` (``FilingLineSource``), ``accession`` and ``tag``
+#: (``FilingLineRef``), ``observation_id`` and ``fact_id`` (``SourceFactRef``), or ``line_qname``
+#: (statement-binding line identity).
 JUDGMENT_ROW_REF_KEYS = ("artifact", "ref", "row")
 FILING_LINE_REF_KEYS = ("ref", "accession", "capture_id", "observation_id", "line_qname", "tag", "fact_id")
 KPI_REF_KEYS = ("capture_id", "ref", "row", "metric_key", "observation_id", "accession")
@@ -1331,6 +1430,44 @@ def _has_source_coordinate(data: Mapping[str, Any], key: str) -> bool:
   return True
 
 
+def _resolve_filing_line_source(
+  data: dict[str, Any], *, where: str = "source", stored: bool = False,
+) -> CellSource:
+  """Single resolution for ``kind == 'filing_line'``: decodes any canonical ``filing-line:`` id via
+  ``keyed_dump.parse_filing_line_id`` onto its one declared key ``observation_id`` (and ``ref``)."""
+  raw_obs = data.get("observation_id")
+  raw_id = data.get("id")
+  candidate = raw_obs if isinstance(raw_obs, str) and raw_obs.strip() else raw_id
+  if isinstance(candidate, str) and (candidate.strip().startswith(_FILING_LINE_PREFIX) or "id" in data):
+    text = candidate.strip()
+    parsed = parse_filing_line_id(text)
+    if parsed is None:
+      if stored:
+        return LegacyOpaqueSource(raw=data, reason="incomplete_filing_line")
+      raise OpUsage(
+        f"{where}: filing_line id {candidate!r} is not a canonical '{_FILING_LINE_PREFIX}<accession>:FY<year>:<statement_role>:<tag>:<dimensions>' observation_id; "
+        f"pass a canonical '{_FILING_LINE_PREFIX}...' id or a filing coordinate ({', '.join(FILING_LINE_REF_KEYS)})"
+      )
+    data = {k: v for k, v in data.items() if k != "id"}
+    data["observation_id"] = text
+    if not isinstance(data.get("ref"), Mapping):
+      data["ref"] = {k: v for k, v in parsed.items() if k != "fiscal_year"}
+  if not any(_has_source_coordinate(data, key) for key in FILING_LINE_REF_KEYS):
+    if stored:
+      return LegacyOpaqueSource(raw=data, reason="incomplete_filing_line")
+    raise OpUsage(
+      f"{where}: a filing_line source requires a filing coordinate ({', '.join(FILING_LINE_REF_KEYS)}); "
+      f"cite the filing line or pass source as text"
+    )
+  ref = data.get("ref")
+  cap = data.get("capture_id")
+  return FilingLineSource(
+    raw=data,
+    ref=ref if isinstance(ref, Mapping) else None,
+    capture_id=str(cap) if cap is not None else None,
+  )
+
+
 def _parse_source(raw: Any, *, where: str = "source", stored: bool = False) -> CellSource | None:
   if raw is None:
     return None
@@ -1355,20 +1492,7 @@ def _parse_source(raw: Any, *, where: str = "source", stored: bool = False) -> C
       )
     return JudgmentRowSource(artifact=data["artifact"], ref=data["ref"], row=data["row"], raw=data)
   if kind == "filing_line":
-    if not any(_has_source_coordinate(data, key) for key in FILING_LINE_REF_KEYS):
-      if stored:
-        return LegacyOpaqueSource(raw=data, reason="incomplete_filing_line")
-      raise OpUsage(
-        f"{where}: a filing_line source requires a filing coordinate ({', '.join(FILING_LINE_REF_KEYS)}); "
-        f"cite the filing line or pass source as text"
-      )
-    ref = data.get("ref")
-    cap = data.get("capture_id")
-    return FilingLineSource(
-      raw=data,
-      ref=ref if isinstance(ref, Mapping) else None,
-      capture_id=str(cap) if cap is not None else None,
-    )
+    return _resolve_filing_line_source(data, where=where, stored=stored)
   if kind == "kpi":
     if not any(_has_source_coordinate(data, key) for key in KPI_REF_KEYS):
       if stored:
@@ -1431,6 +1555,9 @@ def _parse_source(raw: Any, *, where: str = "source", stored: bool = False) -> C
         f"{where}: a construction_helper source requires ['helper', 'owner']; missing {missing}"
       )
     return ConstructionHelperSource(helper=str(data["helper"]), owner=str(data["owner"]), raw=data)
+  if kind in ANALYST_NOTE_KINDS and "source_refs" in data and data["source_refs"] is not None:
+    if not stored:
+      data["source_refs"] = _parse_analyst_note_source_refs(data["source_refs"], where=where)
   return LegacyOpaqueSource(raw=data, reason="agent_note" if kind == "agent" else "opaque_kind")
 
 
@@ -1861,10 +1988,11 @@ def _source_schema() -> dict[str, Any]:
       "additionalProperties": True,
     }
     if not required:
+      any_of_keys = (*coordinates, "id") if cls is FilingLineSource else coordinates
       variant["anyOf"] = [{
         "required": [key],
         "properties": {key: {"not": {"enum": [None, "", {}, []]}}},
-      } for key in coordinates]
+      } for key in any_of_keys]
     variants.append(variant)
   return {"anyOf": [
     {"type": "string"}, {"type": "null"}, *variants,
@@ -1872,7 +2000,10 @@ def _source_schema() -> dict[str, Any]:
       "type": "object",
       "properties": {"kind": {"not": {"enum": [variant["properties"]["kind"]["const"] for variant in variants]}}},
       "additionalProperties": True,
-      "description": "Other source kinds are open analyst extensions (for example analyst_note or assumption).",
+      "description": (
+        "Other source kinds are open analyst extensions. {kind: analyst_note | assumption, note: <text>} "
+        "records the value as the analyst's own judgment (the note is its rationale)."
+      ),
     },
   ]}
 
@@ -2780,13 +2911,55 @@ def _resolve_apply_to(where: str, raw_apply_to: Any, time: Any) -> ApplyTo:
 
 def _op_error_entry(index: int, raw: Any, exc: OpUsage | EditRefused) -> dict[str, Any]:
   item_id = raw.get("item_id") if isinstance(raw, Mapping) else None
-  return {
+  entry: dict[str, Any] = {
     "op_index": index,
     "item_id": item_id if isinstance(item_id, str) else None,
-    "reason": exc.result.reason if isinstance(exc, EditRefused) else "op_usage",
+    "reason": exc.result.reason if isinstance(exc, EditRefused) else exc.reason,
     "message": str(exc),
   }
+  if isinstance(exc, OpUsage) and exc.next_call is not None:
+    entry["next_call"] = dict(exc.next_call)
+  return entry
 
+
+def _refuse_historical_statement_analyst_note(
+  doc: ModelSheet,
+  graphs: _BatchGraphs,
+  index: int,
+  cell: CellKey,
+  raw_source: Any,
+) -> None:
+  if not isinstance(raw_source, Mapping) or raw_source.get("kind") not in ANALYST_NOTE_KINDS:
+    return
+  if not is_historical_statement_cell(doc.model, cell[0], cell[1]):
+    return
+  from schema.root_causes import segment_revenue_seed_subject, stage_door
+
+  seed_subject = segment_revenue_seed_subject(graphs.cells(), doc.model, cell[0], cell[1])
+  placeholder_hint = ""
+  if seed_subject is not None:
+    door = stage_door("historical_foundation", seed_subject)
+    if str(seed_subject).startswith("tpl.fm."):
+      from schema.stage_registry import STAGE_REGISTRY
+
+      read_tool = STAGE_REGISTRY["historical_foundation"].producer
+      placeholder_hint = (
+        f" (fill historical_driver_seeds[].driver_key with the '<segment>.<driver>' key "
+        f"from {read_tool}(research_file_id=<research_file_id>))"
+      )
+  else:
+    item_obj = doc.model.get_item(cell[0]) if cell[0] in doc.model._index else None
+    role = None if item_obj is None else item_obj.required_role
+    door = stage_door("correspondence", cell[0], role=role)
+  next_call = {"tool_name": door["tool"], "arguments": dict(door["arguments"])}
+  raise OpUsage(
+    f"ops[{index}] (set_input): source.kind {raw_source.get('kind')!r} is for off-sheet judgment inputs, "
+    f"not historical statement line {cell[0]!r} in FY{cell[1]}; bind historical statement lines through "
+    f"{door['tool']}{placeholder_hint} or pass a cited filing_line / kpi source.",
+    op_index=index,
+    reason="invalid_source_kind_for_statement_line",
+    next_call=next_call,
+  )
 
 def _run_single_op(
   doc: ModelSheet, graphs: _BatchGraphs, index: int, raw: Any, results: list[dict[str, Any]], *, stored: bool = False,
@@ -2811,8 +2984,10 @@ def _run_single_op(
         formula_cells, _ = _formula_columns(doc, item_id, agent, "both", graphs=graphs)
       for period in op.get("inputs") or {}:
         if _input_cell(doc, item_id, period) not in formula_cells:
+          judgment = analyst_note_judgment(doc, agent["source"], item_id, period, agent.get("edit_index"))
           doc.semantic[_input_cell(doc, item_id, period)] = stamp_cell_source({
             "cell": "input", "origin": _input_origin(agent["source"]), **agent,
+            **({} if judgment is None else {"source": judgment}),
           })
       item = doc.model.get_item(item_id)
       row: dict[str, Any] = {
@@ -2854,6 +3029,8 @@ def _run_single_op(
       superseded: list[list[Any]] = []
       for period, value in values.items():
         cell = _input_cell(doc, op["item_id"], period)
+        if kind == "set_input" and not stored and value is not None:
+          _refuse_historical_statement_analyst_note(doc, graphs, index, cell, op.get("source"))
         marker = (doc.model.get_item(cell[0]).overrides or {}).get(cell[1])
         identities = _inclusion_role_items(doc) if marker is not None and marker.subtype == "not_separately_presented" else {}
         included_role = (
@@ -3713,7 +3890,6 @@ def evaluate(
   reasons = {
     key: reason for key, reason in unavailable_reasons(doc).items() if not is_absence_disposition(reason)
   }
-  named_sources = scenario_output_sources(doc)
   omitted, _unknown = lower_optional_absences(doc, model)
   typed, graph = _compute(
     model, evaluation_reads=evaluation_reads, absences=absences, evidenced_zeros=evidenced_zeros,
@@ -3725,7 +3901,7 @@ def evaluate(
     return anchor is None or anchor == period
 
   values: Values = {
-    (item_id, int(period)): _declared_reason(value, reasons, named_sources) if reasons else value
+    (item_id, int(period)): _declared_reason(value, reasons) if reasons else value
     for item_id, by_period in typed.items()
     for period, value in by_period.items()
     if _kept(item_id, int(period))
@@ -3789,22 +3965,12 @@ def evidenced_absence_summary(values: Values, doc: ModelSheet | None = None) -> 
 
 
 
-def _declared_reason(
-  value: Value, reasons: Mapping[tuple[str, int], str],
-  named_sources: Mapping[tuple[str, int], str] | None = None,
-) -> Value:
+def _declared_reason(value: Value, reasons: Mapping[tuple[str, int], str]) -> Value:
   """A missing value retyped by the document's unavailable stamps: a cause whose cell a
-  stamp declares takes the stamp's reason, and a scenario-output stamp's cause takes
-  the source row the stamp names (``scenario_output_sources``) at the stamped cell's
-  period — the output cell is unwritten because that row is, so the row is the cause.
-  Every other stamp's cause keeps naming the stamped cell itself."""
+  stamp declares takes the stamp's reason, and keeps naming the stamped cell itself."""
   if value.state != "missing":
     return value
-
-
-
   causes = []
-  renamed = False
   for cause in value.causes:
     if cause.reason_code != "source_value_unavailable":
       causes.append(cause)
@@ -3813,33 +3979,13 @@ def _declared_reason(
     if key not in reasons:
       causes.append(cause)
       continue
-    update: dict[str, Any] = {"reason_code": reasons[key]}
-    if named_sources is not None and key in named_sources:
-      update["node_id"] = named_sources[key]
-      renamed = True
-    causes.append(cause.model_copy(update=update))
-  if not renamed:
-    if all(new is old for new, old in zip(causes, value.causes)):
-      return value
-    return type(value).model_validate({
-      **value.model_dump(),
-      "primary_reason": causes[0].reason_code,
-      "causes": tuple(causes),
-    })
-  # A renamed cause (a scenario-output stamp's source row) can coincide with another
-  # cause or fall out of canonical order: the value algebra's causes stay sorted and
-  # unique by its own key (``model_number_value._cause_key``), primary first.
-  unique = sorted(set(causes), key=lambda cause: (
-    cause.expression_path, cause.node_id,
-    (cause.period.fiscal_year, cause.period.period_id, cause.period.is_estimate),
-    cause.state, cause.reason_code,
-  ))
-  if tuple(unique) == tuple(value.causes):
+    causes.append(cause.model_copy(update={"reason_code": reasons[key]}))
+  if all(new is old for new, old in zip(causes, value.causes)):
     return value
   return type(value).model_validate({
     **value.model_dump(),
-    "primary_reason": unique[0].reason_code,
-    "causes": tuple(unique),
+    "primary_reason": causes[0].reason_code,
+    "causes": tuple(causes),
   })
 
 

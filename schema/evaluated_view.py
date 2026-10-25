@@ -20,7 +20,7 @@ from decimal import Decimal
 import re
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .analysis import DCF_PRICE_ITEM_ID
 from .build_check_projection import (
@@ -127,6 +127,12 @@ _REPAIR_KIND_BY_TOOL: dict[Any, RepairKind] = {
 }
 
 
+class ValidationSubReason(_View):
+    loc: tuple[str | int, ...] = ()
+    msg: str
+    type: str
+
+
 class RootCause(_View):
     root_item_id: str
     period: int
@@ -142,7 +148,15 @@ class RootCause(_View):
     #: tool, so a root's routing is one fact. ``model_document`` edits the working document;
     #: ``fms_report_build_model`` reports a defect the engine owns; every other tool is a stage door.
     repair_kind: RepairKind = "door"
-
+    field: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    got: tuple[ValidationSubReason, ...] | str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    fix: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     @model_validator(mode="before")
     @classmethod
     def _repair_kind_from_call(cls, data: Any) -> Any:

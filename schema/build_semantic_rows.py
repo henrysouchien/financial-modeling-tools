@@ -291,10 +291,17 @@ def _insert_line_item_after(
     anchor_item_id: str,
     new_item: LineItem,
 ) -> LineItem:
+    """Insert ``new_item`` after its anchor; it joins the anchor's row block and, unless the
+    caller declared one, its ``model_scale``. Compile-time insertion runs after the template's
+    scale inference, so a row that said nothing took the ``LineItem`` default (``units``) in a
+    schedule held in millions: the tax rows read an authored ``5`` as a cited-fact mismatch
+    against ``5,000,000``, and the basic-shares row left the share curve mixing scales."""
     if any(item.id == new_item.id for item in _model_iter_items(model)):
         raise ValueError(f"semantic row item_id {new_item.id!r} already exists")
 
     sheet_name, section, anchor_index, anchor = _locate_model_item(model, anchor_item_id)
+    if "model_scale" not in new_item.model_fields_set:
+        new_item.model_scale = anchor.model_scale
     insert_row = int(anchor.row) + 1
     for sheet_item in (
         item

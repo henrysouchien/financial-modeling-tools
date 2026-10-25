@@ -1161,13 +1161,10 @@ def _validate_request_against_loaded_bundle(
     model_spec = request.intermediate.model_spec
     _validate_model_spec_handle_binding(model_spec, handle, collision=collision)
     resolve_model_spec_business_model_revision(model_spec, business_model_revision)
-    source_bundle_digest = compiler_input_content_hash(
-      request.intermediate.source_bundle
-    ).removeprefix("sha256:")
     model_spec_digest = compiler_input_content_hash(model_spec).removeprefix("sha256:")
     if (
       canonical_bundle != request.intermediate.source_bundle
-      or source_bundle_digest != loaded_bundle.ref.content_sha256
+      or request.intermediate.source_bundle_content_sha256 != loaded_bundle.ref.content_sha256
       or model_spec.source_bundle_sha256 != loaded_bundle.ref.content_sha256
     ):
       raise ValueError("compiled inputs differ from the winning SourceBundle")

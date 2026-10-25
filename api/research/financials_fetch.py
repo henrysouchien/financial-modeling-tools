@@ -9,11 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-try:  # full-repo context: real collapsed->native SEC translation (cache-only, fail-open)
-    from research.source_html import provider_symbol  # type: ignore
-except Exception:  # standalone context without the main api: fail-open identity
-    def provider_symbol(ticker: str) -> str:
-        return ticker
+from schema.provider_port.adapters.fmp.transport import provider_symbol
 
 
 async def fetch_model_build_financials(

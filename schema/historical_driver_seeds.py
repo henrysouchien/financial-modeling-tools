@@ -67,21 +67,40 @@ class HistoricalDriverSeedRequirement(_Contract):
     def _scale_matches_unit(self) -> "HistoricalDriverSeedRequirement":
         if self.unit is not Unit.dollars and self.model_scale != "units":
             raise ValueError("non-dollar historical driver seeds require units scale")
-        expected = (
-            ("arithmetic_mean", "direct")
-            if self.observation_basis == "period_average"
-            else ("allocation", "direct")
-        )
-        if self.allowed_derivation_kinds != expected:
-            raise ValueError("allowed seed derivations differ from observation basis")
+        if self.observation_basis == "period_average":
+            if self.predecessor_period_id is not None:
+                if self.allowed_derivation_kinds != ("arithmetic_mean", "direct"):
+                    raise ValueError(
+                        "allowed seed derivations differ from observation basis"
+                    )
+            elif self.allowed_derivation_kinds not in {
+                ("arithmetic_mean", "direct"),
+                ("direct",),
+                ("allocation", "direct"),
+                ("direct", "allocation"),
+            }:
+                raise ValueError(
+                    "allowed seed derivations differ from observation basis"
+                )
+        else:
+            if self.allowed_derivation_kinds != ("allocation", "direct"):
+                raise ValueError(
+                    "allowed seed derivations differ from observation basis"
+                )
         if self.history_scope == "segment_revenue" and (
             self.unit is not Unit.dollars
             or self.observation_basis != "period_flow"
         ):
             raise ValueError("segment revenue history is a dollar period flow")
-        if (self.observation_basis == "period_average") != (
-            self.predecessor_period_id is not None
-        ):
+        if self.observation_basis == "period_average":
+            if (
+                self.predecessor_period_id is None
+                and self.allowed_derivation_kinds == ("arithmetic_mean", "direct")
+            ):
+                raise ValueError(
+                    "period-average seed requires exact predecessor period"
+                )
+        elif self.predecessor_period_id is not None:
             raise ValueError("period-average seed requires exact predecessor period")
         return self
 

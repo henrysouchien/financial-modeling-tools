@@ -23,6 +23,7 @@ from pydantic import (
 
 from .build_model_product_contracts import (
     AnnualRequirementCoverage,
+    SOURCE_MEASURES,
     HistoricalBasisFact,
     SourceEvidence,
     validate_historical_reconciliation_source_bindings,
@@ -91,25 +92,12 @@ def _source_seed_measure(
     normalized_unit = raw_unit.replace(" ", "_").replace("-", "_")
     if normalized_unit in {"usd_millions", "dollars_millions"}:
         return Unit.dollars, "millions"
-    aliases = {
-        "dollars": Unit.dollars,
-        "usd": Unit.dollars,
-        "count": Unit.item_count,
-        "counts": Unit.item_count,
-        "units": Unit.item_count,
-        "clients": Unit.item_count,
-        "share_count": Unit.share_count,
-        "percentage": Unit.percentage,
-        "ratio": Unit.ratio,
-        "per_share": Unit.per_share,
-        "days": Unit.days,
-        "date": Unit.date,
-        "multiple": Unit.multiple,
-    }
-    canonical_unit = aliases.get(normalized_unit)
-    if canonical_unit is None:
+    if normalized_unit == "ratio":
+        return Unit.ratio, canonical_scale(scale)
+    measure = SOURCE_MEASURES.get(normalized_unit)
+    if measure is None:
         raise ValueError("historical driver seed source unit is not canonical")
-    return canonical_unit, canonical_scale(scale)
+    return measure.model_unit, measure.model_scale or canonical_scale(scale)
 
 
 def _canonical_seed_measure(
@@ -756,6 +744,12 @@ class HistoricalFactSnapshot(_Contract):
             for row in self.fiscal_axis.historical_periods
             if row.period_type == "annual" and not row.is_estimate
         )
+        if not annual_period_ids:
+            annual_period_ids = tuple(
+                row.period_id
+                for row in self.fiscal_axis.historical_periods
+                if not row.is_estimate
+            )
         if seed_requirements:
             if not annual_period_ids:
                 raise ValueError(
@@ -1581,6 +1575,12 @@ class HistoricalFoundation(_Contract):
             for row in self.fiscal_axis.historical_periods
             if row.period_type == "annual" and not row.is_estimate
         )
+        if not annual_period_ids:
+            annual_period_ids = tuple(
+                row.period_id
+                for row in self.fiscal_axis.historical_periods
+                if not row.is_estimate
+            )
         for seed in seeds:
             requirement = requirements_by_key[seed.driver_key]
             if seed.derivation_kind not in requirement.allowed_derivation_kinds:
@@ -1687,6 +1687,12 @@ class HistoricalFoundation(_Contract):
             elif (
                 seed.derivation_operands[0].observation_basis
                 != requirement.observation_basis
+                and not (
+                    requirement.observation_basis == "period_average"
+                    and requirement.predecessor_period_id is None
+                    and seed.derivation_operands[0].observation_basis
+                    in {"period_average", "period_end"}
+                )
             ):
                 raise ValueError(
                     "direct historical driver seed differs from BMR observation basis"

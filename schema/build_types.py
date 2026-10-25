@@ -230,7 +230,6 @@ class BuildResult:
     workbook_semantics_hash: str = ""
     render_compiler_inputs: dict[str, object] = field(default_factory=dict)
     seed_coverage_manifest: Sequence[Mapping[str, Any]] = field(default_factory=list)
-    scenario_source_records: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     evaluation_reads: Mapping[tuple[str, int], tuple[tuple[str, int], ...]] = field(default_factory=dict)
     provider_registry: ProviderRegistry | None = field(
         default=None,

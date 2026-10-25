@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
+
 from .build_formula_eval import (
     _evaluate_formula_simple as _formula_evaluate_formula_simple,
     _lookup_formula_value as _formula_lookup_formula_value,
 )
 from .build_model_items import _iter_items as _model_iter_items
 from .build_value_writers import _set_constant_override as _writer_set_constant_override
-from .models import FinancialModel, FormulaSpec, FormulaType, LineItemRef, ValueProvenance
+from .models import (
+    FinancialModel,
+    FormulaDerivation,
+    FormulaSpec,
+    FormulaType,
+    LineItemRef,
+    ValueProvenance,
+)
+
+if TYPE_CHECKING:
+    from .build_bm_node_history import OpeningBalance
 
 
 _CASH_BEGINNING_ITEM_ID = "tpl.fm.cash_flow.cash_and_cash_equivalents_beginning_of_period"
@@ -105,6 +119,11 @@ def _seed_cash_beginning_of_period(model: FinancialModel) -> bool:
         beginning_item,
         first_year,
         float(end_cash) - float(net_change),
+        origin=FormulaDerivation(
+            owner="build_cash_historicals",
+            strategy="opening_cash_from_net_change",
+            dependencies=(_CASH_END_ITEM_ID, _NET_CHANGE_IN_CASH_ITEM_ID),
+        ),
     )
     return True
 
@@ -143,7 +162,10 @@ def _normalize_projected_cash_roll_forward(model: FinancialModel) -> None:
             beginning_cash.overrides = None
 
 
-def _normalize_three_statement_spine(model: FinancialModel) -> None:
+def _normalize_three_statement_spine(
+    model: FinancialModel,
+    opening_balances: Mapping[str, OpeningBalance] = MappingProxyType({}),
+) -> dict[str, tuple[dict[str, Any], ...]]:
     """Compile the canonical statement links without balance-sheet plugs.
 
     Every formula uses an existing presentation identity.  Required financing,
@@ -151,6 +173,13 @@ def _normalize_three_statement_spine(model: FinancialModel) -> None:
     dependencies: if a later BM-5 slice has not supplied them, typed Missing
     propagation blocks the statement rather than manufacturing a balancing
     number.
+
+    A historical balance delta reads the prior balance, which the first
+    historical year does not carry on the axis: that year takes the pin's
+    opening balance for the same role (``build_bm_node_history.opening_balances``)
+    where the cell holds no source of its own, and the returned
+    ``source_fact_coverage`` names that evidence for each such cell. A role the
+    pin carries no opening for keeps the first year formula-less.
     """
 
     projection_periods = sorted(
@@ -170,7 +199,7 @@ def _normalize_three_statement_spine(model: FinancialModel) -> None:
         )
     )
     if not projection_periods:
-        return
+        return {"source_fact_coverage": ()}
 
     def _item(item_id: str):
         try:
@@ -307,6 +336,16 @@ def _normalize_three_statement_spine(model: FinancialModel) -> None:
         )
 
     supported_delta_periods = historical_periods[1:]
+    coverage: list[dict[str, Any]] = []
+
+    def _opening(balance_id: str) -> OpeningBalance | None:
+        if not opening_balances:
+            return None
+        from .required_role_catalog import load_required_role_catalog
+
+        role = load_required_role_catalog().role_for_template_item(balance_id)
+        return opening_balances.get(role.required_role)
+
     for item_id in _SUPPORTED_HISTORICAL_DELTA_ITEM_IDS:
         item = _item(item_id)
         if item is None:
@@ -333,9 +372,34 @@ def _normalize_three_statement_spine(model: FinancialModel) -> None:
             },
             note="observed_working_capital_balance_delta",
         )
-        item.formula_periods = sorted(
-            set(supported_delta_periods) | set(projection_periods)
-        )
+        delta_periods = set(supported_delta_periods)
+        opening = _opening(balance_id)
+        if opening is not None and historical_periods:
+            first = historical_periods[0]
+            held_value = None if item.values is None else item.values.values.get(first)
+            held_override = (item.overrides or {}).get(first)
+            if held_value is None and held_override is None:
+                pinned = float(opening.evidence.value)
+                closing = LineItemRef(id=balance_id)
+                if item.overrides is None:
+                    item.overrides = {}
+                item.overrides[first] = FormulaSpec(
+                    type=FormulaType.arithmetic,
+                    subtype="add_subtract",
+                    params={
+                        "operands": (
+                            ["-", closing, pinned]
+                            if liability
+                            else ["-", pinned, closing]
+                        )
+                    },
+                    note="observed_working_capital_balance_delta_over_pinned_opening_balance",
+                )
+                delta_periods.add(first)
+                coverage.append(opening.coverage(resolved_item_id=item.id, period=first))
+        item.formula_periods = sorted(delta_periods | set(projection_periods))
+
+    return {"source_fact_coverage": tuple(coverage)}
 
 
 def _normalize_projected_balance_sheet_roll_forward(model: FinancialModel) -> None:

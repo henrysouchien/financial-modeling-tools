@@ -68,8 +68,7 @@ from .models import (
 from .scenario_set import ScenarioSetArtifact, ScenarioSetRef
 
 
-#: The stage artifact a judgment row lives on (a trace origin may also name
-#: ``model_spec``, for a declination).
+#: The stage artifact a judgment row lives on, with a persisted history loader.
 JudgmentArtifactKind = Literal[
     "business_model_revision",
     "historical_foundation",
@@ -77,6 +76,13 @@ JudgmentArtifactKind = Literal[
     "scenario_set",
     "valuation_policy",
 ]
+OriginArtifactKind = Literal[JudgmentArtifactKind, "analyst_note"]
+
+#: The artifact and assumption-id prefix for an analyst's cell-local judgment.
+ANALYST_NOTE_ARTIFACT = "analyst_note"
+
+#: The lineage namespace for a case's override of a forecast assumption.
+SCENARIO_ASSUMPTION_PREFIX = "scenario:"
 
 
 class _QueryContract(BaseModel):
@@ -120,7 +126,7 @@ class TraceOrigin(_QueryContract):
     #: seed; declination id; ``item_id@period`` of a default value.
     ref: str = Field(min_length=1)
     #: The stage artifact holding the row, and the row's key there.
-    artifact: JudgmentArtifactKind | Literal["model_spec"] | None = None
+    artifact: OriginArtifactKind | Literal["model_spec"] | None = None
     artifact_id: str | None = None
     row: str | None = None
     accession: str | None = None
@@ -276,18 +282,32 @@ def lineage_origins(
     }
     forecast_binding = model_spec.forecast_assumption_set_binding
     policy_binding = model_spec.valuation_policy_binding
+    scenario_binding = model_spec.scenario_set_binding
     for assumption in lineage.assumption_refs:
         driver = forecast_drivers.get(assumption.assumption_id)
-        if driver is not None:
-            artifact: JudgmentArtifactKind | None = "forecast_assumption_set"
+        if assumption.assumption_id.startswith(f"{ANALYST_NOTE_ARTIFACT}:"):
+            artifact: OriginArtifactKind | None = ANALYST_NOTE_ARTIFACT
+            artifact_id = None
+            row: str | None = None
+        elif assumption.assumption_id.startswith(SCENARIO_ASSUMPTION_PREFIX):
+            forecast_id = assumption.assumption_id.removeprefix(
+                SCENARIO_ASSUMPTION_PREFIX
+            ).partition(":")[2]
+            artifact = "scenario_set"
+            artifact_id = (
+                None if scenario_binding is None else scenario_binding.scenario_set_id
+            )
+            row = forecast_drivers.get(forecast_id)
+        elif driver is not None:
+            artifact = "forecast_assumption_set"
             artifact_id = (
                 None
                 if forecast_binding is None
                 else forecast_binding.forecast_assumption_set_id
             )
-            row: str | None = driver
+            row = driver
         else:
-            # Every other authored control the compiler writes into lineage is
+            # Other authored controls the compiler writes into lineage are
             # projected from the ValuationPolicy (family authorizations, the
             # DCF control, net share dilution).
             artifact = "valuation_policy"
@@ -412,6 +432,10 @@ def trace(
         depends_on = (
             ()
             if formula is None
+            or (
+                formula.subtype == "scenario_snapshot"
+                and (formula.params or {}).get("case") in {"bull", "bear"}
+            )
             else _formula_refs(formula.params, ref.period, period_mode)
         )
         kind = _cell_kind(value_cell, formula)
@@ -581,10 +605,13 @@ def enumerate(
 
 
 __all__ = [
+    "ANALYST_NOTE_ARTIFACT",
     "EnumeratedDefault",
     "EnumeratedJudgment",
     "Enumeration",
     "JudgmentArtifactKind",
+    "OriginArtifactKind",
+    "SCENARIO_ASSUMPTION_PREFIX",
     "Trace",
     "TraceCell",
     "TraceCellRef",

@@ -22,6 +22,7 @@ import json
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from .build_findings import fold_semantic_value_findings
+from .build_offline_validation import _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID
 from .evaluated_view import (
     ROOT_CAUSE_LIMIT,
     RootCause,
@@ -30,7 +31,6 @@ from .evaluated_view import (
 )
 from .renderer_columns import _historical_periods, _projection_periods
 from .stage_registry import STAGE_REGISTRY, STAGES
-
 if TYPE_CHECKING:
     from .dependency_graph import DependencyGraph, DependencyGraphNumberValue
     from .finding_vocabulary import Finding
@@ -75,7 +75,7 @@ _ADD_LINE_ALTERNATIVE = {
 
 
 #: The typed reasons of a cell whose history was never written (no value, no evidence of absence).
-_HISTORY_MISSING_REASONS = frozenset({"source_value_unavailable", "missing_source"})
+_HISTORY_MISSING_REASONS = frozenset({"source_value_unavailable", "source_observation_absent", "missing_source"})
 
 MANUAL_INPUT_UNCITED = "manual_input_uncited"
 STAGE_NOT_PERSISTED = "stage_not_persisted"
@@ -166,7 +166,11 @@ def _stage_door(
         }
     if stage == "historical_foundation":
         # the seed key is the node's own ``<segment>.<node>`` (``CompiledDriverRegistry.node_items``), not its row id
-        key = subject[len("bm."):] if subject.startswith("bm.") else subject
+        key = (
+            subject[len("bm."):]
+            if subject.startswith("bm.")
+            else ("<segment>.<driver>" if subject.startswith("tpl.fm.") else subject)
+        )
         return {
             "tool": STAGE_REGISTRY["historical_foundation"].persist_tool,
             "arguments": _arguments(research_file_id, {"judgment": {
@@ -218,6 +222,9 @@ def _stage_door(
             }}),
         }
     raise ValueError(f"no persist door for stage {stage!r}")
+
+
+stage_door = _stage_door
 
 
 class _CellInput(NamedTuple):
@@ -302,12 +309,21 @@ def _model_document_call(
                 })
                 continue
             uncited = uncited or (cell.value is not None and cell.line is None)
+            market_input = _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID.get(item_id)
+            default_source = (
+                {
+                    "kind": "analyst_note",
+                    "note": f"<note: how {market_input} was derived and its source handles>",
+                }
+                if market_input is not None
+                else _filing_line_source(period)
+            )
             ops.append({
                 "op": "set_input",
                 "item_id": item_id,
                 "period": period,
                 "value": "<value>" if cell.value is None else cell.value,
-                "source": _filing_line_source(period) if cell.line is None else dict(cell.line),
+                "source": default_source if cell.line is None else dict(cell.line),
             })
         if uncited:
             call["alternative"] = dict(_CLEAR_ALTERNATIVE)
@@ -378,7 +394,10 @@ def _engine_owned(
         and (finding_code or reason) == "statement_total_operand_offsheet"
     ):
         return False
-    if reason in _ENGINE_REASONS and not (reason == "required_dependency_missing" and item_id.startswith("bm.")):
+    if reason in _ENGINE_REASONS and not (
+        reason == "required_dependency_missing"
+        and (item_id.startswith("bm.") or item_id in _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID)
+    ):
         return True
     return repair_owner == "engine"
 
@@ -499,6 +518,8 @@ def _owner_and_call(
         return "historical_foundation", _stage_door(
             "historical_foundation", segment_node or item_id, research_file_id=research_file_id,
         )
+    if item_id in _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID:
+        return "model_document", edit()
     if item_id.startswith("tpl.v."):
         return "valuation_policy", _stage_door("valuation_policy", item_id, research_file_id=research_file_id)
     if projected:
@@ -633,9 +654,31 @@ def _segment_revenue_node(graph: "DependencyGraph", model: "FinancialModel", ite
             found for year in axis
             if (found := {operand[0] for operand in graph.cell_operands(step, year)} - {current})
         ), set())
+        if not reads and step.historical is not None:
+            reads = {ref.id for ref in graph._extract_refs(step.historical)} - {current}
         if len(reads) != 1:
             return None
         (current,) = reads
+    return None
+
+
+def segment_revenue_seed_subject(
+    graph: "DependencyGraph", model: "FinancialModel", item_id: str, period: int,
+) -> str | None:
+    """The ``bm.<segment>.<node>`` seed subject for a segment revenue row across historical or
+    projection periods, or ``item_id`` when ``item_id`` is an unbound ``business_segment_`` row."""
+    row = model._index.get(item_id)
+    if row is None or row.required_role is not None:
+        return None
+    node = _segment_revenue_node(graph, model, item_id, period)
+    if node is not None:
+        return node
+    if item_id.startswith("tpl.fm.income_statement.business_segment_"):
+        for proj_period in _projection_periods(model.time_structure):
+            node = _segment_revenue_node(graph, model, item_id, proj_period)
+            if node is not None:
+                return node
+        return item_id
     return None
 
 
@@ -1220,6 +1263,14 @@ def collect_root_causes_counted(
             (held.reasons[cell] for cell in sorted(held.reasons, key=lambda cell: cell[1]) if cell in repair_cells),
             None if typed_value is None else typed_value.primary_reason,
         ) or "semantic_value_not_known"
+        if (
+            item_id in _COVERED_MARKET_INPUT_FIELD_BY_ITEM_ID
+            and held.source == "walk"
+            and declared is not None
+            and declared.state != "known"
+            and reason == "source_value_unavailable"
+        ):
+            reason = declared.primary_reason or reason
         absence_reason = absence_reason or (reason if reason in cited else None)
         item = model._index.get(item_id)
         repair_owner = None if own is None else own.observed.get("repair_owner")

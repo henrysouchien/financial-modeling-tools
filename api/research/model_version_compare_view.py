@@ -11,7 +11,7 @@ and the agent-facing entrypoint. No comparison is persisted.
   ``version`` are the ``ModelVersionRef`` coordinates the publisher stamps into
   the workbook; there is no second binding.
 - **Bounding** (default proposed in
-  ``docs/queue/compare-model-versions-and-selection-identity-exposed.md``; this
+  ``docs/closed/compare-model-versions-and-selection-identity-exposed.md``; this
   module is its revert site). Each delta family (financial, assumption,
   scenario, valuation_policy) reports its counts, plus the ``row_limit``
   largest changed rows by absolute change. Rows beyond the limit are
@@ -29,7 +29,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
-from schema.model_ref import ModelVersionRef
+from schema.model_ref import ModelVersionRef, SqliteInt64Id
 from schema.model_version_compare import (
   AssumptionDelta,
   ModelStatusDelta,
@@ -54,7 +54,7 @@ class ModelVersionSelection(_ViewContract):
   """What the analyst has selected: a version, and optionally one item/period or workbook cell."""
 
   model_id: str = Field(min_length=1)
-  version: int = Field(ge=1)
+  version: SqliteInt64Id
   #: A rendered item id (``revenue``) or a driver key / assumption id;
   #: absent for every item (or resolved from ``sheet`` and ``cell``).
   item: str | None = Field(default=None, min_length=1)

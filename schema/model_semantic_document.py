@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Literal, Mapping, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .finding_vocabulary import BuildVerdict
 from .build_model_product_contracts import (
     ArtifactLocation,
     ProvenanceMap,
+    ProvenanceMapRebuildRequired,
     ProvenanceMapV1_0,
     ScheduleInputAudit,
     ScheduleInputAuditNotRecorded,
@@ -160,6 +161,22 @@ class ModelSemanticDocument(_ModelSemanticDocumentCore):
             )
 
 
+class ModelSemanticDocumentRebuildRequired(ValueError):
+    """Stored ModelSemanticDocument bytes cannot be read by this binary's contract."""
+
+    code = "model_semantic_document_rebuild_required"
+    fix = (
+        "rebuild and republish this model on the current contract generation; "
+        "stored ModelVersions are never migrated"
+    )
+
+
+
+class StoredProvenancePairMismatchError(ValueError):
+    """Stored semantic sidecar and standalone ProvenanceMap disagree as a pair."""
+
+    code = "semantic_provenance_malformed"
+
 def decode_model_semantic_document(payload: Any) -> ModelSemanticDocument:
     """Decode V3.3, keep V3.2 as recorded, deterministically upgrade V3.0/V3.1."""
 
@@ -173,36 +190,59 @@ def decode_model_semantic_document(payload: Any) -> ModelSemanticDocument:
         raise TypeError("semantic document payload must be a mapping or JSON")
     body = dict(payload)
     schema_version = body.get("schema_version", "3.0")
-    if schema_version == "3.0":
-        legacy = ModelSemanticDocumentV3_0.model_validate(body)
-        upgraded = legacy.model_dump(mode="python")
-        upgraded["schema_version"] = "3.2"
-        upgraded["provenance"] = decode_provenance_map(
-            upgraded["provenance"]
-        ).model_dump(mode="python")
-        upgraded["valuation_evidence_status"] = {
-            "kind": "pre_slice6_not_recorded"
-        }
-        upgraded["schedule_input_audit"] = {
-            "kind": "pre_slice7_not_recorded"
-        }
-        return ModelSemanticDocument.model_validate(upgraded)
-    if schema_version == "3.1":
-        legacy = ModelSemanticDocumentV3_1.model_validate(body)
-        upgraded = legacy.model_dump(mode="python")
-        upgraded["schema_version"] = "3.2"
-        upgraded["provenance"] = decode_provenance_map(
-            upgraded["provenance"]
-        ).model_dump(mode="python")
-        upgraded["schedule_input_audit"] = {
-            "kind": "pre_slice7_not_recorded"
-        }
-        return ModelSemanticDocument.model_validate(upgraded)
-    if schema_version in ("3.2", "3.3"):
+    if type(schema_version) is not str or schema_version not in (
+        "3.0",
+        "3.1",
+        "3.2",
+        "3.3",
+    ):
+        raise ModelSemanticDocumentRebuildRequired(
+            f"unsupported ModelSemanticDocument schema_version: {schema_version!r}; "
+            "the stored ModelSemanticDocument is rebuild-required — "
+            f"{ModelSemanticDocumentRebuildRequired.fix}"
+        )
+    try:
+        if schema_version == "3.0":
+            legacy = ModelSemanticDocumentV3_0.model_validate(body)
+            upgraded = legacy.model_dump(mode="python")
+            upgraded["schema_version"] = "3.2"
+            upgraded["provenance"] = decode_provenance_map(
+                upgraded["provenance"]
+            ).model_dump(mode="python")
+            upgraded["valuation_evidence_status"] = {
+                "kind": "pre_slice6_not_recorded"
+            }
+            upgraded["schedule_input_audit"] = {
+                "kind": "pre_slice7_not_recorded"
+            }
+            return ModelSemanticDocument.model_validate(upgraded)
+        if schema_version == "3.1":
+            legacy = ModelSemanticDocumentV3_1.model_validate(body)
+            upgraded = legacy.model_dump(mode="python")
+            upgraded["schema_version"] = "3.2"
+            upgraded["provenance"] = decode_provenance_map(
+                upgraded["provenance"]
+            ).model_dump(mode="python")
+            upgraded["schedule_input_audit"] = {
+                "kind": "pre_slice7_not_recorded"
+            }
+            return ModelSemanticDocument.model_validate(upgraded)
         return ModelSemanticDocument.model_validate(body)
-    raise ValueError(
-        f"unsupported ModelSemanticDocument schema_version: {schema_version!r}"
-    )
+    except ProvenanceMapRebuildRequired as exc:
+        raise ModelSemanticDocumentRebuildRequired(
+            "stored ModelSemanticDocument carries a provenance section this binary "
+            f"cannot decode ({exc}); the stored ModelSemanticDocument is "
+            f"rebuild-required — {ModelSemanticDocumentRebuildRequired.fix}"
+        ) from exc
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        location = ".".join(str(part) for part in first["loc"]) or "<root>"
+        raise ModelSemanticDocumentRebuildRequired(
+            "stored ModelSemanticDocument does not satisfy this binary's contract "
+            f"({exc.error_count()} rejections, first at {location}: "
+            f"{first['msg']}); the stored ModelSemanticDocument is rebuild-required — "
+            f"{ModelSemanticDocumentRebuildRequired.fix}"
+        ) from exc
 
 
 def validate_stored_provenance_pair(
@@ -222,21 +262,21 @@ def validate_stored_provenance_pair(
 
     semantic_body = _mapping(semantic_payload, name="semantic document")
     provenance_body = _mapping(provenance_payload, name="provenance")
+    document = decode_model_semantic_document(semantic_body)
+    provenance = decode_provenance_map(provenance_body)
     semantic_version = str(semantic_body.get("schema_version", "3.0"))
     provenance_version = str(provenance_body.get("schema_version", "1.0"))
     required = "1.1" if semantic_version in ("3.2", "3.3") else "1.0"
     if provenance_version != required:
-        raise ValueError(
+        raise StoredProvenancePairMismatchError(
             "stored provenance version is incompatible with semantic document: "
             f"document {semantic_version!r} requires {required!r}, got "
             f"{provenance_version!r}"
         )
-    document = decode_model_semantic_document(semantic_body)
-    provenance = decode_provenance_map(provenance_body)
     if provenance.model_dump(mode="json") != document.provenance.model_dump(
         mode="json"
     ):
-        raise ValueError(
+        raise StoredProvenancePairMismatchError(
             "stored provenance content differs from semantic document provenance"
         )
     return document, provenance
@@ -275,9 +315,12 @@ def semantic_value_snapshots(render_plan: Any) -> tuple[SemanticValueSnapshot, .
 __all__ = [
     "RecordedValidationStatus",
     "ModelSemanticDocument",
+    "ModelSemanticDocumentRebuildRequired",
     "ModelSemanticDocumentV3_0",
     "ModelSemanticDocumentV3_1",
+    "ProvenanceMapRebuildRequired",
     "SemanticValueSnapshot",
+    "StoredProvenancePairMismatchError",
     "semantic_value_snapshots",
     "decode_model_semantic_document",
     "validate_stored_provenance_pair",

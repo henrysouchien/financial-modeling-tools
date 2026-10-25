@@ -18,11 +18,11 @@ import time
 from typing import Any, Iterable, Iterator, TextIO
 
 from schema.model_state_identity import ModelStateWriteContext, encode_uri_segment
+from schema.ticker_contract import is_contract_ticker
 
 
 _LOCK_POLL_INTERVAL_SECONDS = 0.05
 _MODEL_EXPORT_RE = re.compile(r"^model_\d+_v\d+\.xlsx$")
-_FALLBACK_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.]{0,14}$")
 _log = logging.getLogger(__name__)
 
 
@@ -200,28 +200,6 @@ def resolve_model_writer_lock_keys(
     )
 
 
-def _fallback_is_valid_ticker_component(value: str) -> bool:
-    return (
-        bool(_FALLBACK_TICKER_RE.fullmatch(value))
-        and ".." not in value
-        and not value.endswith(".")
-    )
-
-
-def _is_valid_ticker_component(value: str) -> bool:
-    try:
-        from research.artifact_paths import is_valid_ticker_component
-
-        return is_valid_ticker_component(value)
-    except Exception:
-        try:
-            from research.artifact_paths import is_valid_ticker_component
-
-            return is_valid_ticker_component(value)
-        except Exception:
-            return _fallback_is_valid_ticker_component(value)
-
-
 def _normalize_timeout_seconds(timeout_seconds: float | None) -> float:
     timeout_value: float | str
     if timeout_seconds is None:
@@ -250,7 +228,7 @@ def _run_scoped_target(path: Path) -> tuple[Path, str, str] | None:
         _log.warning("invalid run-scoped model-writer path shape: %s", path)
         return None
     ticker = str(parts[index + 2]).strip().upper()
-    if not _is_valid_ticker_component(ticker):
+    if not is_contract_ticker(ticker):
         _log.warning("invalid run-scoped model-writer ticker segment: %s", path)
         return None
     key = Path(*parts[: index + 3])
@@ -295,7 +273,7 @@ def _ticker_from_filename(path: Path) -> str | None:
     if path.suffix.lower() != ".json":
         return None
     ticker = path.stem.strip().upper()
-    return ticker if _is_valid_ticker_component(ticker) else None
+    return ticker if is_contract_ticker(ticker) else None
 
 
 def resolve_store_key(path: str | os.PathLike[str]) -> str:

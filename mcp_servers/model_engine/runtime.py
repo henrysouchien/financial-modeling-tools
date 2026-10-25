@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Protocol
 
-from research.source_html import provider_symbol
+from schema.provider_port.adapters.fmp.transport import provider_symbol
 
 
 def apply_override_directory_env(

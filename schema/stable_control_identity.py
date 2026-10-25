@@ -108,8 +108,34 @@ class FiscalPeriod(BaseModel):
 
     period_id: Annotated[str, Field(strict=True, min_length=1)]
     fiscal_year: Annotated[int, Field(strict=True, gt=0)]
-    period_type: Literal["annual"]
+    period_type: Literal["annual", "quarterly"]
+    fiscal_quarter: Literal[1, 2, 3, 4] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     is_estimate: StrictBool
+
+    @model_validator(mode="after")
+    def _bind_fiscal_quarter(self) -> "FiscalPeriod":
+        if self.period_type == "annual" and self.fiscal_quarter is not None:
+            raise ValueError("annual FiscalPeriod cannot declare fiscal_quarter")
+        if self.period_type == "quarterly":
+            matches = re.findall(r"Q([1-4])", self.period_id)
+            if len(matches) != 1:
+                raise ValueError(
+                    "quarterly FiscalPeriod period_id must contain a single Q[1-4] token"
+                )
+            inferred_quarter = int(matches[0])
+            if self.fiscal_quarter is None:
+                object.__setattr__(self, "fiscal_quarter", inferred_quarter)
+            elif self.fiscal_quarter != inferred_quarter:
+                raise ValueError(
+                    "quarterly FiscalPeriod fiscal_quarter must match period_id Q[1-4]"
+                )
+            if self.fiscal_quarter not in (1, 2, 3, 4):
+                raise ValueError(
+                    "quarterly FiscalPeriod requires fiscal_quarter in (1, 2, 3, 4)"
+                )
+        return self
 
 
 class FiscalAxis(BaseModel):
@@ -122,10 +148,14 @@ class FiscalAxis(BaseModel):
     def _validate_canonical_annual_axis(self) -> "FiscalAxis":
         historical_ids = tuple(period.period_id for period in self.historical_periods)
         forecast_ids = tuple(period.period_id for period in self.forecast_periods)
-        historical_years = tuple(
-            period.fiscal_year for period in self.historical_periods
+        historical_keys = tuple(
+            (period.fiscal_year, period.fiscal_quarter or 4)
+            for period in self.historical_periods
         )
-        forecast_years = tuple(period.fiscal_year for period in self.forecast_periods)
+        forecast_keys = tuple(
+            (period.fiscal_year, period.fiscal_quarter or 4)
+            for period in self.forecast_periods
+        )
 
         if any(period.is_estimate for period in self.historical_periods):
             raise ValueError("historical_periods must contain only actual periods")
@@ -139,22 +169,22 @@ class FiscalAxis(BaseModel):
             set(forecast_ids)
         ):
             raise ValueError("forecast_periods must be sorted and unique by period_id")
-        if historical_years != tuple(sorted(historical_years)) or len(
-            historical_years
-        ) != len(set(historical_years)):
+        if historical_keys != tuple(sorted(historical_keys)) or len(
+            historical_keys
+        ) != len(set(historical_keys)):
             raise ValueError(
                 "historical_periods must be strictly increasing and unique by "
                 "fiscal_year"
             )
-        if forecast_years != tuple(sorted(forecast_years)) or len(
-            forecast_years
-        ) != len(set(forecast_years)):
+        if forecast_keys != tuple(sorted(forecast_keys)) or len(forecast_keys) != len(
+            set(forecast_keys)
+        ):
             raise ValueError(
                 "forecast_periods must be strictly increasing and unique by fiscal_year"
             )
         if set(historical_ids) & set(forecast_ids):
             raise ValueError("historical and forecast period IDs must be disjoint")
-        if historical_years[-1] >= forecast_years[0]:
+        if historical_keys[-1] >= forecast_keys[0]:
             raise ValueError("forecast fiscal years must follow historical fiscal years")
         return self
 

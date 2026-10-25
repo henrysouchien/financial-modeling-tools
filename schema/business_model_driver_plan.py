@@ -183,13 +183,59 @@ def _stable_driver_plan_binding(
 
 
 def driver_assumption_key(
-    *,
     business_model_id: str,
-    revision: str,
-    segment_id: str,
-    driver_node_id: str,
+    revision: str | None = None,
+    segment_id: str = "",
+    driver_node_id: str = "",
 ) -> str:
-    return f"bm:{business_model_id}@{revision}:{segment_id}:{driver_node_id}"
+    normalized_revision = str(revision or "").strip()
+    if normalized_revision:
+        return (
+            f"bm:{business_model_id}@{normalized_revision}:"
+            f"{segment_id}:{driver_node_id}"
+        )
+    return f"bm:{business_model_id}:{segment_id}:{driver_node_id}"
+
+
+def canonical_driver_identity_key(driver_key: str) -> str:
+    text = driver_key.strip()
+    if not text.startswith("bm:") or "@" not in text:
+        return text
+    identity, separator, remainder = text.partition("@")
+    if not separator:
+        return text
+    parts = remainder.rsplit(":", 2)
+    if len(parts) != 3 or not parts[1] or not parts[2]:
+        return text
+    return f"{identity}:{parts[1]}:{parts[2]}"
+
+
+def driver_plan_structural_entries(plan: Any) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    for entry in plan.entries:
+        if hasattr(entry, "model_dump"):
+            row = entry.model_dump(mode="json")
+        else:
+            row = dict(entry)
+        row.pop("revision", None)
+        business_model_id = getattr(entry, "business_model_id", None) or row.get(
+            "business_model_id"
+        )
+        segment_id = getattr(entry, "segment_id", None) or row.get("segment_id")
+        driver_node_id = getattr(entry, "driver_node_id", None) or row.get(
+            "driver_node_id"
+        )
+        if business_model_id and segment_id and driver_node_id:
+            row["driver_key"] = driver_assumption_key(
+                str(business_model_id),
+                None,
+                str(segment_id),
+                str(driver_node_id),
+            )
+        elif "driver_key" in row:
+            row["driver_key"] = canonical_driver_identity_key(str(row["driver_key"]))
+        rows.append(row)
+    return tuple(rows)
 
 
 def derive_driver_assumption_plan(
@@ -609,6 +655,8 @@ __all__ = [
     "_template_driver_assumption_entry",
     "_template_input_item_ids",
     "_unique_nonempty",
+    "canonical_driver_identity_key",
     "derive_driver_assumption_plan",
     "driver_assumption_key",
+    "driver_plan_structural_entries",
 ]

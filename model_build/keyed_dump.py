@@ -193,23 +193,40 @@ def parse_filing_line_id(observation_id: str) -> dict[str, Any] | None:
   if len(parts) != 4:
     return None
   accession, period, statement_role, rest = parts
+  if ":" not in rest:
+    return None
   equals = rest.find("=")
   if equals < 0:
     tag, _, dimension_text = rest.rpartition(":")
   else:
     axis_colon = rest.rfind(":", 0, equals)
+    if axis_colon < 0:
+      return None
     split = rest.rfind(":", 0, axis_colon)
+    if split < 0:
+      return None
     tag, dimension_text = rest[:split], rest[split + 1:]
   fiscal_year = _FISCAL_YEAR_LABEL.match(period)
+  tag_prefix, _, tag_local = tag.partition(":")
+  if not accession or fiscal_year is None or not statement_role or not tag_prefix or not tag_local:
+    return None
+  dimensions: list[list[str]] = []
+  for entry in dimension_text.split(";"):
+    if not entry:
+      continue
+    if "=" not in entry:
+      return None
+    axis_qname, member_qname = entry.split("=", 1)
+    if ":" not in axis_qname or ":" not in member_qname:
+      return None
+    dimensions.append([axis_qname, member_qname])
   return {
     "accession": accession,
     "period": period,
-    "fiscal_year": None if fiscal_year is None else int(fiscal_year.group(1)),
+    "fiscal_year": int(fiscal_year.group(1)),
     "statement_role": statement_role,
     "tag": tag,
-    "dimensions": [
-      list(entry.split("=", 1)) for entry in dimension_text.split(";") if entry
-    ],
+    "dimensions": dimensions,
   }
 
 

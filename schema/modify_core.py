@@ -349,11 +349,17 @@ def _apply_set_formula(
     # cell's anchor is formula_periods[0] (`schema/renderer_columns.py::_fixed_cell_anchor_period`
     # owns the contract): never move it — the write appends only periods that are not the anchor.
     if item.formula_periods is not None:
-        anchor = int(item.formula_periods[0])
-        item.formula_periods = sorted(
-            {int(period) for period in item.formula_periods}
-            | {int(period) for period in written if int(period) != anchor}
-        )
+        existing = {int(period) for period in item.formula_periods}
+        written_ints = {int(period) for period in written}
+        if existing:
+            anchor = _fixed_cell_anchor_period(model, item)
+            assert anchor is not None
+            item.formula_periods = [
+                anchor,
+                *sorted((existing | written_ints) - {anchor}),
+            ]
+        else:
+            item.formula_periods = sorted(written_ints)
 
     return OperationResult(op_type=op.type, item_id=op.item_id, status="ok")
 

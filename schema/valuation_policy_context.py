@@ -1,4 +1,7 @@
-"""Bounded exact-ref context for precompile ValuationPolicy judgment."""
+"""Bounded exact-ref context for precompile ValuationPolicy judgment.
+
+Consumed by ``api/research/valuation_policy_context_service.py``.
+"""
 
 from __future__ import annotations
 

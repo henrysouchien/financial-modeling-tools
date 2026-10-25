@@ -70,7 +70,7 @@ from schema.provider_port.adapters.edgar.wire.non_gaap_reconciliation_v1 import 
     IssuerNonGaapNetIncomeReconciliationV1,
     IssuerNonGaapReconciliationV1,
 )
-from .model_number_value import UNRESOLVED_INPUT_STATES
+from .model_number_value import MissingReasonCode, UNRESOLVED_INPUT_STATES
 from .model_kind_capabilities import (
     CapabilityDeclarationInvalid,
 )
@@ -199,6 +199,9 @@ _USD_AMOUNT: Final = SourceMeasure("currency", "USD", Unit.dollars)
 SOURCE_MEASURES: Final[Mapping[str, SourceMeasure]] = MappingProxyType(
     {
         "count": SourceMeasure("count", None, Unit.item_count),
+        "counts": SourceMeasure("count", None, Unit.item_count),
+        "units": SourceMeasure("count", None, Unit.item_count),
+        "clients": SourceMeasure("count", None, Unit.item_count),
         "employees_per_client": SourceMeasure("count", None, Unit.item_count),
         "share_count": SourceMeasure("count", None, Unit.share_count),
         # The unit name folds the reported scale in: the value stays in
@@ -214,9 +217,13 @@ SOURCE_MEASURES: Final[Mapping[str, SourceMeasure]] = MappingProxyType(
         "date": SourceMeasure("date", None, Unit.date),
         "dollars": _USD_AMOUNT,
         "usd": _USD_AMOUNT,
+        "dollars_millions": _USD_AMOUNT,
         "usd_millions": _USD_AMOUNT,
         "usd_per_client": SourceMeasure("currency", "USD", Unit.per_count, "units"),
         "usd_per_share": SourceMeasure("per_share", "USD", Unit.per_share),
+        "per_count": SourceMeasure("currency", "USD", Unit.per_count, "units"),
+        "per_day": SourceMeasure("currency", "USD", Unit.per_day, "units"),
+        "per_share": SourceMeasure("per_share", "USD", Unit.per_share),
     }
 )
 
@@ -557,6 +564,12 @@ class BuildDiagnostic(_ProductContract):
 #: The derivation expression of a zero an occurrence closure corroborates; the one expression
 #: ``SourceEvidence`` admits without input ids.
 CLOSURE_CORROBORATED_ZERO = "closure_corroborated_zero"
+SourceEvidenceOrigin = Literal[
+    "pinned",
+    "unpinned_occurrence",
+    "closure_operand",
+    "basis",
+]
 
 
 class SourceEvidence(_ProductContract):
@@ -600,6 +613,10 @@ class SourceEvidence(_ProductContract):
     # derivation with no filed operand: the expression is its lineage, the structural
     # citations in ``locator`` its evidence (CLOSURE-ZERO-IS-DERIVED-WITHOUT-OPERANDS).
     derivation_input_ids: tuple[str, ...] = ()
+    origin: SourceEvidenceOrigin = Field(
+        default="pinned",
+        exclude_if=lambda value: value == "pinned",
+    )
 
     @property
     def source_ref(self) -> SourceFactRef:
@@ -2758,7 +2775,7 @@ _CellLineageStatus = Literal[
     "presentation",
     "compiler_derived",
     "source_absence_evidenced",
-    "business_model_node_unresolved",
+    MissingReasonCode,
 ]
 
 
@@ -3438,13 +3455,19 @@ class SourceBundle(_ProductContract):
                 raise ValueError(
                     "valuation observation issuer is outside the profile roster"
                 )
+        admitted_issuers = {
+            self.coverage_profile.focal_ticker,
+            *self.coverage_profile.peer_tickers,
+        }
+        covered_fiscal_issuers = {item.issuer for item in self.fiscal_calendar}
+        if not covered_fiscal_issuers <= admitted_issuers:
+            raise ValueError(
+                "fiscal calendar must not contain issuers outside the profile roster"
+            )
         fiscal_keys = {(item.issuer, item.basis) for item in self.fiscal_calendar}
         expected_fiscal_keys = {
             (issuer, basis)
-            for issuer in (
-                self.coverage_profile.focal_ticker,
-                *self.coverage_profile.peer_tickers,
-            )
+            for issuer in covered_fiscal_issuers
             for basis in self.coverage_profile.valuation_fiscal_basis_ids
         }
         if fiscal_keys != expected_fiscal_keys or len(self.fiscal_calendar) != len(
@@ -3453,10 +3476,7 @@ class SourceBundle(_ProductContract):
             raise ValueError(
                 "fiscal calendar must exactly cover the profile roster and axis"
             )
-        for issuer in (
-            self.coverage_profile.focal_ticker,
-            *self.coverage_profile.peer_tickers,
-        ):
+        for issuer in sorted(covered_fiscal_issuers):
             periods = {
                 item.basis: item
                 for item in self.fiscal_calendar
@@ -4397,6 +4417,23 @@ class ModelSpecValuationPolicyBinding(_ProductContract):
     )
 
 
+def _model_spec_error(
+    reason: str,
+    *,
+    section: str | None,
+    loc: tuple[str | int, ...],
+) -> PydanticCustomError:
+    """A ModelSpec validator's rejection, as data: the ``value_error`` text a ``ValueError`` would
+    give, the authored section that repairs it (``section``, ``None`` when no authored section
+    does) and the offending path in the spec (``loc``). Model validators get no field ``loc`` from
+    pydantic, so this is the one place the failing section is known."""
+    return PydanticCustomError(
+        "value_error",
+        "Value error, {reason}",
+        {"reason": reason, "section": section, "loc": list(loc)},
+    )
+
+
 class _ModelSpecV3_0Core(_ProductContract):
     """Server-assembled financial judgment consumed by the compiler."""
 
@@ -4535,7 +4572,11 @@ class _ModelSpecV3_0Core(_ProductContract):
             self.business_model_revision_ref.business_model_id
             != f"{self.ticker}_business_model"
         ):
-            raise ValueError("business_model_revision_ref must equal ModelSpec ticker")
+            raise _model_spec_error(
+                "business_model_revision_ref must equal ModelSpec ticker",
+                section=None,
+                loc=("business_model_revision_ref",),
+            )
         forecast_period_ids = tuple(
             period.period_id for period in self.fiscal_axis.forecast_periods
         )
@@ -4555,22 +4596,28 @@ class _ModelSpecV3_0Core(_ProductContract):
                 forecast_binding.historical_foundation_content_sha256,
             )
         ):
-            raise ValueError(
-                "historical seed projection must match exact forecast-set HFF binding"
+            raise _model_spec_error(
+                "historical seed projection must match exact forecast-set HFF binding",
+                section="forecast_assumptions",
+                loc=("historical_driver_seed_projection",),
             )
         if seed_projection is not None:
             terminal_historical_period = self.fiscal_axis.historical_periods[-1]
             if terminal_historical_period.period_type != "annual":
-                raise ValueError(
-                    "historical driver seeds require an annual terminal period"
+                raise _model_spec_error(
+                    "historical driver seeds require an annual terminal period",
+                    section=None,
+                    loc=("fiscal_axis", "historical_periods"),
                 )
             if any(
                 row.period_id != terminal_historical_period.period_id
                 for row in seed_projection.requirements
             ):
-                raise ValueError(
+                raise _model_spec_error(
                     "historical driver seeds must target the exact terminal "
-                    "historical period"
+                    "historical period",
+                    section=None,
+                    loc=("historical_driver_seed_projection", "requirements"),
                 )
         if fact_projection is not None and (
             forecast_binding is None
@@ -4583,8 +4630,10 @@ class _ModelSpecV3_0Core(_ProductContract):
                 forecast_binding.historical_foundation_content_sha256,
             )
         ):
-            raise ValueError(
-                "historical fact projection must match exact forecast-set HFF binding"
+            raise _model_spec_error(
+                "historical fact projection must match exact forecast-set HFF binding",
+                section="forecast_assumptions",
+                loc=("historical_foundation_fact_projection",),
             )
         if scenario_binding is not None and (
             forecast_binding is None
@@ -4597,8 +4646,10 @@ class _ModelSpecV3_0Core(_ProductContract):
                 forecast_binding.forecast_assumption_set_content_sha256,
             )
         ):
-            raise ValueError(
-                "scenario-set binding must match exact forecast-set binding"
+            raise _model_spec_error(
+                "scenario-set binding must match exact forecast-set binding",
+                section="scenario_reviews",
+                loc=("scenario_set_binding",),
             )
         if valuation_binding is not None and (
             forecast_binding is None
@@ -4620,8 +4671,10 @@ class _ModelSpecV3_0Core(_ProductContract):
                 scenario_binding.scenario_set_content_sha256,
             )
         ):
-            raise ValueError(
-                "valuation-policy binding must match exact forecast/scenario bindings"
+            raise _model_spec_error(
+                "valuation-policy binding must match exact forecast/scenario bindings",
+                section="valuation_policy",
+                loc=("valuation_policy_binding",),
             )
         if valuation_binding is not None and (
             self.valuation_policy is None
@@ -4632,8 +4685,10 @@ class _ModelSpecV3_0Core(_ProductContract):
             or self.valuation_controls[0].terminal_growth_rate is None
             or self.valuation_controls[0].terminal_multiple is None
         ):
-            raise ValueError(
-                "valuation-policy binding requires its complete deterministic projection"
+            raise _model_spec_error(
+                "valuation-policy binding requires its complete deterministic projection",
+                section="valuation_policy",
+                loc=("valuation_policy_binding",),
             )
         if valuation_binding is not None:
             assert self.valuation_policy is not None
@@ -4646,50 +4701,80 @@ class _ModelSpecV3_0Core(_ProductContract):
                 or Decimal(str(control.terminal_multiple))
                 != self.valuation_policy.exit_multiple_cases.base
             ):
-                raise ValueError(
-                    "valuation control bases must match exact policy terminal cases"
+                raise _model_spec_error(
+                    "valuation control bases must match exact policy terminal cases",
+                    section="valuation_policy",
+                    loc=("valuation_controls", 0),
                 )
-        assumption_ids = tuple(item.assumption_id for item in self.forecast_assumptions)
-        if len(assumption_ids) != len(set(assumption_ids)):
-            raise ValueError("forecast assumption IDs must be unique")
-        if self.forecast_assumptions and any(
-            getattr(item, "period_ids", ()) != forecast_period_ids
-            for item in self.forecast_assumptions
-        ):
-            raise ValueError(
-                "every forecast assumption must cover the complete forecast axis"
+        seen_assumption_ids: set[str | None] = set()
+        for index, item in enumerate(self.forecast_assumptions):
+            if item.assumption_id in seen_assumption_ids:
+                raise _model_spec_error(
+                    "forecast assumption IDs must be unique",
+                    section="forecast_assumptions",
+                    loc=("forecast_assumptions", index, "assumption_id"),
+                )
+            seen_assumption_ids.add(item.assumption_id)
+        for index, item in enumerate(self.forecast_assumptions):
+            if getattr(item, "period_ids", ()) != forecast_period_ids:
+                raise _model_spec_error(
+                    "every forecast assumption must cover the complete forecast axis",
+                    section="forecast_assumptions",
+                    loc=("forecast_assumptions", index, "period_ids"),
+                )
+        for index, item in enumerate(self.forecast_assumptions):
+            missing = next(
+                (
+                    name
+                    for name, absent in (
+                        ("period_values", item.value is None and item.period_values is None),
+                        ("unit", item.unit is None),
+                        ("rationale", item.rationale is None),
+                        ("confidence", item.confidence is None),
+                        ("evidence_basis", getattr(item, "evidence_basis", None) is None),
+                    )
+                    if absent
+                ),
+                None,
             )
-        if self.forecast_assumptions and any(
-            (item.value is None and item.period_values is None)
-            or item.unit is None
-            or item.rationale is None
-            or item.confidence is None
-            or getattr(item, "evidence_basis", None) is None
-            for item in self.forecast_assumptions
-        ):
-            raise ValueError(
-                "reviewed profile forecast assumptions require values, units, "
-                "evidence basis, rationale, and confidence"
-            )
+            if missing is not None:
+                raise _model_spec_error(
+                    "reviewed profile forecast assumptions require values, units, "
+                    "evidence basis, rationale, and confidence",
+                    section="forecast_assumptions",
+                    loc=("forecast_assumptions", index, missing),
+                )
         forecast_years = {
             period.fiscal_year for period in self.fiscal_axis.forecast_periods
         }
-        if self.forecast_assumptions and any(
-            item.period_values is not None and set(item.period_values) != forecast_years
-            for item in self.forecast_assumptions
-        ):
-            raise ValueError(
-                "reviewed profile assumption series must cover the complete "
-                "forecast axis"
-            )
+        for index, item in enumerate(self.forecast_assumptions):
+            if item.period_values is not None and set(item.period_values) != forecast_years:
+                raise _model_spec_error(
+                    "reviewed profile assumption series must cover the complete "
+                    "forecast axis",
+                    section="forecast_assumptions",
+                    loc=("forecast_assumptions", index, "period_values"),
+                )
         scenarios_by_name = {item.name: item for item in self.scenarios}
         reviews_by_name = {item.scenario_name: item for item in self.scenario_reviews}
         if len(scenarios_by_name) != len(self.scenarios):
-            raise ValueError("scenario names must be unique")
+            raise _model_spec_error(
+                "scenario names must be unique",
+                section="scenario_reviews",
+                loc=("scenarios",),
+            )
         if len(reviews_by_name) != len(self.scenario_reviews):
-            raise ValueError("scenario review names must be unique")
+            raise _model_spec_error(
+                "scenario review names must be unique",
+                section="scenario_reviews",
+                loc=("scenario_reviews",),
+            )
         if (set(scenarios_by_name) | set(reviews_by_name)) - {"base", "bull", "bear"}:
-            raise ValueError("authored scenarios must name base, bull, or bear")
+            raise _model_spec_error(
+                "authored scenarios must name base, bull, or bear",
+                section="scenario_reviews",
+                loc=("scenario_reviews",),
+            )
         base_scenario = scenarios_by_name.get("base")
         base_review = reviews_by_name.get("base")
         base_defect_field = None
@@ -4771,7 +4856,7 @@ class _ModelSpecV3_0Core(_ProductContract):
                     },
                 },
             )
-        for review in self.scenario_reviews:
+        for review_index, review in enumerate(self.scenario_reviews):
             scenario = scenarios_by_name.get(review.scenario_name)
             if (
                 scenario is not None
@@ -4801,10 +4886,16 @@ class _ModelSpecV3_0Core(_ProductContract):
                     )
             expected = {item.target_control_id: item.value for item in review.overrides}
             if len(expected) != len(review.overrides):
-                raise ValueError("scenario target controls must be unique")
+                raise _model_spec_error(
+                    "scenario target controls must be unique",
+                    section="scenario_reviews",
+                    loc=("scenario_reviews", review_index, "overrides"),
+                )
             if scenario is not None and review.overrides and scenario.assumptions != expected:
-                raise ValueError(
-                    "scenario assumptions must exactly lower the declared overrides"
+                raise _model_spec_error(
+                    "scenario assumptions must exactly lower the declared overrides",
+                    section="scenario_reviews",
+                    loc=("scenario_reviews", review_index, "overrides"),
                 )
         assumptions_by_id = {
             item.assumption_id: item for item in self.forecast_assumptions
@@ -4814,18 +4905,30 @@ class _ModelSpecV3_0Core(_ProductContract):
             if base_review is not None
             else {}
         )
+        base_review_loc: tuple[str | int, ...] = next(
+            (
+                ("scenario_reviews", index, "overrides")
+                for index, item in enumerate(self.scenario_reviews)
+                if item.scenario_name == "base"
+            ),
+            ("scenario_reviews",),
+        )
         if base_review is not None and len(base_overrides_by_assumption_id) != len(
             base_review.overrides
         ):
-            raise ValueError(
-                "reviewed base scenario override assumption_ids must be unique"
+            raise _model_spec_error(
+                "reviewed base scenario override assumption_ids must be unique",
+                section="scenario_reviews",
+                loc=base_review_loc,
             )
         for assumption_id, override in base_overrides_by_assumption_id.items():
             assumption = assumptions_by_id.get(assumption_id)
             if assumption is None:
-                raise ValueError(
+                raise _model_spec_error(
                     "reviewed base scenario override must name an existing "
-                    f"forecast assumption_id: {assumption_id}"
+                    f"forecast assumption_id: {assumption_id}",
+                    section="scenario_reviews",
+                    loc=base_review_loc,
                 )
             assumption_value = (
                 assumption.value
@@ -4835,19 +4938,23 @@ class _ModelSpecV3_0Core(_ProductContract):
             if _review_value_by_period(
                 override.value, override.period_ids
             ) != _review_value_by_period(assumption_value, assumption.period_ids):
-                raise ValueError(
+                raise _model_spec_error(
                     "reviewed base scenario override value must equal its "
-                    f"forecast assumption value: {assumption_id}"
+                    f"forecast assumption value: {assumption_id}",
+                    section="scenario_reviews",
+                    loc=base_review_loc,
                 )
-        for review in self.scenario_reviews:
+        for review_index, review in enumerate(self.scenario_reviews):
             if review.scenario_name == "base":
                 continue
             for override in review.overrides:
                 assumption = assumptions_by_id.get(override.assumption_id)
                 if assumption is None:
-                    raise ValueError(
+                    raise _model_spec_error(
                         "reviewed non-base scenario override must name an existing "
-                        f"forecast assumption_id: {override.assumption_id}"
+                        f"forecast assumption_id: {override.assumption_id}",
+                        section="scenario_reviews",
+                        loc=("scenario_reviews", review_index, "overrides"),
                     )
                 current_values = _review_value_by_period(
                     override.value, override.period_ids
@@ -4913,18 +5020,24 @@ class _ModelSpecV3_0Core(_ProductContract):
                 control = dcf_controls[0]
                 complete = complete and all(
                     getattr(control, field) is not None
-                    for field in ("sofr_rate", "beta_floor")
+                    for field in ("beta_floor",)
                 )
                 complete = complete and control.wacc is None
             if not complete:
-                raise ValueError(
-                    "reviewed profile requires one complete DCF valuation control"
+                raise _model_spec_error(
+                    "reviewed profile requires one complete DCF valuation control",
+                    section="valuation_policy",
+                    loc=("valuation_controls",),
                 )
-        decision_ids = tuple(
-            item.decision_id for item in self.historical_normalization_decisions
-        )
-        if len(decision_ids) != len(set(decision_ids)):
-            raise ValueError("normalization decision IDs must be unique")
+        seen_decision_ids: set[str] = set()
+        for index, item in enumerate(self.historical_normalization_decisions):
+            if item.decision_id in seen_decision_ids:
+                raise _model_spec_error(
+                    "normalization decision IDs must be unique",
+                    section="historical_normalization_decisions",
+                    loc=("historical_normalization_decisions", index, "decision_id"),
+                )
+            seen_decision_ids.add(item.decision_id)
         return self
 
     def bind_successor(
@@ -4963,7 +5076,11 @@ class ModelSpec(_ModelSpecV3_0Core):
             item.method: item for item in self.valuation_family_authorizations
         }
         if len(authorizations) != len(self.valuation_family_authorizations):
-            raise ValueError("valuation family authorizations must be unique by method")
+            raise _model_spec_error(
+                "valuation family authorizations must be unique by method",
+                section="valuation_family_authorizations",
+                loc=("valuation_family_authorizations",),
+            )
         if self.valuation_policy is None:
             return self
         controls = {
@@ -4973,23 +5090,33 @@ class ModelSpec(_ModelSpecV3_0Core):
             authorization = authorizations.get(method)
             if control.selection_basis == "none":
                 if authorization is not None:
-                    raise ValueError(
-                        "unselected relative method forbids a family authorization"
+                    raise _model_spec_error(
+                        "unselected relative method forbids a family authorization",
+                        section="valuation_family_authorizations",
+                        loc=("valuation_family_authorizations",),
                     )
                 continue
             if authorization is None:
-                raise ValueError(
-                    "selected relative method requires a family authorization"
+                raise _model_spec_error(
+                    "selected relative method requires a family authorization",
+                    section="valuation_family_authorizations",
+                    loc=("valuation_family_authorizations",),
                 )
             if (
                 authorization.selection_basis != control.selection_basis
                 or authorization.rationale != control.rationale
                 or authorization.evidence_ids != control.evidence_ids
             ):
-                raise ValueError("relative control and family authorization must agree")
+                raise _model_spec_error(
+                    "relative control and family authorization must agree",
+                    section="valuation_family_authorizations",
+                    loc=("valuation_family_authorizations",),
+                )
         if set(authorizations) - set(controls):
-            raise ValueError(
-                "reviewed valuation authorizations must match relative methods"
+            raise _model_spec_error(
+                "reviewed valuation authorizations must match relative methods",
+                section="valuation_family_authorizations",
+                loc=("valuation_family_authorizations",),
             )
         return self
 
@@ -5026,7 +5153,13 @@ def validate_source_bundle_binding(
             raise ValueError(
                 "persisted SourceBundle wire payload differs from decoded binding input"
             )
-    actual = compiler_input_content_hash(source_bundle)
+    # A sealed row binds by its stored bytes' digest; only a bundle that was
+    # never stored has no digest but its own canonical dump.
+    actual = (
+        compiler_input_content_hash(source_bundle)
+        if persisted_source_bundle_wire_digest is None
+        else f"sha256:{str(persisted_source_bundle_wire_digest).removeprefix('sha256:')}"
+    )
     expected = f"sha256:{model_spec.source_bundle_sha256}"
     actual_profile_id = source_bundle.coverage_profile.profile_id
     if expected != actual or model_spec.profile_id != actual_profile_id:
@@ -5105,6 +5238,16 @@ class ProvenanceMap(_ProductContract):
         return self
 
 
+class ProvenanceMapRebuildRequired(ValueError):
+    """Stored ProvenanceMap bytes cannot be read by this binary's contract."""
+
+    code = "provenance_map_rebuild_required"
+    fix = (
+        "rebuild and republish this model on the current contract generation; "
+        "stored ModelVersions are never migrated"
+    )
+
+
 def decode_provenance_map(payload: Any) -> ProvenanceMap:
     """Decode V1.1 or losslessly upgrade a V1.0 provenance payload."""
 
@@ -5118,35 +5261,47 @@ def decode_provenance_map(payload: Any) -> ProvenanceMap:
         raise TypeError("provenance payload must be a mapping or JSON")
     body = dict(payload)
     version = body.get("schema_version", "1.0")
-    if version == "1.0":
-        legacy = ProvenanceMapV1_0.model_validate(body)
-        upgraded = legacy.model_dump(mode="python")
-        upgraded["schema_version"] = "1.1"
-        for cell in upgraded["cells"]:
-            if cell["lineage_status"] != "complete":
-                continue
-            if any(
-                cell[field]
-                for field in (
-                    "observation_ids",
-                    "assumption_ids",
-                    "source_refs",
-                    "evidence_refs",
-                    "assumption_refs",
-                    "valuation_refs",
-                )
-            ):
-                continue
-            # V1.0 admitted formula-only "complete" cells. V1.1's closed
-            # origin contract cannot infer a reviewed compiler kind during a
-            # read-time upgrade, so preserve the bytes and fail closed in the
-            # canonical in-memory view.
-            cell["lineage_status"] = "missing_source"
-        return ProvenanceMap.model_validate(upgraded)
-    if version == "1.1":
+    if type(version) is not str or version not in ("1.0", "1.1"):
+        raise ProvenanceMapRebuildRequired(
+            f"unsupported ProvenanceMap schema_version: {version!r}; "
+            f"the stored ProvenanceMap is rebuild-required — {ProvenanceMapRebuildRequired.fix}"
+        )
+    try:
+        if version == "1.0":
+            legacy = ProvenanceMapV1_0.model_validate(body)
+            upgraded = legacy.model_dump(mode="python")
+            upgraded["schema_version"] = "1.1"
+            for cell in upgraded["cells"]:
+                if cell["lineage_status"] != "complete":
+                    continue
+                if any(
+                    cell[field]
+                    for field in (
+                        "observation_ids",
+                        "assumption_ids",
+                        "source_refs",
+                        "evidence_refs",
+                        "assumption_refs",
+                        "valuation_refs",
+                    )
+                ):
+                    continue
+                # V1.0 admitted formula-only "complete" cells. V1.1's closed
+                # origin contract cannot infer a reviewed compiler kind during a
+                # read-time upgrade, so preserve the bytes and fail closed in the
+                # canonical in-memory view.
+                cell["lineage_status"] = "missing_source"
+            return ProvenanceMap.model_validate(upgraded)
         return ProvenanceMap.model_validate(body)
-    raise ValueError(f"unsupported ProvenanceMap schema_version: {version!r}")
-
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        location = ".".join(str(part) for part in first["loc"]) or "<root>"
+        raise ProvenanceMapRebuildRequired(
+            "stored ProvenanceMap does not satisfy this binary's contract "
+            f"({exc.error_count()} rejections, first at {location}: "
+            f"{first['msg']}); the stored ProvenanceMap is rebuild-required — "
+            f"{ProvenanceMapRebuildRequired.fix}"
+        ) from exc
 
 class ValidationReport(_ProductContract):
     """One build's findings and the one verdict derived from them.
@@ -5569,6 +5724,7 @@ __all__ = [
     "ValuationPeerPolicy",
     "ValuationSummaryPolicy",
     "ValidationReport",
+    "ProvenanceMapRebuildRequired",
     "ValidationReportRebuildRequired",
     "WORKBOOK_PRESENTATION_CAPTION_ITEM_IDS",
     "decode_provenance_map",

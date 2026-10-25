@@ -97,6 +97,8 @@ from schema.build_value_writers import CellSourceStamp, stamp_cell_source
 from schema.historical_driver_seeds import HistoricalDriverSeedDisposition
 from schema.dependency_graph import DependencyGraphKnownNumberValue
 from schema.finding_vocabulary import blocking_findings
+from schema.model_queries import ANALYST_NOTE_ARTIFACT
+from schema.model_number_value import MissingReasonCode
 from schema.models import FinancialModel, FormulaSpec, FormulaType, ItemType, LineItem, ValueCell, ValueSeries
 from schema.renderer_columns import item_owns_cell
 from schema.statement_bindings_v2 import NOT_DISCLOSED_IN_VINTAGE, StatementBindings
@@ -106,11 +108,15 @@ if TYPE_CHECKING:
   from schema.build_model_product_contracts import ValidationReport
   from schema.coverage_profile import AbsenceCitation
   from schema.finding_vocabulary import Finding
-  from schema.model_number_value import CellUnavailableReason, MissingReasonCode
+  from schema.model_number_value import CellUnavailableReason
 
 
 #: The checkout this root sits in (``_bench_sha`` reads its HEAD).
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: Every typed reason a valueless cell can carry; ``project_provenance_map`` projects an uncited stamp
+#: with one of these as its ``lineage_status``.
+_MISSING_REASON_CODES: frozenset[str] = frozenset(get_args(MissingReasonCode))
 
 SNAPSHOT_DIR = "snapshot"
 DOCUMENT_NAME = "document.json"
@@ -174,6 +180,9 @@ class StageBuildInputs:
   #: basis facts, opening balances). Never a historical statement cell's source.
   bundle: Any = None
   bundle_id: str | None = None
+  #: ``content_sha256`` of the stored row ``bundle`` was decoded from (``None`` exactly when
+  #: ``bundle`` is): what a ModelSpec and every digest naming the bundle bind, never a re-dump.
+  bundle_content_sha256: str | None = None
   #: The ModelSpec over the judgment artifacts (the adapter's assembler).
   model_spec: Any = None
   #: The FAS projection's forecast-assumption rows (``project_forecast_and_historical_authoring``),
@@ -1146,6 +1155,27 @@ def write_seed_cells(
     if getattr(row, "history_scope", None) == "segment_revenue"
   }
   held_keys = {(seed.driver_key, seed.period_id) for seed in hff_seeds}
+  obs_citations_by_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+  bm_evidence_by_id: dict[str, Any] = {}
+  if inputs.revision is not None and getattr(inputs.revision, "business_model", None) is not None:
+    stage_meta = getattr(inputs.revision, "stage_metadata", None)
+    ev_snap = getattr(stage_meta, "evidence_snapshot", None) if stage_meta is not None else None
+    for bm_ev in getattr(ev_snap, "evidence", ()) or ():
+      if getattr(bm_ev, "evidence_id", None):
+        bm_evidence_by_id[str(bm_ev.evidence_id)] = bm_ev
+
+    def _collect_observation_citations(segment_id: str, nodes: Any) -> None:
+      for node in nodes:
+        for obs in getattr(node, "historical_observations", ()) or ():
+          obs_citations_by_key[(f"{segment_id}.{node.id}", str(obs.period_id))] = [
+            citation.model_dump(mode="json")
+            for citation in (getattr(obs, "citations", None) or (obs.citation,))
+            if citation is not None
+          ]
+        _collect_observation_citations(segment_id, node.children or ())
+
+    for segment in inputs.revision.business_model.segments:
+      _collect_observation_citations(segment.id, segment.revenue_model.decomposition)
   sources = (
     ("historical_foundation", _ref_json(inputs.hff), hff_seeds),
     (
@@ -1173,11 +1203,41 @@ def write_seed_cells(
           "document": stored_value, "seed": float(wvalue), "kept": "document",
         })
       return
-    document.set_input(doc, target_id, wyear, float(wvalue), source=_judgment(
-      artifact, ref,
-      {"driver_key": seed.driver_key, "driver_id": seed.driver_id, "period_id": wperiod_id,
-       "fact_ids": list(wfact_ids or ()), "disposition": wdisposition},
-    ))
+    row = {
+      "driver_key": seed.driver_key, "driver_id": seed.driver_id, "period_id": wperiod_id,
+      "fact_ids": list(wfact_ids or ()), "disposition": wdisposition,
+    }
+    citations = obs_citations_by_key.get((seed.driver_key, wperiod_id))
+    if (
+      citations
+      and artifact == "business_model"
+      and getattr(seed, "disposition", None) in {"observed", "derived"}
+      and bool(getattr(seed, "evidence_ids", None))
+    ):
+      resolved_citations: list[dict[str, Any]] = []
+      seed_ev_ids = tuple(str(eid) for eid in (getattr(seed, "evidence_ids", ()) or ()))
+      seed_val_ids = frozenset(str(vid) for vid in (getattr(seed, "evidence_value_ids", ()) or ()))
+      for cit in citations:
+        cit_copy = dict(cit)
+        cit_path = str(cit_copy.get("path") or "")
+        if cit_path.endswith("occurrences.jsonl") and "concept" not in cit_copy:
+          for eid in seed_ev_ids:
+            bm_ev = bm_evidence_by_id.get(eid)
+            loc = getattr(bm_ev, "locator", None) if bm_ev is not None else None
+            if (
+              loc is not None
+              and getattr(loc, "kind", None) == "corpus_excerpt"
+              and getattr(loc, "section", None) == f"capture:{cit_path}"
+              and getattr(loc, "char_start", None) == cit_copy.get("start")
+            ):
+              for val in getattr(bm_ev, "values", ()) or ():
+                if (not seed_val_ids or getattr(val, "value_id", None) in seed_val_ids) and getattr(val, "concept", None):
+                  cit_copy["concept"] = str(val.concept)
+                  break
+              break
+        resolved_citations.append(cit_copy)
+      row["citations"] = resolved_citations
+    document.set_input(doc, target_id, wyear, float(wvalue), source=_judgment(artifact, ref, row))
     written += 1
 
   with document.transaction(doc):
@@ -1191,8 +1251,9 @@ def write_seed_cells(
           continue
         target_ids = [item_id]
         if (
-          artifact == "historical_foundation"
-          and seed.driver_key in segment_revenue_keys
+          (artifact == "business_model" or (
+            artifact == "historical_foundation" and seed.driver_key in segment_revenue_keys
+          ))
           and inputs.revision is not None
           and getattr(inputs.revision, "business_model", None) is not None
         ):
@@ -1389,8 +1450,9 @@ class Helper:
   #: inputs are not restored, the helper's own decision having removed the cells.
   retires: bool = False
   #: The helper's output depends on its inputs by removing or rewriting the lines they do not select
-  #: (the valuation policy's suppression; its edits add and remove no lines): a re-run first puts back
-  #: what its own recorded edits changed (``_undo_recorded_structure``), as a cold construction has it.
+  #: (the valuation policy's suppression) or by authoring formula cells only where the line holds none (the
+  #: spine's pinned-opening delta); its edits add and remove no lines: a re-run first puts back what its own
+  #: recorded edits changed (``_recorded_structure_to_reset``: line fields and formula overrides), as a cold construction has it.
   resets_structure: bool = False
 
 
@@ -1577,14 +1639,32 @@ def _field_json(value: Any) -> Any:
   return list(value) if isinstance(value, list) else value
 
 
+def _formula_overrides(item: Any) -> list[list[Any]]:
+  """A line's formula (non-constant) overrides as ``[period, spec]`` rows, by period: the cells a helper
+  authors as formulas (the spine's first-year delta); a constant override is a cell's input, not structure."""
+  return sorted(
+    ([int(period), spec.model_dump(mode="json")] for period, spec in (item.overrides or {}).items() if spec.type is not FormulaType.constant),
+    key=lambda row: row[0],
+  )
+
+
+def _line_field(item: Any, name: str) -> Any:
+  """``name`` of ``item`` as ``field_changes`` compares and records it (``None`` for a line the sheet lacks)."""
+  if item is None:
+    return None
+  return _formula_overrides(item) or None if name == "formula_overrides" else getattr(item, name, None)
+
+
 def _field_from_json(name: str, value: Any) -> Any:
   """The inverse of :func:`_field_json` for the fields ``field_changes`` records."""
   if value is None:
-    return None
+    return [] if name == "formula_overrides" else None
   if name == "item_type":
     return ItemType(value)
   if name == "formula_periods":
     return list(value)
+  if name == "formula_overrides":
+    return [(int(period), FormulaSpec.model_validate(spec)) for period, spec in value]
   return FormulaSpec.model_validate(value)
 
 
@@ -1615,7 +1695,7 @@ def _recorded_structure_to_reset(
       for name, change in changes.items():
         key = (item_id, name)
         if key not in current:
-          current[key] = _field_json(getattr(item, name))
+          current[key] = _field_json(_line_field(item, name))
         if current[key] == change["after"]:
           current[key] = final[key] = change["before"]
   reset: dict[str, list[tuple[str, Any]]] = {}
@@ -1629,7 +1709,14 @@ def _reset_recorded_structure(model: FinancialModel, reset: Mapping[str, Sequenc
   for item_id, fields in reset.items():
     item = model._index[item_id]
     for name, before in fields:
-      setattr(item, name, _field_from_json(name, before))
+      if name == "formula_overrides":
+        # The line's formula overrides go back to the recorded ones; its constant overrides (filed or authored cells) stand.
+        item.overrides = {
+          **{period: spec for period, spec in (item.overrides or {}).items() if spec.type is FormulaType.constant},
+          **dict(_field_from_json(name, before)),
+        } or None
+      else:
+        setattr(item, name, _field_from_json(name, before))
 
 
 def construct(
@@ -1684,12 +1771,15 @@ def construct(
   before = {item.id: item for item in doc.model._index.values()}
   trial = document.copy_model(doc.model)
   trial.build_index()
+  baselined, given = ((), {}) if protect is None or not over_baseline else _baseline_protected(doc, trial, protect)
   reset_lines: frozenset[str] = frozenset()
   if reset_from is not None and helper.resets_structure and protect is not None:
+    # After the baseline swap: an agent cell holds the constructed cell it displaced (the helper's own formula
+    # override among them), which is what the recorded edits' ``after`` names and the reset takes back.
     reset = _recorded_structure_to_reset(trial, helper.name, reset_from, protect)
     _reset_recorded_structure(trial, reset)
     reset_lines = frozenset(reset)
-  baselined, given = ((), {}) if protect is None or not over_baseline else _baseline_protected(doc, trial, protect)
+    given = {item_id: trial._index[item_id].model_dump() for item_id in given}
   op = {"type": "construction", "helper": helper.name, "owner": helper.owner, **({"reason": reason} if reason else {})}
   edit_source = {"origin": "construction_helper", "helper": helper.name, "owner": helper.owner, "inputs": dict(inputs)}
   try:
@@ -1912,8 +2002,8 @@ def construct(
   for item_id in set(formulas) | set(added) | set(removed):
     old, item = before.get(item_id), trial._index.get(item_id)
     changes: dict[str, Any] = {}
-    for name in ("item_type", "historical", "projected", "formula_periods"):
-      previous, current = getattr(old, name, None), getattr(item, name, None)
+    for name in ("item_type", "historical", "projected", "formula_periods", "formula_overrides"):
+      previous, current = _line_field(old, name), _line_field(item, name)
       if previous == current:
         continue
       changes[name] = {"before": _field_json(previous), "after": _field_json(current)}
@@ -2057,8 +2147,7 @@ def _market_inputs(bundle: Any) -> Any:
 def _write_scenario_outputs(
   model: Any, spec: Any, basis: str | None,
   *, clear_cells: Collection[tuple[str, int]] = (),
-  structure: SheetFrame | None = None,
-) -> dict[tuple[str, str], str]:
+) -> None:
   from schema.build_scenarios import (
     _populate_scenario_eps, _populate_thesis_snapshot, compute_scenario_outputs,
   )
@@ -2081,82 +2170,10 @@ def _write_scenario_outputs(
   if basis is not None:
     _populate_scenario_eps(
       model, {case: dict(outputs.get(basis, {})) for case, outputs in values.items()},
-      item_ids.get("base", {}).get(basis),
+      {case: ids[basis] for case, ids in item_ids.items() if basis in ids},
+      control_ids=values.control_ids,
     )
-  _populate_thesis_snapshot(model, values)
-  unavailable = dict(getattr(values, "unavailable_sources", {}))
-  if structure is not None and unavailable:
-    mark_scenario_output_unavailable(structure, unavailable, basis=basis, model=model)
-  return unavailable
-
-
-#: The Thesis Snapshot fields ``_populate_thesis_snapshot`` writes, by scenario-output field.
-_THESIS_SNAPSHOT_OUTPUT_FIELDS = frozenset({
-  "adj_eps", "revenue_m", "op_margin_pct", "ebitda_margin_pct", "fcf_per_share",
-})
-
-
-def mark_scenario_output_unavailable(
-  structure: SheetFrame, unavailable: Mapping[tuple[str, str], str], *, basis: str | None,
-  model: Any = None,
-) -> int:
-  """Stamp each scenario output cell ``compute_scenario_outputs`` left unwritten
-  because its source row held no finite value ``scenario_output_source_unavailable``,
-  naming that source row on the cell (``document.mark_unavailable``, the one typed
-  absence stamp): the EPS snapshot cells of a dropped publication basis and the
-  Thesis Snapshot cells of a dropped field. A cell the step did write is left
-  alone, and a stamped cell is in ``doc.semantic``, so ``mark_missing_inputs``
-  never overwrites the typed reason with its generic one. Returns cells stamped.
-  ``model`` is the model the step just wrote (a construction trial, when called
-  from ``_write_scenario_outputs``); the document's own model by default."""
-  from schema.build_scenarios import _SCENARIO_EPS_LIMIT
-
-  doc = structure.doc
-  model = doc.model if model is None else model
-  if not model._index:
-    model.build_index()
-  anchors = document.scalar_anchors(model)
-  projection = [int(period) for period in model.time_structure.projection_periods]
-  if not projection:
-    return 0
-  stamped = 0
-  for (case, field), source_id in sorted(unavailable.items()):
-    targets: list[tuple[str, int]] = []
-    if basis is not None and field == basis:
-      targets.extend(
-        (f"tpl.s.earnings_scenarios.eps_{case}_{index}", period)
-        for index, period in enumerate(projection[:_SCENARIO_EPS_LIMIT], start=1)
-      )
-    if field in _THESIS_SNAPSHOT_OUTPUT_FIELDS:
-      targets.append((f"tpl.s.thesis_snapshot.{case}_{field}", projection[0]))
-    for item_id, period in targets:
-      item = model._index.get(item_id)
-      if item is None:
-        continue
-      anchor = anchors.get(item_id)
-      cell_period = int(anchor) if anchor is not None else int(period)
-      if item.values is not None and cell_period in item.values.values:
-        held = item.values.values[cell_period]
-        if held is not None and held.value is not None:
-          continue
-      if item.overrides and cell_period in item.overrides:
-        continue
-      # The document's unavailable column (``document.mark_unavailable``'s stamp,
-      # read by ``document.unavailable_reasons``), written directly as ``construct``
-      # writes its own columns: a per-cell ``clear_input`` edit would make a batch
-      # that passes through an unavailable state leave edits a single replay of
-      # the same ops does not, and the cell holds nothing to clear (a written
-      # cell is skipped above; a refreshed one was cleared by ``clear_cells``).
-      key = (item_id, cell_period)
-      doc.semantic[key] = stamp_cell_source(document.supersede_forecast(doc, key, {
-        "cell": "unavailable", "reason": "scenario_output_source_unavailable",
-        "source": {
-          "kind": "scenario_output_source", "source_item_id": source_id,
-          "case": case, "field": field,
-        },
-      }))
-      stamped += 1
-  return stamped
+  _populate_thesis_snapshot(model, values, item_ids, control_ids=values.control_ids)
 
 
 def release_refresh_record(doc: document.ModelSheet) -> tuple[int, dict[str, Any]] | None:
@@ -2200,7 +2217,6 @@ def refresh_scenario_outputs(doc: document.ModelSheet) -> None:
     Helper("scenario_outputs", "schema/build_scenarios.py:compute_scenario_outputs", ("model_spec",)),
     lambda model: _write_scenario_outputs(
       model, doc.model_spec, inputs.get("eps_publication_basis"), clear_cells=clear_cells,
-      structure=structure,
     ),
     inputs=inputs, reason="document_edit", protect=document._protected(doc),
   )
@@ -2228,7 +2244,7 @@ def replay_tail(doc: document.ModelSheet, rerun: "Construction") -> None:
 #: re-lowered by an advance onto the moved projection window).
 DERIVATION_HELPERS = frozenset({
   "statement_residual_histories", "business_model_node_history", "scenario_targets", "financial_schedules", "working_capital_schedule",
-  "historical_foundation_facts", "tax_schedule", "valuation_inputs", "company_grounded_schedules",
+  "historical_foundation_facts", "three_statement_spine", "tax_schedule", "valuation_inputs", "company_grounded_schedules",
   "control_curves", "scenario_outputs",
 })
 #: The retirement that follows the valuation inputs (``retire_unused_cost_of_debt``): not a
@@ -2342,6 +2358,22 @@ def scenario_publication_controls_from_payload(
     )
     curves.append(CanonicalProjectionCurve(**fields))
   return tuple(curves), tuple(payload["bound_scenario_control_ids"])
+
+
+def opening_input_source(returned: Any, item_id: str, period: int) -> Mapping[str, Any] | None:
+  """``cell_source`` of a helper whose formula cell reads the pin's opening balance as an operand:
+  the column names that evidence as an input (``opening_inputs``, which ``publish._document_seed_rows``
+  turns into a ``source_bundle_opening_balance`` manifest row), so the cell's lineage carries it as a
+  derived input, never as the cell's own filing-line observation."""
+  coverage = returned.get("source_fact_coverage", ()) if isinstance(returned, Mapping) else ()
+  inputs = [
+    {key: row[key] for key in ("requirement_id", "evidence_id", "source_id")}
+    for row in coverage
+    if row.get("source_kind") == "source_bundle_opening_balance"
+    and row.get("resolved_item_id") == item_id
+    and [int(candidate) for candidate in row.get("periods", ())] == [period]
+  ]
+  return {"opening_inputs": inputs} if inputs else None
 
 
 def construct_document(
@@ -2519,7 +2551,12 @@ def construct_document(
 
   step(Helper("cash_roll_forward", "schema/build_cash_historicals.py:_normalize_projected_cash_roll_forward"), _normalize_projected_cash_roll_forward)
   step(Helper("balance_sheet_roll_forward", "schema/build_cash_historicals.py:_normalize_projected_balance_sheet_roll_forward"), _normalize_projected_balance_sheet_roll_forward)
-  step(Helper("three_statement_spine", "schema/build_cash_historicals.py:_normalize_three_statement_spine"), _normalize_three_statement_spine)
+  step(
+    Helper("three_statement_spine", "schema/build_cash_historicals.py:_normalize_three_statement_spine", resets_structure=True),
+    lambda model: _normalize_three_statement_spine(model, opening_balances=opening or {}),
+    opening_input_source,
+    read_slice=read_slices.three_statement_spine(bundle, opening=opening),
+  )
   step(Helper("financial_schedules", "schema/build_financial_schedules.py:_complete_financial_schedules"), _complete_financial_schedules)
   step(Helper("working_capital_schedule", "schema/build_working_capital_policy.py:_complete_working_capital_schedule"), _complete_working_capital_schedule)
 
@@ -2842,7 +2879,7 @@ def construct_document(
       model, context["scenario_inputs"],
       **({"authenticated_scenario_curves": True} if any(curve.domain == "scenario" for curve in curves) else {}),
     )
-    _write_scenario_outputs(model, spec, declared_eps_publication_basis(capabilities), structure=structure)
+    _write_scenario_outputs(model, spec, declared_eps_publication_basis(capabilities))
 
   step(
     Helper("scenario_outputs", "schema/build_scenarios.py:compute_scenario_outputs", ("model_spec",)),
@@ -2958,8 +2995,9 @@ def _unwritten_input_periods(
 
 def _mark_unresolved_node_cell(doc: document.ModelSheet, item_id: str, period: int, *, gaps: Sequence[str] = ()) -> None:
   """The one stamp of an unresolved BusinessModel node's unwritten historical cell:
-  ``business_model_node_unresolved`` (``project_provenance_map`` reads it as the lineage status of
-  that name, so ``provenance_diagnostics_for_map`` emits no per-cell ``missing_source``)."""
+  ``business_model_node_unresolved`` (``project_provenance_map`` projects every ``MissingReasonCode``
+  stamp as its own typed ``lineage_status``, so this cell is never a ``missing_source`` and
+  ``provenance_diagnostics_for_map`` emits no per-cell diagnostic for it)."""
   column: dict[str, Any] = {
     "source": {"kind": "none", "note": "the node's history is not written; its business_model_node_unresolved finding is the record"},
   }
@@ -2996,7 +3034,9 @@ def mark_missing_inputs(
   historical periods ``source_observation_absent`` (no required role maps the line), or
   ``business_model_node_unresolved`` on a line ``unresolved_nodes`` names (a BusinessModel node
   whose history ``apply_business_model_node_history`` could not write: the node's own finding is
-  the one record of it, so ``project_provenance_map`` gives these cells no ``missing_source``).
+  the one record of it). ``project_provenance_map`` projects each of these ``MissingReasonCode``
+  stamps as its own typed ``lineage_status`` and never as ``missing_source``, which means only that
+  a write path admitted a value without an origin.
   When a construction helper did not run, each such cell's column names it
   (``gap: construction_helper_missing:<helper>``): the document cannot tell which of them that
   helper would have produced. Rows retired at their owner during construction
@@ -3423,6 +3463,265 @@ def _statement_role_lookups(
   }
 
 
+def _cell_filing_line(
+  row: Mapping[str, Any], kind: Any, role_by_acc_tag: Mapping[Any, str],
+) -> Any | None:
+  """The ``FilingLineRef`` a semantic row cites: its ``line_ref``, else its ``filing_line`` source."""
+  return _filing_line_ref(
+    row.get("line_ref"),
+    statement_role_by_accession_tag=role_by_acc_tag,
+  ) or (
+    _filing_line_ref(
+      row.get("source"),
+      statement_role_by_accession_tag=role_by_acc_tag,
+    )
+    if kind == "filing_line"
+    else None
+  )
+
+
+def _cited_kpi_observation(source: Mapping[str, Any], source_bundle: Any, period: int) -> Any | None:
+  """The sealed ``kpi_observations`` row a ``kpi`` source names, else ``None``.
+
+  The bundle carries each KPI row's producer record in the observation ``detail``, so a citation
+  names its row by the record's locator ``span`` (any of its locators) or its ``observation_id``,
+  narrowed by a cited ``accession``. The capture ``row`` index and ``capture_id`` name the capture,
+  which the bundle does not carry, so they identify nothing here. A citation that matches no ``ok``
+  row in the cell's fiscal period, or more than one, names no observation and stays the agent's
+  citation (RULE-I1).
+  """
+  if source_bundle is None:
+    return None
+  nested = source.get("ref")
+  coordinates = {**source, **nested} if isinstance(nested, Mapping) else source
+  span = coordinates.get("span")
+  observation_id = coordinates.get("observation_id")
+  accession = coordinates.get("accession")
+  if not isinstance(span, str) and not isinstance(observation_id, str):
+    return None
+  period_labels = {
+    f"FY{period}",
+    *(
+      annual.period_end.isoformat() for annual in source_bundle.reported_periods
+      if annual.period_type == "FY" and annual.fiscal_year == period
+    ),
+  }
+  matched = []
+  for observation in source_bundle.kpi_observations:
+    if (
+      observation.status != "ok"
+      or observation.line.period.canonical_label() not in period_labels
+      or (isinstance(accession, str) and observation.line.accession != accession)
+    ):
+      continue
+    try:
+      record = json.loads(observation.detail or "")
+    except ValueError:
+      continue
+    if not isinstance(record, Mapping):
+      continue
+    locators = (record.get("locator"), *(record.get("additional_locators") or ()))
+    spans = {locator.get("span") for locator in locators if isinstance(locator, Mapping)}
+    if (isinstance(span, str) and span not in spans) or (
+      isinstance(observation_id, str) and observation_id != record.get("observation_id")
+    ):
+      continue
+    matched.append(observation)
+  return matched[0] if len(matched) == 1 else None
+
+
+def _kpi_source_ids(line: Any | None, source_bundle: Any) -> tuple[str, ...]:
+  """The sealed KPI ``SourceRecord`` ids that hold ``line``'s accession's KPI rows (the builder's ``kpi_observations:<accession>``)."""
+  if line is None or source_bundle is None:
+    return ()
+  return tuple(
+    str(source.id) for source in source_bundle.sources
+    if source.endpoint_or_filing_id == f"kpi_observations:{line.accession}"
+  )
+
+
+def _cited_occurrence_evidence(
+  source: Mapping[str, Any],
+  source_bundle: Any,
+  period: int,
+  item: Any,
+  authored: Any,
+) -> Any | None:
+  """The sealed ``SourceEvidence`` row an ``occurrences.jsonl`` capture citation names, else ``None``.
+
+  Matches by the cited occurrence's resolved filing-line identity (``accession``, ``period_id``,
+  ``tag``, ``dimensions``, and ``statement_role`` when present on ``concept``) and uses value
+  agreement strictly as verification.
+  """
+  from decimal import Decimal
+  from schema.build_model_product_contracts import VALUE_SCALE_FACTORS, source_measure
+
+  if source_bundle is None or item is None or authored is None:
+    return None
+  path = str(source.get("path") or "")
+  if not path.endswith("occurrences.jsonl") and not source.get("cell_locator"):
+    return None
+  acc_match = re.search(r"\d{10}-\d{2}-\d{6}", str(source.get("accession") or path))
+  if acc_match is None:
+    return None
+  accession = acc_match.group(0)
+  concept = str(source.get("concept") or "").strip()
+  expected_role = ""
+  expected_tag = ""
+  expected_dims: tuple[tuple[str, str], ...] | None = None
+  if concept and "|" in concept:
+    parts = concept.split("|", 2)
+    if len(parts) == 3:
+      expected_role, expected_tag, dims_raw = parts
+      parsed_dims: list[tuple[str, str]] = []
+      for pair in dims_raw.split(","):
+        if "=" in pair:
+          ax, mem = pair.split("=", 1)
+          if ax.strip() and mem.strip():
+            parsed_dims.append((ax.strip(), mem.strip()))
+      expected_dims = tuple(sorted(parsed_dims))
+  elif concept:
+    expected_tag = concept
+    expected_dims = ()
+  if not expected_tag:
+    return None
+  matched: list[Any] = []
+  for ev in source_bundle.evidence:
+    if (
+      ev.line is None
+      or ev.line.accession != accession
+      or ev.period_id != f"FY{period}"
+      or ev.line.tag != expected_tag
+      or ev.value is None
+    ):
+      continue
+    ev_dims = tuple(
+      sorted((str(d.axis_qname), str(d.member_qname)) for d in (ev.line.dimensions or ()))
+    )
+    if expected_dims is not None and ev_dims != expected_dims:
+      continue
+    if expected_role and str(ev.line.statement_role or "") != expected_role:
+      continue
+    try:
+      measure = source_measure(ev.unit)
+      ev_scale = (measure.model_scale if measure is not None and measure.model_scale else None) or ev.scale
+      scaled = float(
+        Decimal(str(ev.value)) * VALUE_SCALE_FACTORS[ev_scale] / Decimal(10) ** document._line_exponent(item)
+      )
+    except Exception:
+      continue
+    if abs(scaled - float(authored)) <= CITED_FACT_AGREEMENT_ABS:
+      matched.append(ev)
+  if not matched:
+    return None
+  matched.sort(
+    key=lambda ev: (
+      not str(getattr(ev.line, "statement_role", "") or "").startswith("statement"),
+      str(ev.evidence_id),
+    )
+  )
+  return matched[0]
+
+
+#: ``abs(authored - filed)`` on the model's scale at or below this is agreement (the journey
+#: measure's ``IDENTITY_ABS``).
+CITED_FACT_AGREEMENT_ABS = 1e-6
+
+
+@dataclass(frozen=True)
+class CitedFactMismatch:
+  """One cited ``set_input`` whose authored value disagrees with the SourceBundle fact it cites.
+
+  ``filed`` is the cited evidence's value on the cell's model scale (``model_scale``);
+  ``evidence`` is the ``SourceEvidence`` row it was read from and ``line`` the cited filing line.
+  """
+
+  item_id: str
+  period: int
+  authored: float
+  filed: Any
+  model_scale: str
+  evidence: Any | None
+  line: Any
+
+  @property
+  def observation_id(self) -> str:
+    return projection.filing_line_observation_id(self.line)
+
+
+def cited_fact_mismatches(
+  rows: Sequence[Mapping[str, Any]], source_bundle: Any, model: Any,
+) -> dict[tuple[str, int], CitedFactMismatch]:
+  """The cited-input cells of ``rows`` whose authored value disagrees with the fact they cite.
+
+  The one owner of that comparison: ``project_provenance_map`` withholds the cited line as such a
+  cell's own observation, and ``schema.build_findings.cited_fact_value_mismatch_findings`` emits the
+  finding, both from this result. A cell is compared when its origin is ``cited_input``, its source
+  is a ``filing_line`` or ``kpi`` that names a sealed bundle fact, and its value is known.
+  A KPI uses the selected observation's canonical quantity, including when its line has a pin;
+  ``quantity_native_value(kpi_fact.value)`` recovers that canonical quantity from the declared-scale
+  ``Quantity``; the pin supplies evidence metadata, not a different observation's value. ``SourceEvidence.value`` is already
+  the economic value of the model's scale convention: the bundle builder applied the presentation
+  sign (``preferred_label_negates_value``) and the role polarity
+  (``projection._fact_requirement_value``), so only its scale is reconciled with the line's
+  ``model_scale`` — read as the accepted-HFF application reads it (``source_measure``): the scale
+  the unit name fixes when it fixes one (``shares_millions`` folds the million into the name and
+  lands on a ``units`` share row as ``56.55``), else ``SourceEvidence.scale``, converted by
+  ``VALUE_SCALE_FACTORS``. The cell agrees when any evidence row of the cited line (a restated
+  vintage, a vendor copy) holds the authored value within ``CITED_FACT_AGREEMENT_ABS``; otherwise
+  the first such row, primary quality first, is named.
+  """
+  from decimal import Decimal
+  from schema.build_model_product_contracts import VALUE_SCALE_FACTORS, source_measure
+  from schema.build_population import quantity_native_value
+
+  def evidence_scale(evidence: Any) -> str:
+    measure = source_measure(evidence.unit)
+    return (measure.model_scale if measure is not None and measure.model_scale else None) or evidence.scale
+
+  if source_bundle is None:
+    return {}
+  evidence_by_line: dict[Any, list[Any]] = {}
+  for evidence in sorted(source_bundle.evidence, key=lambda row: row.source_quality != "primary"):
+    evidence_by_line.setdefault(evidence.line, []).append(evidence)
+  role_by_acc_tag = _statement_role_lookups(rows, source_bundle)
+  found: dict[tuple[str, int], CitedFactMismatch] = {}
+  for row in rows:
+    stamp: CellSourceStamp = row if isinstance(row, CellSourceStamp) else stamp_cell_source(row)
+    kind = stamp.source_dict.get("kind")
+    value = row["value"]
+    if stamp.origin != "cited_input" or kind not in ("filing_line", "kpi") or value.get("state") != "known":
+      continue
+    kpi_observation = (
+      _cited_kpi_observation(stamp.source_dict, source_bundle, row["period"]) if kind == "kpi" else None
+    )
+    line = (
+      kpi_observation.line if kpi_observation is not None
+      else _cell_filing_line(row, kind, role_by_acc_tag) if kind != "kpi" else None
+    )
+    cited = evidence_by_line.get(line, [])
+    kpi_fact = kpi_observation.fact if kpi_observation is not None else None
+    if kpi_fact is None and (kind == "kpi" or not cited):
+      continue
+    item = model.get_item(row["item_id"])
+    authored = float(value["value"])
+    on_model_scale = (
+      [quantity_native_value(kpi_fact.value) / Decimal(10) ** document._line_exponent(item)]
+      if kpi_fact is not None
+      else [
+        Decimal(evidence.value) * VALUE_SCALE_FACTORS[evidence_scale(evidence)] / Decimal(10) ** document._line_exponent(item)
+        for evidence in cited
+      ]
+    )
+    if any(abs(float(filed) - authored) <= CITED_FACT_AGREEMENT_ABS for filed in on_model_scale):
+      continue
+    found[(row["item_id"], row["period"])] = CitedFactMismatch(
+      item_id=row["item_id"], period=row["period"], authored=authored,
+      filed=on_model_scale[0], model_scale=item.model_scale, evidence=cited[0] if cited else None, line=line,
+    )
+  return found
+
+
 def _provenance(rows: list[dict[str, Any]], rendered: Any) -> list[dict[str, Any]]:
   """Compatibility row view of the single provenance projector."""
   return project_provenance_map(cast(document.ModelSheet, rows), rendered)
@@ -3449,6 +3748,7 @@ def project_provenance_map(
   model_spec: Any | None = None,
   seed_coverage_manifest: Sequence[Mapping[str, Any]] = (),
   evaluation_reads: Mapping[tuple[str, int], tuple[tuple[str, int], ...]] | None = None,
+  case_evaluation_reads: Mapping[str, Mapping[tuple[str, int], tuple[tuple[str, int], ...]]] | None = None,
   values: document.Values | None = None,
 ) -> Any:
   """Project carried cell stamps, direct declarations and actual evaluation reads once.
@@ -3456,6 +3756,7 @@ def project_provenance_map(
   The row-list compatibility view serves snapshot JSON and older ``_provenance`` callers;
   document callers receive the typed ``ProvenanceMap``.
   """
+  from decimal import Decimal
   from schema.build_model_product_contracts import (
     AssumptionLineageReference,
     CellLineage,
@@ -3466,11 +3767,13 @@ def project_provenance_map(
     ProvenanceMap,
     SourceBundle,
     ValuationLineageReference,
+    VALUE_SCALE_FACTORS,
     _COMPILED_LITERAL_CONTROL_IDS,
     _WORKBOOK_METADATA_ITEM_IDS,
     decode_source_bundle_payload,
   )
   from schema.build_offline_validation import _semantic_cells, lag_input_gap_readers, owned_cell_gaps
+  from schema.build_population import quantity_native_value
   from schema.coverage_profile import AnnualSourceRequirement, PeriodPinCell
   from schema.finding_vocabulary import Declination
   from schema.model_kind_dispatch import (
@@ -3478,6 +3781,7 @@ def project_provenance_map(
     declared_compiler_origins as _declared_compiler_origins,
   )
   from schema.models import FormulaSpec
+  from schema.model_queries import SCENARIO_ASSUMPTION_PREFIX
   from schema.provenance_classifier import REGISTRY_DISCOUNT, REGISTRY_SCAFFOLD, REGISTRY_SCENARIO
   from schema.renderer_columns import AbsoluteColumnMapper
   from schema.valuation_evidence_derivations import derive_covered_market_inputs
@@ -3533,6 +3837,8 @@ def project_provenance_map(
     else decode_source_bundle_payload(source_bundle)
   )
   role_by_acc_tag = _statement_role_lookups(rows, _early_bundle_obj)
+  # A legacy row list carries no model to give a cell its scale: it has nothing to compare.
+  cited_mismatches = {} if legacy_rows else cited_fact_mismatches(rows, _early_bundle_obj, doc.model)
   for row in rows:
     cell = cells.get((row["item_id"], row["period"]))
     if cell is None:
@@ -3540,31 +3846,40 @@ def project_provenance_map(
     stamp: CellSourceStamp = row if isinstance(row, CellSourceStamp) else stamp_cell_source(row)
     source = stamp.source_dict
     kind = source.get("kind")
-    observation_ids = list(stamp.observation_ids)
+    # A cited line whose filed value disagrees with the authored one is not this cell's observation
+    # (RULE-I1): the cell keeps what else it carries and the mismatch is the finding.
+    mismatch = cited_mismatches.get((row["item_id"], row["period"]))
+    observation_ids = [
+      obs for obs in stamp.observation_ids if mismatch is None or obs != mismatch.observation_id
+    ]
     via_kind = (
       (source.get("via") or {}).get("source_kind")
       if isinstance(source.get("via"), Mapping)
       else None
     )
-    if not observation_ids or via_kind == "source_bundle_opening_balance":
-      line = _filing_line_ref(
-        row.get("line_ref"),
-        statement_role_by_accession_tag=role_by_acc_tag,
-      ) or (
-        _filing_line_ref(
-          source,
-          statement_role_by_accession_tag=role_by_acc_tag,
-        )
-        if kind == "filing_line"
-        else None
+    if mismatch is None and (not observation_ids or via_kind == "source_bundle_opening_balance"):
+      kpi_observation = _cited_kpi_observation(source, _early_bundle_obj, row["period"]) if kind == "kpi" else None
+      line = _cell_filing_line(row, kind, role_by_acc_tag) or (
+        kpi_observation.line if kpi_observation is not None else None
       )
       if line is not None:
         line_obs_id = projection.filing_line_observation_id(line)
         if line_obs_id not in observation_ids:
           observation_ids.append(line_obs_id)
-    if not observation_ids and stamp.origin == "cited_input" and kind in document.CITED_SOURCE_KINDS:
-      observation_ids.append(projection.cited_source_observation_id(source))
-    assumption_ids = list(stamp.assumption_ids)
+    # A cited input whose line this bundle carries no evidence for names no observation (RULE-I1):
+    # the agent's citation stays in the cell's ``source`` and the ladder below reads what the cell
+    # verifiably carries, so a cell with nothing else is ``missing_source`` until it cites a line the
+    # bundle carries or declares the absence.
+    is_historical_statement_row = (
+      False
+      if legacy_rows
+      else document.is_historical_statement_cell(doc.model, str(row["item_id"]), int(row["period"]))
+    )
+    assumption_ids = [
+      ass_id
+      for ass_id in stamp.assumption_ids
+      if not (is_historical_statement_row and str(ass_id).startswith(f"{ANALYST_NOTE_ARTIFACT}:"))
+    ]
     lineage_refs = {
       field: list(getattr(stamp, field))
       for field in (
@@ -3586,13 +3901,16 @@ def project_provenance_map(
       status = "compiler_derived"
     elif absence_cited or blank_corroborated or stamp.missing_reason == NOT_DISCLOSED_IN_VINTAGE:
       status = "source_absence_evidenced"
-    elif stamp.missing_reason == "business_model_node_unresolved":
-      status = "business_model_node_unresolved"
     elif observation_ids or assumption_ids or any(lineage_refs.values()):
       status = "complete"
+    elif stamp.missing_reason in _MISSING_REASON_CODES:
+      status = cast(Any, stamp.missing_reason)
     elif stamp.origin == "presentation":
       status = "presentation"
-    elif kind in ("template", "formula", "construction_helper", "presentation_choice") or document.judgment_row_ref(source) is not None:
+    elif kind in ("template", "formula", "construction_helper", "presentation_choice") or (
+      (judgment_ref := document.judgment_row_ref(source)) is not None
+      and judgment_ref["artifact"] != ANALYST_NOTE_ARTIFACT
+    ):
       status = "compiler_derived"
     else:
       status = "missing_source"
@@ -3850,6 +4168,11 @@ def project_provenance_map(
       document_absence.add(identity)
 
   evidence_by_id = dict(source_bundle_evidence_by_id)
+  sealed_evidence_ids_by_observation_id: dict[str, list[str]] = {}
+  for sealed_evidence in source_bundle_evidence_by_id.values():
+    sealed_evidence_ids_by_observation_id.setdefault(
+      projection.filing_line_observation_id(sealed_evidence.line), [],
+    ).append(sealed_evidence.evidence_id)
   fact_projection = None if model_spec_obj is None else model_spec_obj.historical_foundation_fact_projection
   if fact_projection is not None:
     for observation in fact_projection.observations:
@@ -4164,10 +4487,258 @@ def project_provenance_map(
   for forecast_assumption in assumptions.values():
     forecast_assumptions_by_id.setdefault(str(forecast_assumption.assumption_id), forecast_assumption)
 
+  # An analyst note the document minted an assumption for (``document.analyst_note_judgment``): the
+  # rationale is the note, held on the cell's own ``judgment_row``.
+  analyst_notes: dict[str, str] = {}
+  analyst_note_source_refs: dict[str, tuple[str, ...]] = {}
+  for (sem_item_id, sem_period), column in doc.semantic.items():
+    if document.is_historical_statement_cell(model, str(sem_item_id), int(sem_period)):
+      continue
+    judgment = document.judgment_row_ref(column.get("source"))
+    row = None if judgment is None or judgment["artifact"] != ANALYST_NOTE_ARTIFACT else judgment["row"]
+    if isinstance(row, Mapping) and row.get("assumption_id") and isinstance(row.get("rationale"), str):
+      ass_id_str = str(row["assumption_id"])
+      analyst_notes[ass_id_str] = row["rationale"]
+      raw_row_refs = row.get("source_refs")
+      analyst_note_source_refs[ass_id_str] = document.extract_analyst_note_handles(
+        row["rationale"],
+        raw_row_refs if isinstance(raw_row_refs, Sequence) and not isinstance(raw_row_refs, (str, bytes)) else None,
+      )
+  from schema.control_snapshot_projection import (
+    AUTHENTICATED_SCENARIO_PROJECTION_NOTE,
+    CANONICAL_SCENARIO_RENDER_TARGETS,
+    CanonicalProjectionScenario,
+    canonical_scenario_projection_owner_or_none,
+  )
+  from schema.driver_resolver import resolve_driver_key
+  from schema.scenario_bindings import scenario_case_gaps
+
+  projection_override_items: dict[tuple[str, str], set[str]] = {}
+  assumption_items_by_driver: dict[str, set[str]] = {}
+  for entry in seed_coverage_manifest:
+    source_kind = entry.get("source_kind")
+    resolved_id = entry.get("resolved_item_id")
+    if not resolved_id:
+      continue
+    if source_kind == "projection_override" and entry.get("control_id") and entry.get("scenario"):
+      projection_override_items.setdefault(
+        (str(entry["scenario"]).strip().lower(), str(entry["control_id"])), set(),
+      ).add(str(resolved_id))
+    elif source_kind == "model_spec_assumption" and entry.get("canonical_driver_key"):
+      assumption_items_by_driver.setdefault(str(entry["canonical_driver_key"]), set()).add(str(resolved_id))
+  for (sem_item_id, _sem_period), column in doc.semantic.items():
+    judgment = document.judgment_row_ref(column.get("source")) if isinstance(column, Mapping) else None
+    row = None if judgment is None else judgment["row"]
+    if isinstance(row, Mapping):
+      if row.get("driver"):
+        assumption_items_by_driver.setdefault(str(row["driver"]), set()).add(str(sem_item_id))
+      if row.get("assumption_id"):
+        assumption_items_by_driver.setdefault(str(row["assumption_id"]), set()).add(str(sem_item_id))
+
+  from schema.build_company_grounded_schedules import scale_aggregate_sbc_scenario_values
+  from schema.scenario_bridge import normalize_control_magnitude
+
+  canonical_table_by_item: dict[str, Mapping[CanonicalProjectionScenario, str]] = {}
+  for _anchor_id, case_targets in CANONICAL_SCENARIO_RENDER_TARGETS.items():
+    for leaf_id in case_targets.values():
+      canonical_table_by_item[leaf_id] = case_targets
+    base_leaf = case_targets["base"]
+    if base_leaf in model._index:
+      try:
+        owner_id = canonical_scenario_projection_owner_or_none(model, base_leaf)
+      except ValueError:
+        owner_id = None
+      if owner_id is not None:
+        canonical_table_by_item[owner_id] = case_targets
+
+  projection_years = {int(p) for p in model.time_structure.projection_periods}
+  unresolved_scenario_cases = (
+    frozenset(gap.scenario for gap in scenario_case_gaps(model_spec_obj))
+    if model_spec_obj is not None
+    else frozenset()
+  )
+  base_review_overrides = {
+    str(override.assumption_id): override
+    for review in (() if model_spec_obj is None else model_spec_obj.scenario_reviews)
+    if review.scenario_name.strip().lower() == "base"
+    for override in review.overrides
+  }
+
+  def _override_period_values(raw_value: Any, period_ids: Sequence[str]) -> dict[int, float] | None:
+    if isinstance(raw_value, Mapping):
+      vals: dict[int, float] = {}
+      for k, v in raw_value.items():
+        try:
+          yr = int(str(k).removeprefix("FY").removesuffix("E"))
+          num = float(v)
+        except (TypeError, ValueError):
+          return None
+        if math.isfinite(num):
+          vals[yr] = num
+      if projection_years and (set(vals) & projection_years) != projection_years:
+        return None
+      return vals
+    try:
+      scalar = float(raw_value)
+    except (TypeError, ValueError):
+      return None
+    if not math.isfinite(scalar):
+      return None
+    return {
+      int(str(pid).removeprefix("FY").removesuffix("E")): scalar
+      for pid in period_ids
+    }
+
+  def _base_assumption_period_value(assumption_obj: Any, period: int) -> float | None:
+    ass_id = str(assumption_obj.assumption_id)
+    base_ov = base_review_overrides.get(ass_id)
+    if base_ov is not None:
+      base_ov_vals = _override_period_values(base_ov.value, base_ov.period_ids)
+      if base_ov_vals is not None and period in base_ov_vals:
+        return base_ov_vals[period]
+    period_values = getattr(assumption_obj, "period_values", None)
+    if isinstance(period_values, Mapping):
+      raw = period_values.get(period, period_values.get(str(period)))
+      if raw is not None:
+        try:
+          return float(raw)
+        except (TypeError, ValueError):
+          pass
+    scalar = getattr(assumption_obj, "value", None)
+    if scalar is not None:
+      try:
+        return float(scalar)
+      except (TypeError, ValueError):
+        pass
+    return None
+
+  scenario_overrides: dict[tuple[str, str, int], Any] = {}
+  held_at_base_table_source: dict[tuple[str | None, str, int], str] = {}
+  for review in (() if model_spec_obj is None else model_spec_obj.scenario_reviews):
+    raw_case = review.scenario_name.strip().lower()
+    if raw_case == "bull":
+      case: CanonicalProjectionScenario = "bull"
+    elif raw_case == "bear":
+      case = "bear"
+    else:
+      continue
+    if case in unresolved_scenario_cases:
+      continue
+    for override in review.overrides:
+      ass_id = str(override.assumption_id)
+      assumption_obj = forecast_assumptions_by_id.get(ass_id)
+      if assumption_obj is None:
+        continue
+      ov_values = _override_period_values(override.value, override.period_ids)
+      if ov_values is None:
+        continue
+      selector = str(override.target_control_id)
+      raw_candidates: list[str] = [
+        *projection_override_items.get((case, selector), ()),
+        *assumption_items_by_driver.get(selector, ()),
+        *assumption_items_by_driver.get(ass_id, ()),
+      ]
+      if selector in model._index:
+        raw_candidates.append(selector)
+      try:
+        resolved_key = resolve_driver_key(selector)
+      except Exception:
+        resolved_key = None
+      if resolved_key is not None and resolved_key in model._index:
+        raw_candidates.append(resolved_key)
+      candidate_items = list(dict.fromkeys(raw_candidates))
+      resolved_case_items: list[str] = []
+      table_pairs: list[tuple[str, str]] = []
+      base_control_items: list[str] = []
+      for cand_id in candidate_items:
+        table_targets = canonical_table_by_item.get(cand_id)
+        if cand_id not in resolved_case_items:
+          resolved_case_items.append(cand_id)
+        if table_targets is not None:
+          base_leaf = table_targets["base"]
+          case_leaf = table_targets[case]
+          if case_leaf not in resolved_case_items:
+            resolved_case_items.append(case_leaf)
+          if (case_leaf, base_leaf) not in table_pairs:
+            table_pairs.append((case_leaf, base_leaf))
+          if base_leaf not in base_control_items:
+            base_control_items.append(base_leaf)
+          for owner_cand, targets_cand in canonical_table_by_item.items():
+            if targets_cand == table_targets and owner_cand not in resolved_case_items:
+              resolved_case_items.append(owner_cand)
+        elif cand_id not in base_control_items:
+          base_control_items.append(cand_id)
+      normalized_ov_by_base: dict[str, dict[int, float]] = {}
+      for base_id in base_control_items:
+        norm_vals = {
+          int(p): normalize_control_magnitude(base_id, float(v))
+          for p, v in ov_values.items()
+        }
+        if base_id in model._index:
+          norm_vals = scale_aggregate_sbc_scenario_values(model.get_item(base_id), norm_vals)
+        normalized_ov_by_base[base_id] = norm_vals
+      for period, ov_val in ov_values.items():
+        base_val: float | None = None
+        cmp_ov_val = ov_val
+        if isinstance(ours, Mapping):
+          for base_id in base_control_items:
+            cell_val = ours.get((base_id, int(period)))
+            if cell_val is None:
+              continue
+            raw_cell_val = getattr(cell_val, "value", cell_val)
+            cell_state = getattr(cell_val, "state", "known")
+            if (
+              cell_state == "known"
+              and isinstance(raw_cell_val, (int, float))
+              and math.isfinite(float(raw_cell_val))
+            ):
+              base_val = float(raw_cell_val)
+              cmp_ov_val = normalized_ov_by_base.get(base_id, {}).get(int(period), ov_val)
+              break
+        if base_val is None:
+          base_val = _base_assumption_period_value(assumption_obj, period)
+        is_held_at_base = (
+          base_val is not None and math.isclose(cmp_ov_val, base_val, rel_tol=0.0, abs_tol=1e-12)
+        )
+        if is_held_at_base:
+          for case_leaf, base_leaf in table_pairs:
+            leaf_item = model._index.get(case_leaf)
+            leaf_val = leaf_item.values.values.get(period) if leaf_item is not None and leaf_item.values is not None else None
+            if leaf_val is not None and leaf_val.note == AUTHENTICATED_SCENARIO_PROJECTION_NOTE:
+              held_at_base_table_source[(case, case_leaf, int(period))] = base_leaf
+        else:
+          for resolved_item_id in resolved_case_items:
+            scenario_overrides[(case, resolved_item_id, int(period))] = override
+
+  scenario_assumptions = {
+    f"{SCENARIO_ASSUMPTION_PREFIX}{case}:{override.assumption_id}": override
+    for (case, _, _), override in scenario_overrides.items()
+  }
+
   def assumption_reference(assumption_id: str, period: int) -> AssumptionLineageReference | None:
+    override = scenario_assumptions.get(assumption_id)
+    if override is not None:
+      base_assumption = forecast_assumptions_by_id.get(str(override.assumption_id))
+      return AssumptionLineageReference(
+        assumption_id=assumption_id,
+        rationale=override.rationale,
+        confidence=(
+          str(base_assumption.confidence)
+          if base_assumption is not None and base_assumption.confidence is not None
+          else None
+        ),
+        evidence_ids=override.evidence_ids,
+      )
     control = authored_controls.get(assumption_id)
     if control is not None:
       return control
+    note = analyst_notes.get(assumption_id)
+    if note is not None:
+      return AssumptionLineageReference(
+        assumption_id=assumption_id,
+        rationale=note,
+        source_refs=analyst_note_source_refs.get(assumption_id, ()),
+      )
     assumption = forecast_assumptions_by_id.get(assumption_id)
     if assumption is None:
       return None
@@ -4223,6 +4794,18 @@ def project_provenance_map(
   ]:
     if cited_inclusion_for(item_id, period) is not None:
       return (), (), (), (), (), cited_inclusion_source_ids(item_id, period)
+    # A cell ``cited_fact_mismatches`` flags is not evidenced by the line it cites, on any path: its
+    # observation id and that line's evidence are derived once here from the helper's result and
+    # withheld from every declaration below (the statement binding, the semantic source, the seed
+    # manifest). The cell keeps whatever else it carries; the mismatch is the finding.
+    mismatch = cited_mismatches.get((item_id, period))
+    withheld_line = None if mismatch is None else mismatch.line
+    withheld_observation_ids = frozenset(() if mismatch is None else (mismatch.observation_id,))
+    withheld_evidence_ids = frozenset(
+      ()
+      if mismatch is None or source_bundle_obj is None
+      else (ev.evidence_id for ev in source_bundle_obj.evidence if ev.line == mismatch.line)
+    )
     obs_list: list[str] = []
     ass_list: list[str] = []
     ev_list: list[str] = []
@@ -4233,21 +4816,22 @@ def project_provenance_map(
       cand_identity = (candidate_id, period)
       sem_col = doc.semantic.get(cand_identity)
       sem_source = (sem_col or {}).get("source") if isinstance(sem_col, Mapping) else None
-      sem_via_kind = (
-        (sem_source.get("via") or {}).get("source_kind")
-        if isinstance(sem_source, Mapping) and isinstance(sem_source.get("via"), Mapping)
-        else None
-      )
+      # A ``filing_line`` source names the line it cites by its ``ref`` whether or not the door also
+      # stamped the canonical ``observation_id`` on it, so that line joins the cell's evidence either
+      # way; the stamped id is the same ``filing-line:`` identity the join then finds the sealed
+      # ``SourceEvidence`` row for.
       sem_line = (
         _filing_line_ref(
           sem_source,
           statement_role_by_accession_tag=role_by_acc_tag,
         )
-        if isinstance(sem_source, Mapping)
-        and sem_source.get("kind") == "filing_line"
-        and (not sem_source.get("observation_id") or sem_via_kind == "source_bundle_opening_balance")
+        if isinstance(sem_source, Mapping) and sem_source.get("kind") == "filing_line"
         else None
       )
+      if isinstance(sem_source, Mapping) and sem_source.get("kind") == "kpi":
+        kpi_observation = None if mismatch is not None else _cited_kpi_observation(sem_source, source_bundle_obj, period)
+        sem_line = kpi_observation.line if kpi_observation is not None else None
+        src_list.extend(_kpi_source_ids(sem_line, source_bundle_obj))
       bound_lines = [
         line
         for requirement in requirements_for_id(candidate_id)
@@ -4255,6 +4839,7 @@ def project_provenance_map(
       ]
       if sem_line is not None and sem_line not in bound_lines:
         bound_lines.append(sem_line)
+      bound_lines = [line for line in bound_lines if line != withheld_line]
       observation = next((observations[line] for line in bound_lines if line in observations), None)
       if observation is not None:
         obs_list.append(projection.filing_line_observation_id(observation.line))
@@ -4265,7 +4850,15 @@ def project_provenance_map(
       if assumption is not None:
         ass_list.append(str(assumption.assumption_id))
         ev_list.extend(assumption.evidence_ids)
-      ass_list.extend(authored_control_ids_by_item.get(candidate_id, ()))
+      sem_jref = document.judgment_row_ref(sem_source)
+      doc_ass = document_assumption_by_item_period.get(cand_identity) or (
+        str(sem_jref["ref"])
+        if sem_jref is not None and sem_jref["artifact"] == ANALYST_NOTE_ARTIFACT and sem_jref.get("ref")
+        else None
+      )
+      is_analyst_note_override = bool(doc_ass and str(doc_ass).startswith(f"{ANALYST_NOTE_ARTIFACT}:"))
+      if not is_analyst_note_override:
+        ass_list.extend(authored_control_ids_by_item.get(candidate_id, ()))
       ass_list.extend(authored_control_ids_by_identity.get(cand_identity, ()))
       ev_list.extend(
         evidence_ids_for(
@@ -4281,19 +4874,24 @@ def project_provenance_map(
           if isinstance(ev_val, str) and ev_val:
             ev_list.append(ev_val)
       for fact_id, evidence_id in historical_fact_refs_by_item_period.get(cand_identity, ()):
+        if evidence_id in withheld_evidence_ids:
+          continue
         obs_list.append(fact_id)
         ev_list.append(evidence_id)
       if cand_identity not in doc.semantic:
         val_list.extend(valuation_ids_by_item.get(candidate_id, ()))
+      if not is_analyst_note_override:
+        val_list.extend(valuation_policy_evidence_by_item.get(candidate_id, ()))
+        src_list.extend(valuation_policy_source_ids_by_item.get(candidate_id, ()))
       val_list.extend(valuation_ids_by_identity.get(cand_identity, ()))
       seed_keys.extend(historical_seed_keys_by_item_period.get(cand_identity, ()))
-      val_list.extend(valuation_policy_evidence_by_item.get(candidate_id, ()))
-      src_list.extend(valuation_policy_source_ids_by_item.get(candidate_id, ()))
       for (
         manifest_observation_id,
         manifest_evidence_id,
         manifest_source_id,
       ) in manifest_observation_refs_by_item_period.get(cand_identity, ()):
+        if manifest_evidence_id in withheld_evidence_ids:
+          continue
         obs_list.append(manifest_observation_id)
         if manifest_evidence_id is not None:
           ev_list.append(manifest_evidence_id)
@@ -4305,6 +4903,42 @@ def project_provenance_map(
         and isinstance(sem_source.get("row"), Mapping)
         else None
       )
+      if (
+        sem_judgment is not None
+        and isinstance(sem_source, Mapping)
+        and sem_source.get("artifact") == "business_model"
+        and str(sem_judgment.get("disposition") or "") in {"", "observed", "derived"}
+        and mismatch is None
+      ):
+        raw_citations = [c for c in (sem_judgment.get("citations") or ()) if isinstance(c, Mapping)]
+        cited_observations = [
+          obs
+          for citation in raw_citations
+          if (obs := _cited_kpi_observation(citation, source_bundle_obj, period)) is not None
+        ]
+        authored = document.operand_value(ours.get(cand_identity))
+        if raw_citations and len(cited_observations) == len(raw_citations) and authored is not None:
+          item = model.get_item(candidate_id)
+          cited_total = sum(
+            (quantity_native_value(observation.fact.value) / Decimal(10) ** document._line_exponent(item) for observation in cited_observations),
+            Decimal(0),
+          )
+          if abs(float(cited_total) - float(authored)) <= CITED_FACT_AGREEMENT_ABS:
+            for kpi_obs in cited_observations:
+              obs_list.append(projection.filing_line_observation_id(kpi_obs.line))
+              src_list.extend(_kpi_source_ids(kpi_obs.line, source_bundle_obj))
+        elif len(raw_citations) == 1 and authored is not None:
+          occ_ev = _cited_occurrence_evidence(
+            raw_citations[0],
+            source_bundle_obj,
+            period,
+            model.get_item(candidate_id),
+            authored,
+          )
+          if occ_ev is not None:
+            obs_list.append(projection.filing_line_observation_id(occ_ev.line))
+            ev_list.append(occ_ev.evidence_id)
+            src_list.append(str(occ_ev.source_id))
       sem_fact_ids = (
         tuple(str(fid).strip() for fid in (sem_judgment.get("fact_ids") or ()) if str(fid).strip())
         if sem_judgment is not None
@@ -4319,7 +4953,6 @@ def project_provenance_map(
       if (
         sem_judgment is not None
         and seed_projection is not None
-        and bool(sem_fact_ids)
         and period in historical_periods_set
         and isinstance(sem_source, Mapping)
         and sem_source.get("artifact") == "historical_foundation"
@@ -4327,7 +4960,7 @@ def project_provenance_map(
         seed_driver_id = str(sem_judgment.get("driver_id") or "").strip()
         seed_driver_key = str(sem_judgment.get("driver_key") or "").strip()
         matched_seed = hff_seed_by_driver_id.get(seed_driver_id) or hff_seed_by_driver_key.get(seed_driver_key)
-        if matched_seed is not None:
+        if matched_seed is not None and bool(sem_fact_ids):
           seed_period_id = str(sem_judgment.get("period_id") or f"FY{period}").strip()
           ref_key = f"{seed_projection.historical_foundation_artifact_id}:{matched_seed.driver_id}:{seed_period_id}"
           if ref_key not in historical_seed_refs_by_key:
@@ -4365,18 +4998,25 @@ def project_provenance_map(
           matched_evs = evidence_ids_for(candidate_id, period, None, extra_lines=(basis_fact.line,))
           ev_list.extend(matched_evs or (basis_fact.fact_id,))
           src_list.append(str(basis_fact.source_id))
-        elif doc_obs_id:
+        elif doc_obs_id in sealed_evidence_ids_by_observation_id:
           obs_list.append(doc_obs_id)
-      doc_ass = document_assumption_by_item_period.get(cand_identity)
-      if doc_ass:
+          ev_list.extend(sealed_evidence_ids_by_observation_id[doc_obs_id])
+        # A document observation id that is no sealed evidence line, historical foundation fact or
+        # basis fact names nothing the bundle can verify: it is not admitted as this cell's observation.
+      if doc_ass and not (
+        document.is_historical_statement_cell(model, str(candidate_id), int(period))
+        and str(doc_ass).startswith(f"{ANALYST_NOTE_ARTIFACT}:")
+      ):
         ass_list.append(doc_ass)
+        src_list.extend(analyst_note_source_refs.get(str(doc_ass), ()))
     return (
-      tuple(dict.fromkeys(obs_list)),
+      tuple(obs for obs in dict.fromkeys(obs_list) if obs not in withheld_observation_ids),
       tuple(dict.fromkeys(ass_list)),
       tuple(
         ev_id
         for ev_id in dict.fromkeys(ev_list)
-        if ev_id in evidence_by_id or ev_id in historical_basis_fact_by_id
+        if (ev_id in evidence_by_id or ev_id in historical_basis_fact_by_id)
+        and ev_id not in withheld_evidence_ids
       ),
       tuple(
         val_id
@@ -4738,13 +5378,34 @@ def project_provenance_map(
     )
     evaluation_reads = eval_graph.last_eval_reads
 
-  if evaluation_reads:
+  if case_evaluation_reads is None and any(
+    lineage.formula is not None
+    and lineage.formula.subtype == "scenario_snapshot"
+    and lineage.formula.params.get("case") in {"bull", "bear"}
+    for lineage in enriched
+  ):
+    from schema.build_scenarios import compute_scenario_outputs
+
+    scenario_outputs, _ = compute_scenario_outputs(
+      model.model_copy(deep=True),
+      unresolved_cases=unresolved_scenario_cases,
+    )
+    case_evaluation_reads = scenario_outputs.case_eval_reads
+
+  if evaluation_reads or case_evaluation_reads:
     direct_payloads: dict[tuple[str, int], dict[str, Any]] = {}
+    snapshot_cases: dict[tuple[str, int], str | None] = {}
     for lineage in enriched:
       coord = (str(lineage.sheet), str(lineage.cell).upper())
       period = period_by_cell.get(coord)
       if period is None:
         continue
+      spec = lineage.formula
+      if spec is not None and spec.subtype == "scenario_snapshot":
+        snap_case = str(spec.params.get("case"))
+        snapshot_cases[(str(lineage.semantic_item_id), period)] = (
+          snap_case if snap_case in {"bull", "bear"} and snap_case in (case_evaluation_reads or {}) else None
+        )
       direct_payloads[(str(lineage.semantic_item_id), period)] = {
         "observation_ids": set(str(value) for value in lineage.observation_ids),
         "source_refs": set(str(value) for value in lineage.source_refs),
@@ -4769,15 +5430,17 @@ def project_provenance_map(
       target["valuation_refs"].update(source["valuation_refs"])
       target["seed_refs"].update(source["seed_refs"])
 
-    payload_memo: dict[tuple[str, int], dict[str, Any]] = {}
-    payload_active: set[tuple[str, int]] = set()
+    payload_memo: dict[tuple[str | None, str, int], dict[str, Any]] = {}
+    payload_active: set[tuple[str | None, str, int]] = set()
 
-    def _read_payload(item_id: str, period: int) -> dict[str, Any]:
-      identity = (item_id, int(period))
+    def _read_payload(item_id: str, period: int, case: str | None = None) -> dict[str, Any]:
+      cell_identity = (item_id, int(period))
+      case = snapshot_cases.get(cell_identity, case)
+      identity = (case, item_id, int(period))
       if identity in payload_memo:
         return payload_memo[identity]
       if identity in payload_active:
-        return {
+        active_payload = {
           "observation_ids": set(),
           "source_refs": set(),
           "evidence_refs": {},
@@ -4786,6 +5449,9 @@ def project_provenance_map(
           "valuation_refs": {},
           "seed_refs": {},
         }
+        if case is None or (case, item_id, int(period)) not in scenario_overrides:
+          _merge_payload(active_payload, direct_payloads.get(cell_identity))
+        return active_payload
       payload_active.add(identity)
       payload = {
         "observation_ids": set(),
@@ -4797,11 +5463,32 @@ def project_provenance_map(
         "seed_refs": {},
       }
       try:
-        _merge_payload(payload, direct_payloads.get(identity))
-        for dependency_id, dependency_period in (evaluation_reads or {}).get(identity, ()):
-          dependency_identity = (str(dependency_id), int(dependency_period))
-          _merge_payload(payload, direct_payloads.get(dependency_identity))
-          _merge_payload(payload, _read_payload(*dependency_identity))
+        override = scenario_overrides.get((case, item_id, int(period))) if case is not None else None
+        if override is not None:
+          # A case input is a root: neither its base value's citations nor its
+          # base formula's reads obtained the overridden value.
+          assumption_id = f"{SCENARIO_ASSUMPTION_PREFIX}{case}:{override.assumption_id}"
+          payload["assumption_ids"].add(assumption_id)
+          ref = assumption_reference(assumption_id, period)
+          if ref is not None:
+            payload["assumption_refs"][assumption_id] = ref
+          for ev_id in override.evidence_ids:
+            if ev_id in evidence_by_id or ev_id in historical_basis_fact_by_id:
+              ev_ref = evidence_reference(ev_id)
+              payload["evidence_refs"][ev_id] = ev_ref
+              payload["source_refs"].add(str(ev_ref.source_id))
+        else:
+          base_table_leaf = held_at_base_table_source.get(identity)
+          if base_table_leaf is not None:
+            _merge_payload(payload, _read_payload(base_table_leaf, int(period), case))
+          else:
+            _merge_payload(payload, direct_payloads.get(cell_identity))
+          reads = evaluation_reads if case is None else (case_evaluation_reads or {}).get(case)
+          cell_reads = (reads or {}).get(cell_identity)
+          if cell_reads is None and cell_identity in snapshot_cases:
+            cell_reads = (evaluation_reads or {}).get(cell_identity, ())
+          for dependency_id, dependency_period in cell_reads or ():
+            _merge_payload(payload, _read_payload(str(dependency_id), int(dependency_period), case))
       finally:
         payload_active.discard(identity)
       payload_memo[identity] = payload
@@ -4929,6 +5616,7 @@ def write_snapshot(
   *,
   vintage_changes: Mapping[str, Any] | None = None,
   source_bundle: Any | None = None,
+  source_bundle_content_sha256: str | None = None,
   model_spec: Any | None = None,
   template: FinancialModel | None = None,
   scenario_controls: Mapping[str, Any] | None = None,
@@ -4959,11 +5647,11 @@ def write_snapshot(
   from schema.versioned_artifact import canonical_json_bytes
 
   eff_spec = model_spec if model_spec is not None else doc.model_spec
-  bundle_digest = (
-    "0" * 64
-    if source_bundle is None
-    else compiler_input_content_hash(source_bundle).removeprefix("sha256:")
-  )
+  if source_bundle is None:
+    bundle_digest = "0" * 64
+  else:
+    assert source_bundle_content_sha256 is not None  # the row ``source_bundle`` was decoded from
+    bundle_digest = source_bundle_content_sha256
   spec_digest = (
     "0" * 64
     if eff_spec is None
@@ -4975,6 +5663,7 @@ def write_snapshot(
     else ()
   )
   projected_rendered: Any = rendered
+  case_eval_reads: Mapping[str, Mapping[tuple[str, int], tuple[tuple[str, int], ...]]] | None = None
   if source_bundle is not None and eff_spec is not None:
     from schema.build_scenarios import compute_scenario_outputs, scenario_results_payload
     from schema.formatter import formatter_for_declared_style_guide
@@ -5002,6 +5691,7 @@ def write_snapshot(
     scenario_outputs, _ = compute_scenario_outputs(
       rendered_model.model_copy(deep=True), unresolved_cases=unresolved_cases,
     )
+    case_eval_reads = scenario_outputs.case_eval_reads
     scenario_results = scenario_results_payload(scenario_outputs, unresolved_cases)
     projection_readiness = compute_model_projection_readiness(
       rendered_model, canonical_control_curves=(), computed_values=computed_values, guard_config=None,
@@ -5043,7 +5733,9 @@ def write_snapshot(
     vp = getattr(eff_spec, "valuation_policy", None)
     _append_valuation_evidence_status_block(
       projected_rendered,
-      derive_valuation_evidence_status(source_bundle, None if vp is None else vp.peer_policy),
+      derive_valuation_evidence_status(
+        source_bundle, None if vp is None else vp.peer_policy, bundle_content_sha256=bundle_digest,
+      ),
     )
     reconcile_render_contract(rendered_model, projected_rendered, formatter=formatter, annual_context=render_context)
   provenance_map = project_provenance_map(
@@ -5055,6 +5747,7 @@ def write_snapshot(
     source_bundle=source_bundle,
     model_spec=eff_spec,
     seed_coverage_manifest=seed_rows,
+    case_evaluation_reads=case_eval_reads,
   )
   provenance_map_digest = hashlib.sha256(
     canonical_json_bytes(provenance_map.model_dump(mode="json"))
@@ -5071,6 +5764,7 @@ def write_snapshot(
       source_bundle=source_bundle,
       model_spec=eff_spec,
       seed_coverage_manifest=seed_rows,
+      case_evaluation_reads=case_eval_reads,
     )
   )
   published_by_coord = {

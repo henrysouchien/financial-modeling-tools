@@ -33,6 +33,7 @@ CONTROL_LOG_MAX_BYTES = 64 * 1024 * 1024
 CONTROL_LOG_DIRECTORY = "logs"
 APPLICATION_LOG_DIRECTORY = "application-logs"
 
+LOCAL_EDGAR_API_URL = "http://127.0.0.1:8511"
 LAUNCHD_CONTRACT_PATHS = {
   "local.f91.research_gateway": "ai-excel-addin/deploy/launchd/local.f91.research_gateway.plist",
 }
@@ -608,6 +609,109 @@ def ai_source_import_paths(ai_root: Path) -> list[Path]:
   ]
 
 
+def selected_scheduled_lane_root(repo_root: Path) -> Path:
+  """Return the active runtime's add-in root when :8000 is targeted, else ``repo_root``."""
+
+  active_repo = (
+    Path.home()
+    / ".local"
+    / "state"
+    / "hank"
+    / "local-gateway-runtime"
+    / "control"
+    / "active"
+    / "ai-excel-addin"
+  )
+  if (
+    os.getenv("GATEWAY_BASE_URL", "").strip() == "https://localhost:8000"
+    and (active_repo / "api" / "research" / "repository").is_dir()
+  ):
+    return active_repo
+  return repo_root
+
+
+def handoff_scheduled_lane_script(
+  script_path: Path,
+  *,
+  handoff: bool = True,
+  import_root: Path | None = None,
+  repo_root: Path | None = None,
+  runner: Any = None,
+) -> Path:
+  """Select the lane's import root, update ``sys.path``, and hand off to the selected revision's script.
+
+  When the active runtime is selected and ``script_path`` is not already inside
+  that revision, hands off to ``<selected_root>/scripts/<script_path.name>``
+  with its real ``__file__`` inside the selected tree so ``REPO_ROOT ==
+  selected_root`` and the script, its runtime contract, and every module it
+  imports come from one revision (zero recursion, zero mixing). A missing
+  selected-runtime script raises ``RuntimeError`` naming the path.
+  """
+
+  resolved_script = Path(script_path).resolve()
+  resolved_repo_root = (
+    Path(repo_root).resolve()
+    if repo_root is not None
+    else resolved_script.parent.parent
+  )
+  selected_root = (
+    Path(import_root)
+    if import_root is not None
+    else selected_scheduled_lane_root(resolved_repo_root)
+  )
+  sys.path[:] = list(dict.fromkeys([
+    *(str(path) for path in ai_source_import_paths(selected_root)),
+    *sys.path,
+  ]))
+  resolved_import_root = selected_root.resolve()
+  if not handoff or resolved_import_root == resolved_repo_root:
+    return selected_root
+  target_script = resolved_import_root / "scripts" / resolved_script.name
+  if not target_script.is_file():
+    raise RuntimeError(
+      f"selected active runtime script is missing: {target_script}"
+    )
+  if runner is not None:
+    runner(target_script)
+    return selected_root
+  code = compile(target_script.read_bytes(), str(target_script), "exec")
+  exec(
+    code,
+    {
+      "__name__": "__main__",
+      "__file__": str(target_script),
+      "__package__": None,
+      "__spec__": None,
+    },
+  )
+  raise SystemExit(0)
+
+
+def scheduled_lane_log_file(filename: str) -> Path:
+  """Return the canonical run-log path for a scheduled lane script.
+
+  Logs are runtime state, never code: honours ``GATEWAY_LOG_DIR`` first, then
+  ``<control_state_root>/application-logs/<filename>`` derived from
+  ``LOCAL_GATEWAY_CONTROL_STATE_ROOT`` or the login-scoped control-state root.
+  """
+
+  configured_log_dir = os.getenv("GATEWAY_LOG_DIR", "").strip()
+  if configured_log_dir:
+    return Path(configured_log_dir).expanduser() / filename
+  control_root = os.getenv("LOCAL_GATEWAY_CONTROL_STATE_ROOT", "").strip()
+  if control_root:
+    base = Path(control_root).expanduser()
+  else:
+    base = (
+      Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=False)
+      / ".local"
+      / "state"
+      / "hank"
+      / "local-gateway-control"
+    )
+  return base / APPLICATION_LOG_DIRECTORY / filename
+
+
 def risk_side_import_paths(version_root: Path) -> list[Path]:
   """Return the import roots every risk-side process of a paired version needs.
 
@@ -966,6 +1070,7 @@ __all__ = [
   "CONTROL_STATE_DIRECTORY_MODE",
   "LAUNCH_PYTHON_ENV",
   "LAUNCHD_CONTRACT_PATHS",
+  "LOCAL_EDGAR_API_URL",
   "MANIFEST_SCHEMA_VERSION",
   "RuntimeContractError",
   "SOURCE_NAMES",

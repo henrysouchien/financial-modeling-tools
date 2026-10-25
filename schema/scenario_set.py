@@ -186,7 +186,7 @@ class ScenarioCurveEvidence(_Contract):
 
 def _curve_years(period_ids: tuple[str, ...]) -> set[int]:
     return {
-        int(period_id.removeprefix("FY").removesuffix("E"))
+        int(period_id.removeprefix("FY").removesuffix("E").split("Q", 1)[0])
         for period_id in period_ids
     }
 
@@ -362,6 +362,141 @@ def scenario_curve_order_violation(
         if not ordered:
             return f"scenario ordering is invalid for {curve.driver_key} in FY{year}"
     return None
+
+
+def roll_scenario_driver_curve(
+    curve: ScenarioDriverCurve,
+    *,
+    prior_base_values: Mapping[int, float],
+    new_base_values: Mapping[int, float],
+    forecast_period_ids: tuple[str, ...],
+    fallback_evidence_ids: tuple[str, ...] = (),
+) -> ScenarioDriverCurve:
+    """Roll one curve onto an updated forecast axis.
+
+    Overlapping years keep their authored bull/bear offsets against the FAS
+    base. A newly added outer year carries the prior terminal offset, and
+    evidence keys follow the rolled years. A held-at-base curve stores no
+    values.
+    """
+
+    target_years = tuple(sorted(_curve_years(forecast_period_ids)))
+
+    def _roll_evidence_map(
+        mapping: Mapping[int, tuple[str, ...]],
+    ) -> dict[int, tuple[str, ...]]:
+        rolled: dict[int, tuple[str, ...]] = {}
+        for year in target_years:
+            if year in mapping and mapping[year]:
+                rolled[year] = tuple(mapping[year])
+            elif mapping:
+                rolled[year] = tuple(mapping[max(mapping)])
+            else:
+                rolled[year] = tuple(sorted(set(fallback_evidence_ids)))
+        return rolled
+
+    rolled_evidence = ScenarioCurveEvidence(
+        bull_by_period=_roll_evidence_map(curve.evidence.bull_by_period),
+        base_by_period=_roll_evidence_map(curve.evidence.base_by_period),
+        bear_by_period=_roll_evidence_map(curve.evidence.bear_by_period),
+    )
+    if curve.role == "held_at_base":
+        return ScenarioDriverCurve(
+            driver_key=curve.driver_key,
+            critical_factor_key=curve.critical_factor_key,
+            role=curve.role,
+            unit=curve.unit,
+            percentage_value_space=curve.percentage_value_space,
+            direction=curve.direction,
+            period_ids=forecast_period_ids,
+            bull_values=None,
+            bear_values=None,
+            rationale=curve.rationale,
+            evidence=rolled_evidence,
+            bull_extension_basis_by_period={
+                year: text
+                for year, text in curve.bull_extension_basis_by_period.items()
+                if year in target_years
+            },
+            bear_extension_basis_by_period={
+                year: text
+                for year, text in curve.bear_extension_basis_by_period.items()
+                if year in target_years
+            },
+            limitations=curve.limitations,
+        )
+
+    # ``_curve_shape``: a flexed curve always stores both authored cases.
+    authored_bull = curve.bull_values
+    authored_bear = curve.bear_values
+    assert authored_bull is not None and authored_bear is not None
+    prior_terminal_year = max(authored_bull)
+    bull_values: dict[int, float] = {}
+    bear_values: dict[int, float] = {}
+    for year in target_years:
+        if year in authored_bull:
+            if year in prior_base_values and year in new_base_values:
+                bull_val = float(new_base_values[year]) + (
+                    float(authored_bull[year]) - float(prior_base_values[year])
+                )
+                bear_val = float(new_base_values[year]) + (
+                    float(authored_bear[year]) - float(prior_base_values[year])
+                )
+            else:
+                bull_val = float(authored_bull[year])
+                bear_val = float(authored_bear[year])
+        else:
+            prior_base_anchor = float(
+                prior_base_values.get(
+                    prior_terminal_year,
+                    new_base_values.get(year, 0.0),
+                )
+            )
+            new_base_anchor = float(new_base_values.get(year, prior_base_anchor))
+            bull_val = new_base_anchor + (
+                float(authored_bull[prior_terminal_year]) - prior_base_anchor
+            )
+            bear_val = new_base_anchor + (
+                float(authored_bear[prior_terminal_year]) - prior_base_anchor
+            )
+        bull_values[year] = bull_val
+        bear_values[year] = bear_val
+    bull_extension = {
+        year: text
+        for year, text in curve.bull_extension_basis_by_period.items()
+        if year in target_years
+    }
+    bear_extension = {
+        year: text
+        for year, text in curve.bear_extension_basis_by_period.items()
+        if year in target_years
+    }
+    for year in target_years:
+        if year not in authored_bull:
+            bull_extension[year] = curve.bull_extension_basis_by_period.get(
+                prior_terminal_year,
+                "terminal_carry",
+            )
+            bear_extension[year] = curve.bear_extension_basis_by_period.get(
+                prior_terminal_year,
+                "terminal_carry",
+            )
+    return ScenarioDriverCurve(
+        driver_key=curve.driver_key,
+        critical_factor_key=curve.critical_factor_key,
+        role=curve.role,
+        unit=curve.unit,
+        percentage_value_space=curve.percentage_value_space,
+        direction=curve.direction,
+        period_ids=forecast_period_ids,
+        bull_values=bull_values,
+        bear_values=bear_values,
+        rationale=curve.rationale,
+        evidence=rolled_evidence,
+        bull_extension_basis_by_period=bull_extension,
+        bear_extension_basis_by_period=bear_extension,
+        limitations=curve.limitations,
+    )
 
 
 class ScenarioCaseProbabilities(_Contract):
@@ -962,6 +1097,7 @@ __all__ = [
     "build_scenario_stage_receipt",
     "issue_scenario_set_id",
     "project_scenario_reviews",
+    "roll_scenario_driver_curve",
     "scenario_base_values",
     "scenario_case_values",
     "scenario_curve_base_gap",

@@ -10,6 +10,8 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
+from agent_workflow_contracts.research_file_contract import is_research_file_id
+
 from model_build.reads import ModelSemanticsRead
 from schema.model_ref import CurrentModelPointer, ModelRecord
 from industry_slice_core.thesis_shared_slice_helpers import _normalize_ticker as _canonicalize_ticker
@@ -137,10 +139,7 @@ def model_semantics_handler(
       ],
     )
   resolved_research_file_id = _resolved_research_file_id(identity_ref)
-  if (
-    type(resolved_research_file_id) is not int
-    or resolved_research_file_id < 1
-  ):
+  if not is_research_file_id(resolved_research_file_id):
     return _error_payload(
       "canonical_model_identity_required",
       (
@@ -693,7 +692,7 @@ def _validate_current_model_resolution(
 
 def _resolved_research_file_id(ref: Any) -> int:
   value = getattr(getattr(ref, "model_version", None), "research_file_id", None)
-  if type(value) is not int or value < 1:
+  if not is_research_file_id(value):
     raise _IdentityError(
       "current_model_ref_invalid",
       "The pointer/version resolution has no valid research_file_id.",
@@ -736,27 +735,13 @@ def _top_level_identity_constraints(
 def _optional_positive_int(value: Any, *, field: str) -> int | None:
   if value is None:
     return None
-  if isinstance(value, bool):
+  if not is_research_file_id(value):
     raise _IdentityError(
       "invalid_research_file_id",
       f"{field} must be a positive integer.",
       details={"field": field, "value": value},
     )
-  try:
-    normalized = int(value)
-  except (TypeError, ValueError) as exc:
-    raise _IdentityError(
-      "invalid_research_file_id",
-      f"{field} must be a positive integer.",
-      details={"field": field, "value": value},
-    ) from exc
-  if normalized < 1:
-    raise _IdentityError(
-      "invalid_research_file_id",
-      f"{field} must be a positive integer.",
-      details={"field": field, "value": value},
-    )
-  return normalized
+  return int(value)
 
 
 def _validate_resolved_identity(ref: Any, constraints: Mapping[str, Any]) -> None:

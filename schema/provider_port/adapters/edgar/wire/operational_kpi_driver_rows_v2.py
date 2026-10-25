@@ -67,7 +67,12 @@ class ScaledQuantity(_KpiType):
 
     @model_validator(mode="after")
     def _bind_scale(self) -> ScaledQuantity:
-        if self.presentation_scale not in self.measure.admissible_scales:
+        # edgar-transport-contracts 0.1.3 (producer owner: kpi_schema / edgar_transport_contracts
+        # ScaledQuantity.bind_scale): a per-entity price scales only by the scale printed in its own
+        # figure (``value_text``); no table or preamble declaration ever scales one.
+        if self.presentation_scale not in self.measure.admissible_scales and not (
+            self.measure.unit in {"per_count", "per_share"} and self.scale_provenance == "value_text"
+        ):
             raise ValueError("scale is incompatible with measure")
         if (self.scale_provenance == "none") != (self.scale_evidence is None):
             raise ValueError("scale provenance and evidence must agree")

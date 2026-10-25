@@ -18,7 +18,7 @@ digest or coverage-profile binding refusal.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -86,6 +86,8 @@ from .valuation_evidence_derivations import (
     derive_observation_forward_ev_adjusted_ebitda,
     derive_relative_selection,
     derive_valuation_coverage,
+    is_market_plane_print_admissible,
+    market_plane_locator_as_of_date,
 )
 from .versioned_artifact import canonical_json_bytes
 
@@ -804,7 +806,12 @@ def validate_valuation_evidence_source_bindings(
             or currency_records[0].get("currency") != "USD"
             or observation.currency != "USD"
             or observation.currency_ref != f"{currency_locator}#data[0].currency"
-            or currency_observed_at > cutoff_at
+            or not is_market_plane_print_admissible(
+                locator=currency_locator,
+                as_of_close=observation.as_of_close,
+                observed_at=currency_observed_at,
+                cutoff_at=cutoff_at,
+            )
         ):
             raise ValueError(f"{evidence_kind} must bind exact profile row")
         return currency_observed_at
@@ -834,7 +841,15 @@ def validate_valuation_evidence_source_bindings(
         evidence_kind: str,
     ) -> _OfficialCloseBinding:
         issuer = observation.issuer
-        market_date = observation.raw_market_date
+        raw_ref_date = market_plane_locator_as_of_date(observation.raw_ref)
+        market_date = (
+            observation.as_of_close
+            if observation.metric in {"fwd_pe", "fwd_ev_adj_ebitda"}
+            and market_plane_locator_as_of_date(close_ref) is not None
+            and raw_ref_date is not None
+            and observation.raw_market_date == min(observation.as_of_close, raw_ref_date)
+            else observation.raw_market_date
+        )
         if issuer is None or market_date is None or close_ref is None:
             raise ValueError(
                 f"{evidence_kind} requires issuer, market date, and close ref"
@@ -856,7 +871,15 @@ def validate_valuation_evidence_source_bindings(
         evidence_kind: str,
     ) -> tuple[datetime, FmpVendorScalarV1, FmpVendorScalarV1]:
         issuer = observation.issuer
-        market_date = observation.raw_market_date
+        raw_ref_date = market_plane_locator_as_of_date(observation.raw_ref)
+        market_date = (
+            observation.as_of_close
+            if observation.metric in {"fwd_pe", "fwd_ev_adj_ebitda"}
+            and market_plane_locator_as_of_date(close_ref) is not None
+            and raw_ref_date is not None
+            and observation.raw_market_date == min(observation.as_of_close, raw_ref_date)
+            else observation.raw_market_date
+        )
         if issuer is None or market_date is None:
             raise ValueError(f"{evidence_kind} requires issuer and market date")
         close_binding = _OfficialCloseBinding(
@@ -896,7 +919,12 @@ def validate_valuation_evidence_source_bindings(
             observation.snapshot_manifest_sha256
         ):
             raise ValueError(f"{evidence_kind} must match snapshot manifest")
-        if observed_at > cutoff_at:
+        if not is_market_plane_print_admissible(
+            locator=logical_locator,
+            as_of_close=observation.as_of_close,
+            observed_at=observed_at,
+            cutoff_at=cutoff_at,
+        ):
             raise ValueError(
                 f"post-cutoff close observation cannot enter {evidence_kind}"
             )
@@ -1043,7 +1071,12 @@ def validate_valuation_evidence_source_bindings(
                 evidence_kind="valuation observation",
             )
         )
-        if observation_retrieved_at > retrieved_at:
+        if not is_market_plane_print_admissible(
+            locator=observation_locator,
+            as_of_close=observation.as_of_close,
+            observed_at=observation_retrieved_at,
+            cutoff_at=retrieved_at,
+        ):
             raise ValueError(
                 "valuation observation source retrieval cannot postdate evidence retrieval"
             )
@@ -1063,7 +1096,12 @@ def validate_valuation_evidence_source_bindings(
                 artifact_sha256=None,
                 evidence_kind="valuation raw close",
             )
-            if close_retrieved_at > retrieved_at:
+            if not is_market_plane_print_admissible(
+                locator=close_locator,
+                as_of_close=observation.as_of_close,
+                observed_at=close_retrieved_at,
+                cutoff_at=retrieved_at,
+            ):
                 raise ValueError(
                     "valuation raw close source retrieval cannot postdate evidence retrieval"
                 )
@@ -1118,7 +1156,12 @@ def validate_valuation_evidence_source_bindings(
                 raise ValueError(
                     "valuation annual estimate must match snapshot manifest"
                 )
-            if estimate_observed_at > cutoff_at:
+            if not is_market_plane_print_admissible(
+                locator=observation_locator,
+                as_of_close=observation.as_of_close,
+                observed_at=estimate_observed_at,
+                cutoff_at=cutoff_at,
+            ):
                 raise ValueError(
                     "post-cutoff estimate observation cannot enter annual valuation"
                 )
@@ -1278,7 +1321,12 @@ def validate_valuation_evidence_source_bindings(
                 raise ValueError(
                     "forward adjusted EBITDA source must match snapshot manifest"
                 )
-            if estimate_observed_at > cutoff_at:
+            if not is_market_plane_print_admissible(
+                locator=observation_locator,
+                as_of_close=observation.as_of_close,
+                observed_at=estimate_observed_at,
+                cutoff_at=cutoff_at,
+            ):
                 raise ValueError(
                     "post-cutoff estimate cannot enter forward adjusted EBITDA"
                 )
@@ -1564,9 +1612,18 @@ def validate_valuation_evidence_source_bindings(
                     "forward adjusted EBITDA requires one exact price component"
                 )
             price_component = price_components[0]
+            expected_ev_market_date = (
+                min(
+                    price_component.as_of_close,
+                    market_plane_locator_as_of_date(observation_locator)
+                    or price_component.as_of_close,
+                )
+                if ev_operands is not None
+                else price_component.as_of_close
+            )
             if (
                 observation.raw_close != price_component.value
-                or observation.raw_market_date != price_component.as_of_close
+                or observation.raw_market_date != expected_ev_market_date
                 or observation.raw_close_source_id != price_component.source_id
                 or observation.raw_close_ref != price_component.raw_ref
             ):
@@ -1791,7 +1848,34 @@ def validate_valuation_evidence_source_bindings(
                         (split_source.key_fields or {}).get("normalized_records"),
                         field_name="valuation EV split-history normalized_records",
                     )
-                    event_refs: list[tuple[date, str]] = []
+                    ev_price_observation = next(
+                        (
+                            row
+                            for row in observations
+                            if row.issuer == observation.issuer
+                            and row.as_of_close == observation.as_of_close
+                            and row.component_type == "price"
+                        ),
+                        None,
+                    )
+                    ev_price_basis_date = observation.as_of_close
+                    if ev_price_observation is not None:
+                        ev_price_source, ev_price_retrieved_at, _ = bound_artifact_source(
+                            source_id=ev_price_observation.source_id,
+                            artifact_sha256=None,
+                            evidence_kind="valuation EV official close",
+                        )
+                        _, ev_price_observed_at = fmp_response_lineage(
+                            ev_price_source,
+                            source_retrieved_at=ev_price_retrieved_at,
+                            expected_endpoint="historical_price_eod",
+                            evidence_kind="valuation EV official close",
+                        )
+                        ev_price_basis_date = max(
+                            observation.as_of_close,
+                            ev_price_observed_at.astimezone(timezone.utc).date(),
+                        )
+                    event_refs: list[tuple[date, int, str]] = []
                     for row_index, record in enumerate(split_records):
                         if not isinstance(record, Mapping):
                             raise ValueError("valuation EV split row must be an object")
@@ -1807,13 +1891,17 @@ def validate_valuation_evidence_source_bindings(
                         if (
                             component_as_of
                             < event_date
-                            <= observation.as_of_close
+                            <= ev_price_basis_date
                         ):
                             event_refs.append(
-                                (event_date, f"{split_locator}#data[{row_index}].date")
+                                (
+                                    event_date,
+                                    row_index,
+                                    f"{split_locator}#data[{row_index}].date",
+                                )
                             )
                     expected_event_refs = tuple(
-                        ref for _event_date, ref in sorted(event_refs)
+                        item[2] for item in sorted(event_refs)
                     )
                     if (
                         dict(split_response.validated_params)
@@ -1821,8 +1909,16 @@ def validate_valuation_evidence_source_bindings(
                         or observation.split_history_ref != f"{split_locator}#response"
                         or observation.split_events_between != expected_event_refs
                         or expected_event_refs
-                        or split_observed_at.date() < observation.as_of_close
-                        or split_observed_at > cutoff_at
+                        or (
+                            market_plane_locator_as_of_date(split_locator) is None
+                            and split_observed_at.date() < observation.as_of_close
+                        )
+                        or not is_market_plane_print_admissible(
+                            locator=split_locator,
+                            as_of_close=observation.as_of_close,
+                            observed_at=split_observed_at,
+                            cutoff_at=cutoff_at,
+                        )
                         or observation.value != native_value / Decimal("1000000")
                         or observation.retrieved_at
                         != max(accepted_at, split_observed_at)
@@ -1994,7 +2090,12 @@ def validate_valuation_evidence_source_bindings(
                 raise ValueError(
                     "valuation NTM close request must bind issuer and exact date range"
                 )
-            if close_observed_at > cutoff_at:
+            if not is_market_plane_print_admissible(
+                locator=ntm_close_locator,
+                as_of_close=observation.as_of_close,
+                observed_at=close_observed_at,
+                cutoff_at=cutoff_at,
+            ):
                 raise ValueError(
                     "post-cutoff close observation cannot enter valuation NTM"
                 )
@@ -2345,7 +2446,12 @@ def validate_valuation_evidence_source_bindings(
                     or observation.currency != "USD"
                     or observation.currency_ref
                     != f"{ntm_currency_locator}#data[0].currency"
-                    or ntm_currency_observed_at > cutoff_at
+                    or not is_market_plane_print_admissible(
+                        locator=ntm_currency_locator,
+                        as_of_close=observation.as_of_close,
+                        observed_at=ntm_currency_observed_at,
+                        cutoff_at=cutoff_at,
+                    )
                 ):
                     raise ValueError(
                         "valuation NTM forward P/E currency must bind exact profile row"
@@ -2374,7 +2480,11 @@ def validate_valuation_evidence_source_bindings(
                     (ntm_split_source.key_fields or {}).get("normalized_records"),
                     field_name="valuation NTM split-history normalized_records",
                 )
-                ntm_event_refs: list[tuple[date, str]] = []
+                ntm_price_basis_date = max(
+                    observation.as_of_close,
+                    close_observed_at.astimezone(timezone.utc).date(),
+                )
+                ntm_event_refs: list[tuple[date, int, str]] = []
                 for row_index, record in enumerate(ntm_split_records):
                     if not isinstance(record, Mapping):
                         raise ValueError("valuation NTM split row must be an object")
@@ -2385,23 +2495,32 @@ def validate_valuation_evidence_source_bindings(
                         raw_split_date,
                         field_name="valuation NTM split date",
                     )
-                    if anchor.period_end < split_event_date <= observation.as_of_close:
+                    if anchor.period_end < split_event_date <= ntm_price_basis_date:
                         ntm_event_refs.append(
                             (
                                 split_event_date,
+                                row_index,
                                 f"{ntm_split_locator}#data[{row_index}].date",
                             )
                         )
                 expected_ntm_event_refs = tuple(
-                    ref for _event_date, ref in sorted(ntm_event_refs)
+                    item[2] for item in sorted(ntm_event_refs)
                 )
                 if (
                     dict(ntm_split_response.validated_params)
                     != {"symbol": observation.issuer}
                     or observation.split_history_ref != f"{ntm_split_locator}#response"
                     or observation.split_events_between != expected_ntm_event_refs
-                    or ntm_split_observed_at.date() < observation.as_of_close
-                    or ntm_split_observed_at > cutoff_at
+                    or (
+                        market_plane_locator_as_of_date(ntm_split_locator) is None
+                        and ntm_split_observed_at.date() < observation.as_of_close
+                    )
+                    or not is_market_plane_print_admissible(
+                        locator=ntm_split_locator,
+                        as_of_close=observation.as_of_close,
+                        observed_at=ntm_split_observed_at,
+                        cutoff_at=cutoff_at,
+                    )
                 ):
                     raise ValueError(
                         "valuation NTM forward P/E split basis must bind exact events"
@@ -2459,6 +2578,10 @@ def validate_valuation_evidence_source_bindings(
                 "valuation definition evidence source retrieval cannot postdate evidence retrieval"
             )
 
+    snapshot_as_of_close = max(
+        (obs.as_of_close for obs in observations),
+        default=None,
+    )
     for fact in fiscal_calendar:
         if not fact.has_exact_annual_source_evidence:
             continue
@@ -2469,7 +2592,29 @@ def validate_valuation_evidence_source_bindings(
             artifact_sha256=fact.source_artifact_sha256,
             evidence_kind="fiscal period evidence",
         )
-        if fiscal_retrieved_at > retrieved_at:
+        fiscal_locator_date = market_plane_locator_as_of_date(logical_locator)
+        fiscal_source_observed_at = (fiscal_source.key_fields or {}).get("observed_at")
+        has_unmodified_market_print = (
+            fiscal_locator_date is not None
+            and isinstance(fiscal_source_observed_at, str)
+            and canonical_utc_timestamp(
+                fiscal_source_observed_at,
+                field_name="fiscal source observed_at",
+            )
+            == fact.available_at
+        )
+        effective_fiscal_close = snapshot_as_of_close or cutoff_at.date()
+        if not (
+            is_market_plane_print_admissible(
+                locator=logical_locator,
+                as_of_date=fiscal_locator_date,
+                as_of_close=effective_fiscal_close or retrieved_at.date(),
+                observed_at=fiscal_retrieved_at,
+                cutoff_at=retrieved_at,
+            )
+            if has_unmodified_market_print
+            else fiscal_retrieved_at <= retrieved_at
+        ):
             raise ValueError(
                 "fiscal period evidence source retrieval cannot postdate evidence retrieval"
             )
@@ -2480,7 +2625,17 @@ def validate_valuation_evidence_source_bindings(
             raise ValueError(
                 "fiscal source_locators must resolve within their source artifact"
             )
-        if fact.available_at > cutoff_at:
+        if has_unmodified_market_print and effective_fiscal_close is not None:
+            fiscal_admissible = is_market_plane_print_admissible(
+                locator=logical_locator,
+                as_of_date=fiscal_locator_date,
+                as_of_close=effective_fiscal_close,
+                observed_at=fact.available_at,
+                cutoff_at=cutoff_at,
+            )
+        else:
+            fiscal_admissible = fact.available_at <= cutoff_at
+        if not fiscal_admissible:
             raise ValueError(
                 "post-cutoff fiscal period evidence cannot enter valuation evidence"
             )

@@ -55,6 +55,7 @@ from .finding_vocabulary import (
     FindingBasis,
     FindingScalar,
 )
+from .valuation_evidence_derivations import market_plane_locator_as_of_date
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -1454,6 +1455,62 @@ def historical_foundation_evidence_findings(
     return tuple(findings)
 
 
+def cited_fact_value_mismatch_findings(
+    doc: Any, values: Any, source_bundle: "SourceBundle",
+) -> tuple[Finding, ...]:
+    """One error per cited ``set_input`` whose authored value disagrees with the SourceBundle fact it cites.
+
+    ``model_build.target_build.cited_fact_mismatches`` owns the comparison: the cell's
+    ``lineage_status`` (``project_provenance_map`` withholds the cited line as its observation) and
+    this finding read the same result. The repair is a ``model_document`` edit: the filed value
+    under the same citation, or the line that carries the authored value.
+    """
+    from model_build import keyed_dump, target_build
+
+    mismatches = target_build.cited_fact_mismatches(
+        target_build.semantic_rows(doc, values), source_bundle, doc.model,
+    )
+    findings: list[Finding] = []
+    for (item_id, period), mismatch in sorted(mismatches.items()):
+        filed = float(mismatch.filed)
+        findings.append(make_finding(
+            "cited_fact_value_mismatch",
+            item_id=item_id,
+            periods=(period,),
+            message=(
+                f"{item_id} FY{period} holds {mismatch.authored:g} but cites {mismatch.observation_id}, "
+                f"which carries {filed:g} on the model's {mismatch.model_scale} scale. "
+                "Set the filed value under this citation, or cite the filing line that carries the authored value."
+            ),
+            observed={
+                "value": mismatch.authored, "scale": mismatch.model_scale,
+                **({"observation_id": mismatch.observation_id} if mismatch.evidence is None else {}),
+            },
+            expected={
+                "value": filed,
+                "scale": mismatch.model_scale,
+                "evidence_id": mismatch.evidence.evidence_id if mismatch.evidence is not None else None,
+                "observation_id": mismatch.observation_id,
+                "next_call": "model_document",
+                "next_call_arguments": json.dumps({
+                    "operation": "edit",
+                    "ops": [{
+                        "op": "set_input",
+                        "item_id": item_id,
+                        "period": period,
+                        "value": filed,
+                        "source": (
+                            doc.semantic[(item_id, period)]["source"]
+                            if doc.semantic[(item_id, period)]["source"].get("kind") == "kpi"
+                            else {"kind": "filing_line", "ref": keyed_dump.filing_line_json(mismatch.line)}
+                        ),
+                    }],
+                }),
+            },
+        ))
+    return tuple(findings)
+
+
 def compile_stage_findings(
     evidence: CompileStageEvidence,
     *,
@@ -1558,6 +1615,48 @@ def _forecast_driver_uncited_findings(model_spec: "ModelSpec") -> list[Finding]:
     return findings
 
 
+def _analyst_note_uncited_findings(provenance: "ProvenanceMap") -> list[Finding]:
+    from .model_queries import ANALYST_NOTE_ARTIFACT
+
+    seen: set[str] = set()
+    findings: list[Finding] = []
+    for cell in provenance.cells:
+        prefix = f"{ANALYST_NOTE_ARTIFACT}:{cell.semantic_item_id}:"
+        for ref in cell.assumption_refs:
+            if not ref.assumption_id.startswith(prefix) or ref.assumption_id in seen:
+                continue
+            seen.add(ref.assumption_id)
+            has_citation = bool(
+                ref.evidence_ids
+                or ref.source_refs
+                or cell.observation_ids
+                or cell.evidence_refs
+                or cell.valuation_refs
+            )
+            if has_citation:
+                continue
+            rest = ref.assumption_id[len(prefix) :]
+            period_text = rest.partition(":")[0]
+            periods = (int(period_text),) if period_text.lstrip("-").isdigit() else ()
+            findings.append(
+                make_finding(
+                    "analyst_note_uncited",
+                    message=(
+                        f"Analyst judgment on {cell.semantic_item_id} has no "
+                        "source handle ([Sn]) or source reference; its value stands uncited."
+                    ),
+                    item_id=cell.semantic_item_id,
+                    periods=periods,
+                    observed={
+                        "assumption_id": ref.assumption_id,
+                        "evidence_id_count": len(ref.evidence_ids),
+                        "source_ref_count": len(ref.source_refs),
+                    },
+                )
+            )
+    return findings
+
+
 def _market_input_stale_findings(
     provenance: "ProvenanceMap",
     validated_at: "datetime",
@@ -1596,6 +1695,48 @@ def _market_input_stale_findings(
                 expected={"max_age_days": MARKET_INPUT_STALE_AFTER_DAYS},
             )
         )
+    return findings
+
+
+def _market_input_lagged_print_findings(
+    provenance: "ProvenanceMap",
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for cell in provenance.cells:
+        item_id = cell.semantic_item_id
+        if item_id not in _MARKET_INPUT_LABELS:
+            continue
+        for ref in cell.valuation_refs:
+            print_date = ref.raw_market_date
+            locator_date = market_plane_locator_as_of_date(
+                getattr(ref, "raw_ref", None)
+            )
+            if locator_date is not None and (
+                print_date is None or locator_date < print_date
+            ):
+                print_date = locator_date
+            if print_date is None or print_date >= ref.as_of_close:
+                continue
+            lag_days = (ref.as_of_close - print_date).days
+            findings.append(
+                make_finding(
+                    "observed_input_lagged_print",
+                    message=(
+                        f"{_MARKET_INPUT_LABELS[item_id]} cites {ref.observation_id} "
+                        f"printed {print_date.isoformat()}, the last published print "
+                        f"before the valuation root date {ref.as_of_close.isoformat()} "
+                        f"({lag_days} days)."
+                    ),
+                    item_id=item_id,
+                    operands=(ref.observation_id,),
+                    observed={
+                        "as_of_close": ref.as_of_close.isoformat(),
+                        "raw_market_date": print_date.isoformat(),
+                        "lag_days": lag_days,
+                        "provider": ref.provider,
+                    },
+                )
+            )
     return findings
 
 
@@ -1727,22 +1868,24 @@ def judgment_info_findings(
     provenance: "ProvenanceMap",
     validated_at: "datetime",
 ) -> tuple[Finding, ...]:
-    """Judgment info flags, case-order and unstated-limitations warnings.
+    """Judgment info flags, case-order, print-lag and unstated-limitations warnings.
 
     Reads the accepted FAS projection (``ModelSpec.forecast_assumptions``), the
     ScenarioSet projection (``scenario_set_binding.critical_factors`` and
     ``driver_roles``, else ``scenario_reviews``), the ValuationPolicy terminal
     cases and the rendered market-input lineage. The info flags are shown and
-    never in the verdict; case-order and unstated-limitations warnings do not
-    refuse publication. The guidance
+    never in the verdict; case-order, print-lag and unstated-limitations warnings
+    do not refuse publication. The guidance
     comparison waits on guidance reaching the build's inputs
     (``docs/closed/info-findings-guidance-citation-staleness.md``).
     """
 
     return (
         *_forecast_driver_uncited_findings(model_spec),
+        *_analyst_note_uncited_findings(provenance),
         *forecast_assumption_limitations_findings(model_spec),
         *_market_input_stale_findings(provenance, validated_at),
+        *_market_input_lagged_print_findings(provenance),
         *_critical_factor_unevidenced_findings(model_spec),
         *_scenario_live_coverage_findings(model_spec),
         *_valuation_case_order_findings(model_spec),

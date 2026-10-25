@@ -35,10 +35,12 @@ from .business_model import (
     BusinessModel,
     CitedObservation,
     Dimension,
+    DriverNode,
     ObservationBasis,
     RevenueScope,
     business_model_observation_claim_key,
     is_statement_role,
+    node_measure,
     product_dimension,
     quotient_dimension,
 )
@@ -832,6 +834,13 @@ def _validate_unit_relationship(
 ) -> None:
     calculation = node.calculation
     output = node.unit
+    if output == "dollars" and node.factor_roles == ("price",):
+        raise ValueError(
+            f"price driver {node_key!r} ({node.key!r}) with authored factor_roles "
+            f"{list(node.factor_roles)!r} cannot use unit 'dollars': declare unit "
+            "'per_count' (or 'per_day') for a per-entity price, or factor_roles "
+            "containing volume+price for aggregate dollar revenue"
+        )
     input_units = tuple(index.nodes[ref].unit for ref in resolved_refs)
     if isinstance(calculation, SumCalculation):
         if any(unit != output for unit in input_units):
@@ -944,6 +953,21 @@ def _validate_segment_graph(index: _NodeIndex) -> dict[str, tuple[str, ...]]:
     return edges
 
 
+def _validate_revenue_output(output: str, *, index: _NodeIndex) -> None:
+    node = index.nodes[output]
+    if isinstance(node.calculation, CommentaryCalculation):
+        raise ValueError(f"revenue output {output!r} cannot be commentary")
+    lowered = DriverNode.model_validate(_lower_driver(node, index=index, targets={}))
+    measure = node_measure(lowered)
+    if measure.unit != Unit.dollars:
+        raise ValueError(
+            f"revenue output {output!r} ({node.key!r}) with authored factor_roles "
+            f"{list(node.factor_roles)!r} must use dollars as resolved total revenue, "
+            f"got {measure.unit.value!r}; total revenue takes factor_roles "
+            "containing volume+price"
+        )
+
+
 
 def structural_lowering_errors(judgment: BusinessModelJudgment) -> tuple[str, ...]:
     """Collect all segment/driver structural lowering errors in a single pass."""
@@ -1045,13 +1069,10 @@ def structural_lowering_errors(judgment: BusinessModelJudgment) -> tuple[str, ..
                 f"segment {segment.key!r} revenue_outputs must reference top-level drivers"
             )
         for output in output_keys:
-            output_node = index.nodes[output]
-            if output_node.unit != "dollars":
-                errors.append(
-                    f"revenue output {output!r} must use dollars, got {output_node.unit!r}"
-                )
-            if isinstance(output_node.calculation, CommentaryCalculation):
-                errors.append(f"revenue output {output!r} cannot be commentary")
+            try:
+                _validate_revenue_output(output, index=index)
+            except ValueError as exc:
+                errors.append(str(exc))
     return tuple(dict.fromkeys(errors))
 
 def names_period_average(key: object, label: object, description: object = None) -> bool:
@@ -1367,8 +1388,6 @@ def _dollar_scale(node: DriverJudgment) -> str | None:
         return "units"
     if node.unit != "dollars":
         return None
-    if node.factor_roles == ("price",):
-        return "units"
     return "millions"
 
 
@@ -1591,7 +1610,7 @@ def _observation_claim_keys(segment_key: str, node: DriverJudgment) -> tuple[str
 def business_model_observation_sources(
     judgment: BusinessModelJudgment,
 ) -> tuple[dict[str, Any], ...]:
-    """The ``sources`` rows the judgment's cited observations select, one per observation.
+    """The ``sources`` rows the judgment's cited observations select, one per citation on each observation.
 
     A citation an observation names is a durable reference: the stage mints its
     evidence from the research file's capture exactly as for an authored
@@ -1605,9 +1624,10 @@ def business_model_observation_sources(
         for node in nodes:
             claim_keys = _observation_claim_keys(segment_key, node)
             for claim_key, row in zip(claim_keys, node.historical_observations, strict=True):
-                rows.append(
-                    {"source_ref": row.citation.source_key(), "claim_keys": [claim_key]}
-                )
+                for citation in (row.citations or (row.citation,)):
+                    rows.append(
+                        {"source_ref": citation.source_key(), "claim_keys": [claim_key]}
+                    )
             visit(segment_key, node.children)
 
     for segment in judgment.segments:
@@ -1949,13 +1969,7 @@ def lower_business_model_judgment(
                 f"segment {segment.key!r} revenue_outputs must reference top-level drivers"
             )
         for output in output_keys:
-            output_node = index.nodes[output]
-            if output_node.unit != "dollars":
-                raise ValueError(
-                    f"revenue output {output!r} must use dollars, got {output_node.unit!r}"
-                )
-            if isinstance(output_node.calculation, CommentaryCalculation):
-                raise ValueError(f"revenue output {output!r} cannot be commentary")
+            _validate_revenue_output(output, index=index)
 
         unit_economics = None
         if segment.unit_economics:

@@ -285,7 +285,7 @@ def _bind_or_insert_tax_schedule_item(
     """Bind an existing tax-schedule row, or insert it after the anchor.
 
     Row insertion is owned by the canonical `_insert_line_item_after` helper in
-    `build_semantic_rows`.
+    `build_semantic_rows`, which gives an inserted row its anchor's ``model_scale``.
     """
 
     try:

@@ -6,6 +6,8 @@ again under authenticated scope before a targeted read or write may trust it.
 
 Snapshot-derived collections and counts remain complete unless the producer
 explicitly pages them; projection validation does not cap its own output.
+
+Consumed by ``api/research/historical_foundation_context_service.py``.
 """
 
 from __future__ import annotations

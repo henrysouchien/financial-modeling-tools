@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -118,7 +119,9 @@ def sum_operand_matches_output(operand: NodeMeasure, output: NodeMeasure) -> boo
 #: monetization level by this `kpi_source` and declared it in dollars. The stored
 #: BusinessModel decode marks such a node `DriverNode.legacy_per_count`; its stored
 #: bytes, and so the revision's content digest, are never rewritten or refused. A
-#: new judgment is validated at its own door before this decode.
+#: new judgment is validated at its own door before this decode. This fence (with
+#: `node_measure`'s legacy reads and `_decode_legacy_per_count`) is removed at the
+#: next corpus recapture.
 LEGACY_PER_COUNT_KPI_SOURCES = frozenset({"revenue_per_client"})
 
 
@@ -129,7 +132,8 @@ def node_measure(node: DriverNode) -> NodeMeasure:
     other units default to units. A node the stored decode marked
     `legacy_per_count` and legacy unit-scale dollar prices read as per-count; a
     per-count series is declared by its own `unit`. Observation basis is never
-    inferred.
+    inferred. The two legacy per-count reads below serve stored pre-cutover
+    artifacts only and are removed at the next corpus recapture.
     """
     scale = node.model_scale
     if scale is None:
@@ -542,6 +546,7 @@ class CitedObservation(_ContractModel):
     unit: Unit
     model_scale: ModelScale
     citation: ObservationCitation
+    citations: tuple[ObservationCitation, ...] = Field(default=(), exclude_if=lambda value: not value)
     confidence: Literal["high", "medium", "low"] = "high"
     note: str | None = Field(default=None, min_length=1)
 
@@ -563,6 +568,15 @@ class CitedObservation(_ContractModel):
     def _scale_matches_unit(self) -> "CitedObservation":
         if self.unit is not Unit.dollars and self.model_scale != "units":
             raise ValueError("non-dollar observations use units scale")
+        if self.citations:
+            seen: set[str] = set()
+            unique: list[ObservationCitation] = []
+            for item in (self.citation, *self.citations):
+                key = json.dumps(item.source_key(), sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(item)
+            object.__setattr__(self, "citations", tuple(unique) if len(unique) > 1 else ())
         return self
 
 
@@ -622,7 +636,8 @@ class DriverNode(_ContractModel):
 
         The legacy reading is the shape a pre-cutover artifact needs when its own data
         is per-count (or silent); a node whose recorded observations are not per-count
-        units declares what it observes, and that declaration stands.
+        units declares what it observes, and that declaration stands. Removed at the
+        next corpus recapture.
         """
         self._legacy_per_count = (
             self.unit == Unit.dollars

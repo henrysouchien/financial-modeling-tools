@@ -460,9 +460,22 @@ FormulaDerivationStrategy = Literal[
     "scenario_control_label",
     "dcf_exit_multiple_derivation",
     "acquisition_goodwill_allocation_proposal",
+    # A scenario snapshot constant: the value the build read off the scenario computation,
+    # with the source row it was read from carried in ``params.expr``.
+    "scenario_output_snapshot",
     # A lowered override from which a cited (not_applicable / not_separately_presented)
     # operand was omitted; the omitted operands are in ``omitted_operands``.
     "cited_absence_omitted",
+    # A bridge-operand cell lowered as the filed summary line less the component rows
+    # already carried; the component rows are in ``dependencies``.
+    "historical_bridge_summary_residual",
+    # The first historical year's opening corporate cash: its ending cash less its net change.
+    "opening_cash_from_net_change",
+    # A filed role-bound value lowered as the cell's render pin when the fact carries no
+    # vendor provenance (the observation itself rides the value cell's ``line_ref``).
+    "required_role_filing_fact",
+    # The goodwill-acquired over acquisition-cash-paid share of a filed year.
+    "filed_goodwill_acquired_share",
 ]
 
 
@@ -492,6 +505,8 @@ class FormulaDerivation(BaseModel):
         "build_company_grounded_schedules",
         "build_valuation_inputs",
         "build_scenarios",
+        "build_cash_historicals",
+        "build_population",
     ]
     strategy: FormulaDerivationStrategy
     version: int = Field(default=1, ge=1)

@@ -1551,14 +1551,63 @@ def release_unseeded_segment_revenue_cycles(
     years = sorted({int(year) for year in years})
     faces = direct_segment_face_items(business_model, segment_mapping)
     for segment in business_model.segments:
-        node_key = _direct_segment_revenue_node_key(segment)
-        face_id = None if node_key is None else faces.get(node_key)
-        if node_key is None or face_id is None:
-            continue
+        seg_idx = segment_mapping.get(segment.id)
         revenue_id = f"bm.{segment.id}.__rev"
-        node = model._index.get(f"bm.{node_key}")
-        face = model._index.get(face_id)
         revenue = model._index.get(revenue_id)
+        node_key = _direct_segment_revenue_node_key(segment)
+        face_id = (
+            faces.get(node_key)
+            if node_key is not None
+            else (
+                f"tpl.fm.income_statement.business_segment_{seg_idx}_revenue"
+                if seg_idx is not None
+                else None
+            )
+        )
+        face = None if face_id is None else model._index.get(face_id)
+        margin = (
+            None
+            if seg_idx is None
+            else model._index.get(f"tpl.fm.margins.business_segment_{seg_idx}_pct_revenue")
+        )
+        face_growth = (
+            None
+            if seg_idx is None
+            else model._index.get(f"tpl.fm.growth_rates.business_segment_{seg_idx}_growth")
+        )
+        if node_key is None:
+            if revenue is None or revenue.historical is None:
+                continue
+            operand_nodes = [
+                model._index.get(ref.id)
+                for ref in _formula_line_refs(revenue.historical.params)
+            ]
+            if not operand_nodes or any(op is None for op in operand_nodes):
+                continue
+            seeded_years = {
+                year
+                for year in years
+                if all(op is not None and _holds_value(op, year) for op in operand_nodes)
+                or (face is not None and _holds_value(face, year))
+            }
+            if seeded_years:
+                for row_to_restore in (revenue, face, margin):
+                    if row_to_restore is not None and row_to_restore.formula_periods is not None:
+                        row_to_restore.formula_periods = sorted(
+                            set(row_to_restore.formula_periods) | seeded_years
+                        )
+                consec_years = {year for year in seeded_years if year - 1 in seeded_years}
+                if consec_years:
+                    growth = model._index.get(f"bm.{segment.id}.__growth")
+                    for g_row in (growth, face_growth):
+                        if g_row is not None and g_row.formula_periods is not None:
+                            g_row.formula_periods = sorted(
+                                set(g_row.formula_periods) | consec_years
+                            )
+            continue
+        if face_id is None:
+            continue
+        node = model._index.get(f"bm.{node_key}")
         if node is None or face is None or revenue is None:
             continue
         if (_ref_source_id(node), _ref_source_id(face)) != (face_id, revenue_id):
@@ -1579,14 +1628,19 @@ def release_unseeded_segment_revenue_cycles(
             year for year in years if _holds_value(node, year) or _holds_value(face, year)
         }
         if seeded_years:
-            if revenue.formula_periods is not None:
-                revenue.formula_periods = sorted(set(revenue.formula_periods) | seeded_years)
-            growth = model._index.get(f"bm.{segment.id}.__growth")
-            if growth is not None and growth.formula_periods is not None:
-                growth.formula_periods = sorted(
-                    set(growth.formula_periods)
-                    | {year for year in seeded_years if year - 1 in seeded_years}
-                )
+            for row_to_restore in (revenue, face, margin):
+                if row_to_restore is not None and row_to_restore.formula_periods is not None:
+                    row_to_restore.formula_periods = sorted(
+                        set(row_to_restore.formula_periods) | seeded_years
+                    )
+            consec_years = {year for year in seeded_years if year - 1 in seeded_years}
+            if consec_years:
+                growth = model._index.get(f"bm.{segment.id}.__growth")
+                for g_row in (growth, face_growth):
+                    if g_row is not None and g_row.formula_periods is not None:
+                        g_row.formula_periods = sorted(
+                            set(g_row.formula_periods) | consec_years
+                        )
         rows = (node, face, revenue)
         for year in years:
             if any(_holds_value(row, year) for row in rows):
@@ -1597,6 +1651,59 @@ def release_unseeded_segment_revenue_cycles(
                         int(period) for period in row.formula_periods if int(period) != year
                     ]
                     released.append((row.id, year))
+    for segment in business_model.segments:
+        seg_prefix = f"bm.{segment.id}."
+        for item_id, item in model._index.items():
+            if (
+                not str(item_id).startswith(seg_prefix)
+                or str(item_id).endswith((".__rev", ".__growth"))
+                or item.item_type is not ItemType.derived
+                or item.historical is None
+                or item.formula_periods is None
+            ):
+                continue
+            refs = _formula_line_refs(item.historical.params)
+            if not refs:
+                continue
+            ops = [model._index.get(r.id) for r in refs]
+            if any(op is None for op in ops):
+                continue
+            ready = {
+                year
+                for year in years
+                if all(
+                    op is not None
+                    and (
+                        _holds_value(op, year + int(getattr(r, "t", 0) or 0))
+                        or (year + int(getattr(r, "t", 0) or 0)) in (op.formula_periods or ())
+                    )
+                    for r, op in zip(refs, ops)
+                )
+            }
+            if ready:
+                item.formula_periods = sorted(set(item.formula_periods) | ready)
+        axis = [
+            *(int(period) for period in model.time_structure.historical_periods),
+            *(int(period) for period in model.time_structure.projection_periods),
+        ]
+        for item_id, item in model._index.items():
+            if (
+                not str(item_id).startswith(seg_prefix)
+                or item.item_type is not ItemType.input
+                or item.historical is not None
+            ):
+                continue
+            seeded_node_years = {year for year in years if _holds_value(item, year)}
+            if not seeded_node_years:
+                continue
+            first_seeded = min(seeded_node_years)
+            leading_unseeded = {year for year in years if year < first_seeded}
+            if not leading_unseeded:
+                continue
+            current_periods = axis if item.formula_periods is None else item.formula_periods
+            item.formula_periods = [
+                int(period) for period in current_periods if int(period) not in leading_unseeded
+            ]
     return released
 
 
@@ -2670,12 +2777,26 @@ def _restrict_unowned_operand_periods(model: FinancialModel) -> None:
             and getattr(spec.params.get("source"), "id", None) in bm_ids
         )
 
+    segment_face_ids = {item.id for item in model._index.values() if mirrors_bm_row(item)}
+
+    def reads_segment_face_row(item: LineItem) -> bool:
+        if not str(item.id).startswith((
+            "tpl.fm.margins.business_segment_",
+            "tpl.fm.growth_rates.business_segment_",
+        )):
+            return False
+        spec = item.historical
+        return spec is not None and any(
+            ref.id in segment_face_ids for ref in _formula_line_refs(spec.params)
+        )
+
     rows = [
         item for item in model._index.values()
         if item.formula_periods and (
             item.id in bm_ids
             or (item.item_type is ItemType.input and reads_bm_row(item))
             or mirrors_bm_row(item)
+            or reads_segment_face_row(item)
         )
         and not any(
             spec is not None and spec.type is FormulaType.roll_forward

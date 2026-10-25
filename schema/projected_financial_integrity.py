@@ -64,6 +64,8 @@ BALANCE_SHEET_ITEM_IDS = (
     "tpl.fm.balance_sheet.total_equity",
 )
 
+BALANCE_SHEET_FUNDING_ITEM_ID = "tpl.fm.balance_sheet.total_liabilities_and_equity"
+
 CASH_FLOW_ITEM_IDS = (
     "tpl.fm.cash_flow.operating_cash_flow",
     "tpl.fm.cash_flow.investing_cash_flow",
@@ -577,11 +579,13 @@ def _balance_sheet_findings(
     if not any(item_id in model._index for item_id in BALANCE_SHEET_ITEM_IDS):
         return set(), []
 
-    required: set[str] = set(BALANCE_SHEET_ITEM_IDS)
+    assets_id, liabilities_id, equity_id = BALANCE_SHEET_ITEM_IDS
+    identity_ids = (assets_id, BALANCE_SHEET_FUNDING_ITEM_ID, liabilities_id, equity_id)
+    required: set[str] = set(identity_ids)
     gaps = _required_value_gaps(
         model,
         values=values,
-        item_ids=BALANCE_SHEET_ITEM_IDS,
+        item_ids=identity_ids,
         periods=projection_periods,
     )
     findings: list[ProjectedFinancialIntegrityFinding] = []
@@ -598,7 +602,6 @@ def _balance_sheet_findings(
             )
         )
 
-    assets_id, liabilities_id, equity_id = BALANCE_SHEET_ITEM_IDS
     footing = _base_year_footing_gap(
         model,
         values=values,
@@ -610,11 +613,12 @@ def _balance_sheet_findings(
     carried_periods: list[int] = []
     max_delta = 0.0
     for period in projection_periods:
-        period_values = [values.get(item_id, {}).get(period) for item_id in BALANCE_SHEET_ITEM_IDS]
+        period_values = [values.get(item_id, {}).get(period) for item_id in identity_ids]
         if not _list_values_are_present(period_values):
             continue
-        assets, liabilities, equity = (float(value) for value in period_values)
-        liabilities_and_equity = liabilities + equity
+        assets, liabilities_and_equity, liabilities, equity = (
+            float(value) for value in period_values
+        )
         delta = assets - liabilities_and_equity
         base = max(abs(assets), abs(liabilities_and_equity))
         # When balance sheet has unclaimed lines, strict half-cent tolerance applies:
@@ -648,7 +652,7 @@ def _balance_sheet_findings(
                 ),
                 item_id=assets_id,
                 periods=tuple(carried_periods),
-                related_item_ids=(assets_id, liabilities_id, equity_id),
+                related_item_ids=identity_ids,
                 bound=carried_tolerance,
                 statement=BALANCE_SHEET_STATEMENT,
                 observed_delta=footing.carried_delta,
@@ -666,7 +670,7 @@ def _balance_sheet_findings(
                 ),
                 item_id=assets_id,
                 periods=tuple(unbalanced_periods),
-                related_item_ids=(assets_id, liabilities_id, equity_id),
+                related_item_ids=identity_ids,
                 statement=BALANCE_SHEET_STATEMENT,
                 observed_delta=max_delta,
             )
@@ -678,8 +682,9 @@ def _balance_sheet_findings(
 class _FootingGap:
     """A filed balance sheet's printed totals against the face lines that roll into them.
 
-    ``carried_delta`` is assets less liabilities plus equity when every total is the sum
-    of its face lines; a projection that rolls those lines forward carries it unchanged.
+    ``carried_delta`` is assets less total liabilities and equity when each of the
+    three statement totals is the sum of its face lines, retaining funding members
+    outside liabilities and equity; a projection rolls that identity forward.
     """
 
     base_period: int
@@ -741,6 +746,10 @@ def _base_year_footing_gap(
     if not base_periods:
         return None
     base_period = max(base_periods)
+    funding = values.get(BALANCE_SHEET_FUNDING_ITEM_ID, {}).get(base_period)
+    if not _is_present(funding):
+        return None
+    funding_extras = float(funding)
     tolerance = _half_cent_in_scale(model._index.get(BALANCE_SHEET_ITEM_IDS[0]))
     gap = 0.0
     parts: list[str] = []
@@ -770,6 +779,8 @@ def _base_year_footing_gap(
                     f"{item_id} printed={float(printed):.10g}, face lines sum={face_sum:.10g}"
                 )
         components.append(sign * face_sum)
+        if sign == -1:
+            funding_extras -= float(printed) if printed is not None else face_sum
     # Size bound: must be within rounding of the reported scale (<= 2.5 scale units)
     scale_unit = 1.0  # In model coordinates where scale is millions/thousands, 1 unit = 1.0
     if abs(gap) <= tolerance or abs(gap) > 2.5 * scale_unit:
@@ -782,7 +793,7 @@ def _base_year_footing_gap(
 
     return _FootingGap(
         base_period=base_period,
-        carried_delta=sum(components),
+        carried_delta=sum(components) - funding_extras,
         rendered=f"{'; '.join(parts)} ({disclaimer})",
     )
 
@@ -1613,6 +1624,7 @@ def _historical_balance_sheet_findings(
         return set(), []
 
     assets_id, liabilities_id, equity_id = BALANCE_SHEET_ITEM_IDS
+    identity_ids = (assets_id, BALANCE_SHEET_FUNDING_ITEM_ID, liabilities_id, equity_id)
     tolerance = _half_cent_in_scale(model._index.get(assets_id))
     unbalanced: list[tuple[int, float, float, float]] = []
     filed: list[tuple[int, float, float, float]] = []
@@ -1620,11 +1632,12 @@ def _historical_balance_sheet_findings(
     bounds: dict[int, tuple[float | None, str]] = {}
     filed_lines: list[dict[str, Any]] = []
     for period in historical_periods:
-        period_values = [values.get(item_id, {}).get(period) for item_id in BALANCE_SHEET_ITEM_IDS]
+        period_values = [values.get(item_id, {}).get(period) for item_id in identity_ids]
         if not _list_values_are_present(period_values):
             continue
-        assets, liabilities, equity = (float(value) for value in period_values)
-        liabilities_and_equity = liabilities + equity
+        assets, liabilities_and_equity, liabilities, equity = (
+            float(value) for value in period_values
+        )
         delta = assets - liabilities_and_equity
         if abs(delta) > tolerance:
             row = (period, assets, liabilities_and_equity, delta)
@@ -1644,7 +1657,7 @@ def _historical_balance_sheet_findings(
             else:
                 unbalanced.append(row)
     if not unbalanced and not filed:
-        return set(BALANCE_SHEET_ITEM_IDS), []
+        return set(identity_ids), []
 
     def rendered(rows: list[tuple[int, float, float, float]]) -> str:
         return "; ".join(
@@ -1668,7 +1681,7 @@ def _historical_balance_sheet_findings(
                 ),
                 item_id=assets_id,
                 periods=tuple(period for period, *_ in filed),
-                related_item_ids=(assets_id, liabilities_id, equity_id),
+                related_item_ids=identity_ids,
                 bound=max(bound for bound, _basis in filed_bounds.values()),
                 statement=BALANCE_SHEET_STATEMENT,
                 observed_delta=max(filed, key=lambda row: abs(row[3]))[3],
@@ -1697,7 +1710,7 @@ def _historical_balance_sheet_findings(
                 ),
                 item_id=assets_id,
                 periods=tuple(period for period, *_ in unbalanced),
-                related_item_ids=(assets_id, liabilities_id, equity_id),
+                related_item_ids=identity_ids,
                 bound=tolerance,
                 statement=BALANCE_SHEET_STATEMENT,
                 observed_delta=max(unbalanced, key=lambda row: abs(row[3]))[3],
@@ -1715,7 +1728,7 @@ def _historical_balance_sheet_findings(
                 },
             )
         )
-    return set(BALANCE_SHEET_ITEM_IDS), findings
+    return set(identity_ids), findings
 
 
 def _printed_total(model: FinancialModel, period: int) -> LineItem | None:
@@ -2523,6 +2536,7 @@ def _t0_ref_item_ids(value: Any) -> set[str]:
 
 
 __all__ = [
+    "BALANCE_SHEET_FUNDING_ITEM_ID",
     "BALANCE_SHEET_ITEM_IDS",
     "CASH_FLOW_FX_ITEM_ID",
     "CASH_FLOW_ITEM_IDS",

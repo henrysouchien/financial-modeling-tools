@@ -27,7 +27,7 @@ from .build_value_writers import (
     _set_constant_override,
     _set_imported_value,
 )
-from .models import FinancialModel, LineItem, ValueProvenance
+from .models import FinancialModel, FormulaDerivation, LineItem, ValueProvenance
 from .provider_port.contracts import (
     FilingLineFact,
     FilingLineRef,
@@ -374,7 +374,14 @@ def _write_observations(
                         item,
                         year,
                         workbook_value,
-                        vendor_provenance=vendor_provenance,
+                        origin=(
+                            vendor_provenance
+                            if vendor_provenance is not None
+                            else FormulaDerivation(
+                                owner="build_population",
+                                strategy="required_role_filing_fact",
+                            )
+                        ),
                     )
                 populated_target_ids.add(item.id)
                 periods_populated += 1

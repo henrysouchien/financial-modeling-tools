@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, TypedDict
 
 from .handoff import ModelRenderState
 
@@ -25,6 +25,27 @@ def compiler_input_content_hash(value: Any) -> str:
         default=str,
     ).encode()
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+class UnstoredSourceBundleRow(TypedDict):
+    source_bundle_payload: dict[str, Any]
+    source_bundle_content_sha256: str
+
+
+def unstored_source_bundle_row(source_bundle: Any) -> UnstoredSourceBundleRow:
+    """The ``source_bundle_payload`` / ``source_bundle_content_sha256`` pair a compile
+    binds, for a SourceBundle that was never stored.
+
+    Production reads the pair from the ``source_bundles`` row (its raw payload and
+    the ``content_sha256`` the repository computed over it). A bundle built in
+    memory — a golden capture, a test — has no row, so its own canonical dump
+    sealed by the same hash is that row.
+    """
+    payload: dict[str, Any] = source_bundle.model_dump(mode="json")
+    return UnstoredSourceBundleRow(
+        source_bundle_payload=payload,
+        source_bundle_content_sha256=compiler_input_content_hash(payload).removeprefix("sha256:"),
+    )
 
 
 def compiler_input_artifact_id(kind: str, content_hash: str) -> str:

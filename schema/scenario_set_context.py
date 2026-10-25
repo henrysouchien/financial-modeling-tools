@@ -1,4 +1,7 @@
-"""Bounded exact-ref context for precompile ScenarioSet judgment."""
+"""Bounded exact-ref context for precompile ScenarioSet judgment.
+
+Consumed by ``api/research/scenario_set_context_service.py``.
+"""
 
 from __future__ import annotations
 

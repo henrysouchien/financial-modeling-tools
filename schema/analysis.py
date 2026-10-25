@@ -470,10 +470,13 @@ def judgment_drivers(
 
     ``forecast_assumption_drivers`` maps a ModelSpec forecast assumption id to
     its ``driver`` key, the name the row is reported under; a cited row with no
-    entry reports its id. ValuationPolicy controls are read through
-    :data:`VALUATION_POLICY_DRIVER_ITEMS` for the parameters the model carries.
+    entry reports its id. Case-qualified scenario assumptions override a
+    forecast row within a scenario case run, not a base sensitivity driver.
+    ValuationPolicy controls are read through :data:`VALUATION_POLICY_DRIVER_ITEMS`
+    for the parameters the model carries.
     """
-
+    from .dependency_graph_eval import SCENARIO_SNAPSHOT_SUBTYPE
+    from .model_queries import ANALYST_NOTE_ARTIFACT, SCENARIO_ASSUMPTION_PREFIX
     if not model._index:
         model.build_index()
     graph = DependencyGraph()
@@ -482,8 +485,14 @@ def judgment_drivers(
     for cell in provenance.cells:
         if len(cell.assumption_ids) != 1 or cell.semantic_item_id not in model._index:
             continue
+        if cell.formula is not None and cell.formula.subtype == SCENARIO_SNAPSHOT_SUBTYPE:
+            continue
         subject = cell.assumption_ids[0]
-        if subject.startswith(_VALUATION_CONTROL_LINEAGE_PREFIX):
+        if subject.startswith((
+            _VALUATION_CONTROL_LINEAGE_PREFIX,
+            f"{ANALYST_NOTE_ARTIFACT}:",
+            SCENARIO_ASSUMPTION_PREFIX,
+        )):
             continue
         own_items.setdefault(subject, set()).add(cell.semantic_item_id)
     drivers: List[JudgmentDriver] = []

@@ -163,8 +163,6 @@ def _publication_inputs(target_model_ref: Mapping[str, Any], *, workbook_content
   if verified_model_spec.verification_mode != "writer":
     raise ValueError("build publication requires writer verification mode")
   model_spec = verified_model_spec.model_spec
-  if source_input.content_hash != compiler_input_content_hash(source_bundle):
-    raise ValueError("SourceBundle compiler-input digest mismatch")
   validate_source_bundle_binding_and_selection(
     source_bundle,
     model_spec,
@@ -354,6 +352,7 @@ def compile_version(
       validation_warning_count=validation.uncleared_warning_count,
       valuation_evidence_status=derive_valuation_evidence_status(
         source_bundle, None if model_spec.valuation_policy is None else model_spec.valuation_policy.peer_policy,
+        bundle_content_sha256=source_bundle_digest,
       ),
       schedule_input_audit=schedule_input_audit,
       scenario_controls=target_model_ref.get("scenario_controls"),
@@ -468,6 +467,16 @@ def _document_seed_rows(
     if (item_id, year) in restored:
       continue
     source = column.get("source") or {}
+    # A formula over the pin's opening balance reads that evidence as an input (never as its own line).
+    for opening in column.get("opening_inputs") or ():
+      rows.append({
+        "source_kind": "source_bundle_opening_balance",
+        "resolved_item_id": item_id,
+        "requirement_id": str(opening["requirement_id"]),
+        "evidence_id": str(opening["evidence_id"]),
+        "source_id": str(opening["source_id"]),
+        "periods": [year],
+      })
     kind = source.get("kind")
     if kind == "judgment_row":
       judgment = source.get("row") or {}
@@ -651,6 +660,7 @@ class _DocumentEvaluation:
   values: document.Values
   typed_values: dict[str, dict[int, Any]]
   evaluation_reads: Mapping[tuple[str, int], tuple[tuple[str, int], ...]] | None
+  case_evaluation_reads: Mapping[str, Mapping[tuple[str, int], tuple[tuple[str, int], ...]]]
   compile_stage: CompileStageEvidence
 
 
@@ -662,7 +672,7 @@ def _document_evaluation(
   input_findings: Collection[Mapping[str, Any]] = (),
 ) -> _DocumentEvaluation:
   """The document-level compile evidence shared by graph checks and publication."""
-  from schema.build_findings import historical_foundation_evidence_findings
+  from schema.build_findings import cited_fact_value_mismatch_findings, historical_foundation_evidence_findings
   from schema.build_scenarios import compute_scenario_outputs, scenario_results_payload
   from schema.model_readiness import compute_model_projection_readiness
   from schema.model_readiness_quality import compute_model_quality_readiness
@@ -716,6 +726,7 @@ def _document_evaluation(
   return _DocumentEvaluation(
     model=model, values=values, typed_values=typed_values,
     evaluation_reads=evaluation_reads,
+    case_evaluation_reads=scenario_outputs.case_eval_reads,
     compile_stage=CompileStageEvidence(
       projection_readiness=projection_readiness, model_quality_readiness=model_quality_readiness,
       scenario_bridge_readiness=scenario_bridge_readiness, scenario_results=scenario_results,
@@ -729,6 +740,7 @@ def _document_evaluation(
       judgment_findings=scenario_gap_findings(model_spec),
       compile_findings=(
         *historical_foundation_evidence_findings(source_bundle, model_spec),
+        *cited_fact_value_mismatch_findings(doc, values, source_bundle),
         *(
           Finding.model_validate({key: value for key, value in row.items() if key not in ("stage", "owner_file")})
           for row in input_findings if "severity" in row
@@ -743,6 +755,8 @@ def render_document_version(
   *,
   ticker: str,
   source_bundle: Any,
+  source_bundle_payload: Mapping[str, Any],
+  source_bundle_content_sha256: str,
   model_spec: Any,
   bundle_id: str | None,
   bundle_identity_digest: str | None,
@@ -794,6 +808,8 @@ def render_document_version(
   formatter = formatter_for_declared_style_guide(declared_style_guide(declared_capabilities(source_bundle)))
   render_compiler_inputs = _render_compiler_inputs(
     source_bundle=source_bundle,
+    source_bundle_payload=source_bundle_payload,
+    source_bundle_content_sha256=source_bundle_content_sha256,
     model_spec=model_spec,
     source_bundle_id=None if bundle_id is None else str(bundle_id),
     source_bundle_identity_digest=None if bundle_identity_digest is None else str(bundle_identity_digest),
@@ -820,6 +836,7 @@ def render_document_version(
   plan = render_model(rendered_model, formatter=formatter, annual_context=render_context)
   valuation_evidence_status = derive_valuation_evidence_status(
     source_bundle, None if model_spec.valuation_policy is None else model_spec.valuation_policy.peer_policy,
+    bundle_content_sha256=source_bundle_content_sha256,
   )
   _append_valuation_evidence_status_block(plan, valuation_evidence_status)
   reconcile_render_contract(rendered_model, plan, formatter=formatter, annual_context=render_context)
@@ -835,11 +852,13 @@ def render_document_version(
     doc,
     ours,
     plan,
-    source_bundle_digest=compiler_input_content_hash(source_bundle).removeprefix("sha256:"),
+    source_bundle_digest=source_bundle_content_sha256,
     model_spec_digest=compiler_input_content_hash(model_spec).removeprefix("sha256:"),
     source_bundle=source_bundle,
     model_spec=model_spec,
     seed_coverage_manifest=seed_rows,
+    evaluation_reads=evaluation.evaluation_reads,
+    case_evaluation_reads=evaluation.case_evaluation_reads,
   )
   schedule_input_audit = build_schedule_input_audit(
     model=model,
@@ -913,6 +932,7 @@ def document_provenance(
   doc: document.ModelSheet, *, model: FinancialModel, source_bundle: Any, model_spec: Any,
   values: document.Values,
   evaluation_reads: Mapping[tuple[str, int], tuple[tuple[str, int], ...]] | None = None,
+  case_evaluation_reads: Mapping[str, Mapping[tuple[str, int], tuple[tuple[str, int], ...]]] | None = None,
 ) -> Any:
   """The ``ProvenanceMap`` of ``doc`` evaluated to ``values``: the one projection a graph check
   and a pre-publish read of the judgment rows (``check_model(section="sensitivity")``) share."""
@@ -920,11 +940,11 @@ def document_provenance(
 
   return target_build.project_provenance_map(
     doc, values,
-    source_bundle_digest=compiler_input_content_hash(source_bundle).removeprefix("sha256:"),
+    source_bundle_digest=model_spec.source_bundle_sha256,
     model_spec_digest=compiler_input_content_hash(model_spec).removeprefix("sha256:"),
     source_bundle=source_bundle, model_spec=model_spec,
     seed_coverage_manifest=_document_seed_rows(doc, model, source_bundle=source_bundle),
-    values=values, evaluation_reads=evaluation_reads,
+    values=values, evaluation_reads=evaluation_reads, case_evaluation_reads=case_evaluation_reads,
   )
 
 
@@ -964,6 +984,7 @@ def validate_document_graph(
   provenance = document_provenance(
     doc, model=model, source_bundle=source_bundle, model_spec=model_spec,
     values=evaluation.values, evaluation_reads=evaluation.evaluation_reads,
+    case_evaluation_reads=evaluation.case_evaluation_reads,
   )
   schedule_input_audit = build_schedule_input_audit(
     model=model, typed_values=evaluation.typed_values,

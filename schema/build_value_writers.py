@@ -164,19 +164,27 @@ def _set_constant_override(
     year: int,
     value: float,
     *,
+    origin: FormulaDerivation | EdgarProvenance | VendorProvenance,
     synthetic: bool = False,
-    edgar_provenance: EdgarProvenance | None = None,
-    vendor_provenance: VendorProvenance | None = None,
 ) -> None:
+    """Write a constant period override that carries where its value came from.
+
+    ``origin`` is a required part of the write: the ``FormulaDerivation`` (owner,
+    strategy and the rows the value was computed from) of a compiler-computed
+    value, or the vendor / EDGAR provenance of a value read off a filing.
+    """
+
     if item.overrides is None:
         item.overrides = {}
     item.overrides[int(year)] = FormulaSpec(
         type=FormulaType.constant,
         params={"value": float(value) if isinstance(value, int) else value},
         note="synthetic" if synthetic else None,
-        edgar_provenance=edgar_provenance,
-        vendor_provenance=vendor_provenance,
+        derivation=origin if isinstance(origin, FormulaDerivation) else None,
+        edgar_provenance=origin if isinstance(origin, EdgarProvenance) else None,
+        vendor_provenance=origin if isinstance(origin, VendorProvenance) else None,
     )
+
 
 def _authored_periods(item: LineItem, periods: Iterable[int]) -> tuple[int, ...]:
     """The ``periods`` whose cell an authored row lowered (``input``)."""

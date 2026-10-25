@@ -5,15 +5,96 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib
+import json
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
-from research.source_html import provider_symbol
+from schema.ticker_contract import normalize_ticker
 
 
 STATEMENT_ENDPOINTS = ("income_statement", "balance_sheet", "cash_flow")
 MARKET_INPUT_ENDPOINTS = ("quote", "profile")
 STATEMENT_LIMIT = 5
+_SEC_NATIVE_SYMBOL_CACHED_ONLY_MEMO: dict[tuple[str, int], dict[str, str]] = {}
+
+
+def _source_html_cache_root() -> Path:
+    configured = os.getenv("SOURCE_HTML_CACHE_DIR")
+    if configured is not None:
+        return Path(configured)
+    user_data = os.getenv("USER_DATA_DIR", "").strip()
+    if user_data:
+        data_root = Path(user_data).expanduser()
+    else:
+        state_home = os.getenv("XDG_STATE_HOME", "").strip()
+        state_root = (
+            Path(state_home).expanduser()
+            if state_home
+            else Path.home() / ".local" / "state"
+        )
+        data_root = state_root / "hank" / "data"
+    return data_root / "source_html"
+
+
+def _ticker_records(tickers: Any) -> Any:
+    return tickers.values() if isinstance(tickers, dict) else tickers
+
+
+def _build_sec_native_symbol_map(tickers: Any) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    collisions: set[str] = set()
+    for record in _ticker_records(tickers):
+        if not isinstance(record, dict):
+            continue
+        native_ticker = str(record.get("ticker") or "").strip()
+        if not native_ticker:
+            continue
+        collapsed = normalize_ticker(native_ticker)
+        if not collapsed:
+            continue
+        existing = aliases.get(collapsed)
+        if existing is None:
+            if collapsed not in collisions:
+                aliases[collapsed] = native_ticker
+            continue
+        if existing != native_ticker:
+            aliases.pop(collapsed, None)
+            collisions.add(collapsed)
+    return aliases
+
+
+def reset_sec_native_symbol_cached_only_memo() -> None:
+    _SEC_NATIVE_SYMBOL_CACHED_ONLY_MEMO.clear()
+
+
+def sec_native_symbol_cached_only(collapsed: object) -> str | None:
+    try:
+        cache_path = _source_html_cache_root() / "sec_cache" / "company_tickers.json"
+        stat_result = cache_path.stat()
+        memo_key = (str(cache_path), stat_result.st_mtime_ns)
+        aliases = _SEC_NATIVE_SYMBOL_CACHED_ONLY_MEMO.get(memo_key)
+        if aliases is None:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            aliases = _build_sec_native_symbol_map(payload)
+            for existing_key in list(_SEC_NATIVE_SYMBOL_CACHED_ONLY_MEMO):
+                if existing_key[0] == memo_key[0] and existing_key != memo_key:
+                    _SEC_NATIVE_SYMBOL_CACHED_ONLY_MEMO.pop(existing_key, None)
+            _SEC_NATIVE_SYMBOL_CACHED_ONLY_MEMO[memo_key] = aliases
+        return aliases.get(normalize_ticker(str(collapsed or "")))
+    except Exception:
+        return None
+
+
+def provider_symbol(ticker: str) -> str:
+    return sec_native_symbol_cached_only(ticker) or ticker
+
+
+def provider_symbols_csv(csv: str | None) -> str | None:
+    if not isinstance(csv, str) or not csv:
+        return csv
+    return ",".join(provider_symbol(token.strip()) for token in csv.split(","))
 
 
 @functools.cache
@@ -125,10 +206,16 @@ async def fetch_build_financials(
 
 
 __all__ = [
+    "_build_sec_native_symbol_map",
+    "_source_html_cache_root",
+    "_ticker_records",
     "fetch_build_financials",
     "fmp",
     "live_fetch",
     "live_fetch_with_lineage",
     "provider_symbol",
+    "provider_symbols_csv",
     "records",
+    "reset_sec_native_symbol_cached_only_memo",
+    "sec_native_symbol_cached_only",
 ]

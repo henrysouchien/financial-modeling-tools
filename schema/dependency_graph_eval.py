@@ -21,6 +21,10 @@ from .refs import line_item_ref_from_obj
 
 logger = logging.getLogger("schema.dependency_graph")
 
+#: The ``FormulaSpec.subtype`` of a constant that snapshots a scenario output; ``params.expr`` is
+#: the source row it was read from.
+SCENARIO_SNAPSHOT_SUBTYPE = "scenario_snapshot"
+
 # ``DECLARED_DOMAIN_VALUATION_SUBTYPES`` lives in :mod:`schema.dependency_graph`,
 # where the typed classifier's declared-domain law reads it.
 
@@ -81,6 +85,9 @@ def _eval_inner(
     params = spec.params or {}
     spec_type = spec.type
     if spec_type == FormulaType.constant:
+        if spec.subtype == SCENARIO_SNAPSHOT_SUBTYPE:
+            # The snapshot's source row is read for its lineage, never its number.
+            self._value_of(params.get("expr"), period, results, time_index, time_order)
         raw_value = params.get("value")
         if raw_value is None:
             return None

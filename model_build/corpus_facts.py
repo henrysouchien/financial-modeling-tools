@@ -5,7 +5,7 @@ assembly; ``model_build.projection`` owns period state and vintage selection.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal, localcontext
@@ -18,6 +18,7 @@ from typing import Literal, Protocol
 import model_build.projection as resolver
 from model_build.projection import SOURCE_BUNDLE_DECIMAL_CONTEXT
 from schema.build_bm_node_history import BmRequiredSeries, bm_required_series
+from schema.build_population import quantity_native_value
 from schema.build_model_product_contracts import (
   SourceEvidence,
   StatementSourceMaterial,
@@ -31,18 +32,25 @@ from schema.coverage_profile import (
   PeriodPinCell,
   RetainedVintageCandidate,
 )
-from schema.provider_port.adapters.edgar.wire.filing_facts_v1 import EdgarFilingFactsEnvelopeV1
+from schema.provider_port.adapters.edgar.wire.filing_facts_v1 import (
+  BoundBindingV1,
+  EdgarFilingFactsEnvelopeV1,
+  ExplicitDimensionV1,
+  PresentationDisplayKnownV1,
+)
 from schema.model_kind_profile_loader import resolve_model_kind_coverage_profile
 from schema.model_number_value import ModelNumberValue
 from schema.provider_port.adapters.edgar import EdgarAdapter
 from schema.provider_port.contracts import (
-  FilingDimensionRef, FilingLineObservation, FilingLineRef, FiscalWindow, ReportedPeriod,
+  FilingDimensionRef, FilingLineFact, FilingLineObservation, FilingLineRef, FiscalWindow,
+  ReportedPeriod,
 )
 from schema.required_role_catalog import load_required_role_catalog
 from schema.role_disposition import derive_role_dispositions
 from schema.statement_topology import normalize_topology_role
 from schema.vintage_selection import SelectedVintage, evidence_series_identity, select_vintage
-from value_semantics_core import FiscalYearPeriod
+from pydantic import ValidationError
+from value_semantics_core import FiscalYearPeriod, NumericDisplaySpec, Quantity
 
 COVERAGE_PROFILE_LOGICAL_ID = "issuer.coverage_profile"
 #: The axis a filer adds to a segment member's fact to say the member is an operating
@@ -508,9 +516,10 @@ class StatementFactProjection:
   profile: AnnualCoverageProfile
   #: The same rows as ``profile.annual_requirements``.
   requirements: tuple[AnnualSourceRequirement, ...]
-  #: Every statement-fact observation, in SourceBundle order.
+  #: Every pinned statement-fact observation, in SourceBundle order: the pinned lines'
+  #: (``occurrence_observations`` and the issuer and schedule reads).
   observations: tuple[FilingLineObservation, ...]
-  #: The filing-occurrence part of ``observations`` (closure-adjudicated).
+  #: The pinned filing-occurrence part of ``observations`` (closure-adjudicated).
   occurrence_observations: tuple[FilingLineObservation, ...]
   reported_periods: tuple[ReportedPeriod, ...]
   occurrence_absence_verdicts: Mapping[
@@ -534,6 +543,9 @@ class StatementFactProjection:
   #: filing binds nothing there, so each is a typed gap for the consumer to
   #: show (a later filing's comparative may still supply its vintage).
   unbound_periods: tuple[tuple[str, str], ...] = ()
+  #: The filed lines of the pinned accessions that no requirement pins: evidence only
+  #: (``projection_statement_evidence``), never a statement-spine observation.
+  unpinned_occurrence_observations: tuple[FilingLineObservation, ...] = ()
   #: Each (required role, period) the resolver selected a vintage for, or
   #: found none admitted by the cutoff. The selected vintage and the earlier
   #: candidates are also on that period's ``period_cells`` entry.
@@ -652,6 +664,97 @@ class StatementFactProjection:
 
 
 
+def unpinned_occurrence_observations(
+  adapter: EdgarAdapter,
+  *,
+  ticker: str,
+  envelopes: Mapping[str, EdgarFilingFactsEnvelopeV1],
+  accessions: Collection[str],
+  window: FiscalWindow,
+  excluded: Collection[FilingLineRef],
+) -> tuple[FilingLineObservation, ...]:
+  """The ``ok`` observation of every filed line of a pinned accession that no requirement pins.
+
+  A document may cite a line of a pinned filing by its filing identity alone (``accession``,
+  period, tag, dimensions), role omitted; the seal must carry that fact for the citation to
+  resolve. Each bound numeric occurrence of ``accessions`` in the window's fiscal years whose
+  dimensions are all explicit is one line (one per presenting role); ``excluded`` are the
+  lines the pin already reads, and every ``(tag, dimensions)`` series they name is the
+  pin's whole, in any period, filing or role. The one ``EdgarAdapter`` reads them, so a line's value, display
+  and provenance are the pinned lines' own; a line the adapter cannot read as ``ok``
+  (blank, ambiguous, several rival renderings) has no observation here.
+  """
+  first_year = window.end_fiscal_year - window.n_years + 1
+  lines: set[FilingLineRef] = set()
+  unrepresentable: set[FilingLineRef] = set()
+  for accession in accessions:
+    envelope = envelopes.get(accession)
+    if envelope is None:
+      continue
+    for occurrence in envelope.occurrences:
+      binding = occurrence.binding
+      fiscal_year = occurrence.printed_column.period_ref.fiscal_year
+      if (
+        occurrence.line_kind != "numeric"
+        or not isinstance(binding, BoundBindingV1)
+        or not first_year <= fiscal_year <= window.end_fiscal_year
+        or not all(
+          isinstance(dimension, ExplicitDimensionV1)
+          for dimension in binding.fact.dimensions
+        )
+      ):
+        continue
+      line = FilingLineRef(
+        accession=accession,
+        period=FiscalYearPeriod(kind="fiscal_year", fiscal_year=fiscal_year),
+        statement_role=normalize_topology_role(
+          occurrence.presentation.presentation_role_name
+        ),
+        tag=occurrence.line_qname.lexical_qname,
+        dimensions=tuple(
+          sorted(
+            {
+              FilingDimensionRef(
+                axis_qname=dimension.axis.lexical_qname,
+                member_qname=dimension.member.lexical_qname,
+              )
+              for dimension in binding.fact.dimensions
+              if isinstance(dimension, ExplicitDimensionV1)
+            },
+            key=lambda row: (row.axis_qname, row.member_qname),
+          )
+        ),
+      )
+      lines.add(line)
+      display = occurrence.presentation_display
+      if isinstance(display, PresentationDisplayKnownV1):
+        # The adapter raises on a printed display that is no ``NumericDisplaySpec``
+        # (precision past eight places, say); such a line has no ``Quantity`` to seal.
+        try:
+          NumericDisplaySpec.model_validate(
+            display.model_dump(mode="python", exclude={"kind"}, exclude_none=True),
+            strict=True,
+          )
+        except ValidationError:
+          unrepresentable.add(line)
+  # A requirement owns its (tag, dimensions) series across every period, comparative
+  # column and presenting role (its vintage selection reads them); only a series no
+  # requirement pins is sealed here.
+  pinned_series = {(line.tag, line.dimensions) for line in excluded}
+  lines = {line for line in lines if (line.tag, line.dimensions) not in pinned_series}
+  lines.difference_update(unrepresentable)
+  if not lines:
+    return ()
+  observations, _ = adapter.fetch_filing_line_facts(
+    ticker, lines=tuple(lines), window=window
+  )
+  return tuple(
+    observation
+    for observation in observations
+    if observation.status == "ok" and observation.fact is not None
+  )
+
+
 def project_statement_facts(inputs: StatementFactInputs) -> StatementFactProjection:
   """Assemble facts from prepared inputs using the one period/vintage resolver."""
   corpus, profile = inputs.corpus, inputs.profile
@@ -746,6 +849,22 @@ def project_statement_facts(inputs: StatementFactInputs) -> StatementFactProject
       if observation.line in issuer_statement_pinned
       and observation.line not in occurrence_lines
     )
+    # A filed line of a pinned accession that no requirement pins is a sealed fact too: a
+    # document may cite it by its filing identity, and its evidence row is minted without a
+    # requirement (``statement_source_evidence``).
+    unpinned_observations = unpinned_occurrence_observations(
+      edgar_adapter,
+      ticker=corpus.ticker,
+      envelopes=occurrence_envelopes,
+      accessions=pinned_profile.filing_accessions,
+      window=inputs.window,
+      excluded={
+        *(line for requirement in requirements for line in requirement.pinned_columns),
+        *(observation.line for observation in facts.observations.values()),
+        *(observation.line for observation in issuer_observations),
+        *(observation.line for observation in schedule_observations),
+      },
+    )
     occurrence_artifact_by_accession = {
       str(item.accession): item
       for item in statement_artifacts
@@ -801,6 +920,7 @@ def project_statement_facts(inputs: StatementFactInputs) -> StatementFactProject
       schedule_payload=schedule_payload,
       schedule_lines=inputs.schedule_lines,
       unbound_periods=inputs.unbound_periods,
+      unpinned_occurrence_observations=unpinned_observations,
       vintages=MappingProxyType(dict(facts.vintages)),
       concept_balances=facts.concept_balances,
       values=MappingProxyType(
@@ -1066,6 +1186,7 @@ def closure_source_evidence(
         item for item in landed.values()
         if item.line == operand_line
         and item.source_quality != "fallback"
+        and item.origin != "unpinned_occurrence"
         and item.evidence_id != derived.evidence_id
       ),
       None,
@@ -1087,6 +1208,7 @@ def closure_source_evidence(
         "locator": citation,
         "accounting_definition": operand_line.tag,
         "restates_evidence_id": None,
+        "origin": "closure_operand",
       })
       landed[operand_id] = existing
     operands.add(bound_vintage_id(existing))
@@ -1101,6 +1223,58 @@ def closure_source_evidence(
     )),
   })
   return tuple(sorted(landed.values(), key=lambda item: item.evidence_id))
+
+
+#: A filed line no requirement pins is minted on the filing's own terms: the value is the
+#: fact's native number in canonical units (XBRL ``decimals`` is its precision, never a
+#: scale), in the filing's own sign.
+_UNPINNED_SCALE = "units"
+_UNPINNED_SIGN = "as_reported"
+
+
+def _is_unpinned_occurrence(
+  fact: FilingLineFact,
+  occurrence_envelopes: Mapping[str, EdgarFilingFactsEnvelopeV1],
+) -> bool:
+  """Whether ``fact`` is a numeric filing-native occurrence of a sealed filing."""
+  provenance = fact.provenance
+  return (
+    fact.grade == "filing_native"
+    and provenance is not None
+    and provenance.provider == "edgar"
+    and provenance.native_endpoint == "filing_facts"
+    and fact.line.accession in occurrence_envelopes
+    and isinstance(fact.value, Quantity)
+  )
+
+
+def _canonical_native_value(fact: FilingLineFact) -> Decimal:
+  """The fact's native number in canonical units, the filing's own sign.
+
+  The adapter's ``Quantity`` is the native number in the printed scale with the
+  preferred-label negation applied; ``quantity_native_value`` restores both.
+  """
+  assert isinstance(fact.value, Quantity)
+  provenance = fact.provenance
+  with localcontext(SOURCE_BUNDLE_DECIMAL_CONTEXT):
+    return quantity_native_value(
+      fact.value,
+      preferred_label_negates_value=(
+        provenance is not None and provenance.preferred_label_negates_value is True
+      ),
+    )
+
+
+def _unpinned_unit(fact: FilingLineFact) -> str:
+  """The unit name of an unpinned fact's measure, from its display."""
+  assert isinstance(fact.value, Quantity)
+  display = fact.value.display
+  currency = None if display.currency is None else display.currency.lower()
+  if display.numeric_kind == "currency":
+    return "usd" if currency == "usd" else str(currency)
+  if display.numeric_kind == "per_share":
+    return "usd_per_share" if currency == "usd" else f"{currency}_per_share"
+  return display.numeric_kind
 
 
 def statement_source_evidence(
@@ -1127,6 +1301,13 @@ def statement_source_evidence(
   allocated source id, the role id as the accounting definition and the filing's
   preferred-label metadata are this function's, not a caller's. Callers read it
   through ``projection_statement_evidence``.
+
+  A filing-native occurrence of a sealed filing that no requirement pins
+  (``unpinned_occurrence_observations``) is minted too, on the filing's own terms:
+  ``unit`` its display measure (``usd``, ``usd_per_share``, ``count``, ``percentage``),
+  ``scale`` ``units``, ``sign`` ``as_reported``, ``value`` the native number in canonical
+  units (XBRL ``decimals`` is precision and never rescales it), ``accounting_definition``
+  the line's tag; its ``locator`` is the pinned rows' own.
   """
   requirement_by_line = {
     line: requirement
@@ -1185,9 +1366,9 @@ def statement_source_evidence(
     if observation.status != "ok" or fact is None:
       continue
     requirement = requirement_by_line.get(fact.line)
-    if requirement is None:
-      continue
     provenance = fact.provenance
+    if requirement is None and not _is_unpinned_occurrence(fact, occurrence_envelopes):
+      continue
     if provenance is None:
       raise ValueError("producer evidence cannot be analyst_asserted")
     candidate = retained.get(fact.line)
@@ -1228,16 +1409,20 @@ def statement_source_evidence(
         line=fact.line,
         grade=fact.grade,
         period_id=period_id,
-        value=resolver._fact_requirement_value(
-          fact,
-          required_role=requirement.required_role,
-          unit=requirement.unit,
-          scale=requirement.scale,
-          concept_balances=concept_balances,
+        value=(
+          _canonical_native_value(fact)
+          if requirement is None
+          else resolver._fact_requirement_value(
+            fact,
+            required_role=requirement.required_role,
+            unit=requirement.unit,
+            scale=requirement.scale,
+            concept_balances=concept_balances,
+          )
         ),
-        unit=requirement.unit,
-        scale=requirement.scale,
-        sign=requirement.sign,
+        unit=_unpinned_unit(fact) if requirement is None else requirement.unit,
+        scale=_UNPINNED_SCALE if requirement is None else requirement.scale,
+        sign=_UNPINNED_SIGN if requirement is None else requirement.sign,
         source_id=source_id,
         provider=provenance.provider,
         retrieved_at=retrieved_at,
@@ -1252,13 +1437,12 @@ def statement_source_evidence(
           )
         ),
         as_of_date=date(fiscal_year, 6, 30),
-        locator=(
-          f"{source_id}:{provenance.native_field};"
-          f"accession={fact.line.accession}"
-        ),
+        locator=f"{source_id}:{provenance.native_field};accession={fact.line.accession}",
         fiscal_basis="issuer_fiscal_year",
         period_length_months=12,
-        accounting_definition=requirement.required_role,
+        accounting_definition=(
+          fact.line.tag if requirement is None else requirement.required_role
+        ),
         confidence=(
           "high"
           if closure_derived or fact.grade != "adapter_asserted"
@@ -1272,6 +1456,7 @@ def statement_source_evidence(
         label=fact.label,
         preferred_label_role_uri=provenance.preferred_label_role_uri,
         preferred_label_negates_value=provenance.preferred_label_negates_value,
+        origin="unpinned_occurrence" if requirement is None else "pinned",
       )
     )
     if closure_derived and provenance.native_endpoint == "occurrence_closure":
@@ -1308,7 +1493,11 @@ def projection_statement_evidence(
   the SourceBundle reads (FMP cross-checks, producer KPI rows).
   """
   return statement_source_evidence(
-    statement_facts=(*projection.observations, *extra_statement_facts),
+    statement_facts=(
+      *projection.observations,
+      *projection.unpinned_occurrence_observations,
+      *extra_statement_facts,
+    ),
     kpi_observations=(
       *projection.issuer_operating_observations, *extra_kpi_observations,
     ),

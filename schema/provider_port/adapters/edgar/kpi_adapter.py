@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 import hashlib
 import json
 
@@ -26,6 +26,9 @@ from schema.provider_port.adapters.edgar.wire.operational_kpi_driver_rows_v2 imp
     TypedKpiObservation,
     TypedPeriod,
     validate_edgar_operational_kpi_driver_rows_v2,
+)
+from schema.provider_port.adapters.edgar.wire.non_gaap_reconciliation_v1 import (
+    VALUE_SCALE_FACTORS,
 )
 from schema.provider_port.contracts import (
     FilingLineFact,
@@ -110,12 +113,6 @@ def _series_variant(row: TypedKpiObservation) -> str:
     )
 
 
-_KPI_SCALE_FACTORS: Mapping[str, Decimal] = {
-    "units": Decimal(1),
-    "thousands": Decimal("1e3"),
-    "millions": Decimal("1e6"),
-    "billions": Decimal("1e9"),
-}
 _FOUR_QUARTER_SUM_UNITS = frozenset({"dollars", "count", "share_count"})
 
 
@@ -206,7 +203,7 @@ def derive_four_quarter_annual_kpi_observations(
             ),
             Decimal(0),
         )
-        scale_factor = _KPI_SCALE_FACTORS.get(q4.value.presentation_scale, Decimal(1))
+        scale_factor = VALUE_SCALE_FACTORS.get(q4.value.presentation_scale, Decimal(1))
         scaled_sum = canonical_sum / scale_factor
         assert q1.period is not None and q4.period is not None
         constituent_ids = tuple(q.observation_id for q in quarters)
@@ -380,11 +377,18 @@ class EdgarKpiAdapter:
                 )
             detail = row.model_dump_json()
             if isinstance(row.value, ScaledQuantity):
+                display = kpi_quantity_display(row.value)
+                scale_factor = VALUE_SCALE_FACTORS["units" if display.scale == "unit" else display.scale]
+                with localcontext() as context:
+                    context.prec = max(
+                        context.prec, len(row.value.canonical_value.as_tuple().digits),
+                    )
+                    declared_value = row.value.canonical_value / scale_factor
                 fact = FilingLineFact(
                     line=line,
                     value=Quantity.model_validate({
-                        "value": normalize_decimal_v1(row.value.canonical_value),
-                        "display": kpi_quantity_display(row.value),
+                        "value": normalize_decimal_v1(declared_value),
+                        "display": display,
                     }, strict=True),
                     grade="filing_native",
                     provenance=VendorProvenance(

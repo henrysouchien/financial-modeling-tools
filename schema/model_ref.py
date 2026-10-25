@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 import sqlite3
-from typing import Any, Final, Literal, Protocol
+from typing import Annotated, Any, Final, Literal, Protocol
 
+from agent_workflow_contracts.research_file_contract import MAX_RESEARCH_FILE_ID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ._insights_shared import _FROZEN_CONTRACT
@@ -18,9 +19,12 @@ PUBLISHABLE_MODEL_STATUSES: Final[frozenset[str]] = frozenset(
 )
 
 
+SqliteInt64Id = Annotated[int, Field(ge=1, le=MAX_RESEARCH_FILE_ID)]
+
+
 class ModelVersionRef(BaseModel):
     model_id: str = Field(min_length=1)
-    version: int = Field(ge=1)
+    version: SqliteInt64Id
 
     model_config = _FROZEN_CONTRACT
 
@@ -35,7 +39,7 @@ class ModelStamp(BaseModel):
     """
 
     model_id: str = Field(min_length=1)
-    version: int = Field(ge=1)
+    version: SqliteInt64Id
     build_id: str = Field(min_length=1)
 
     model_config = _FROZEN_CONTRACT
@@ -53,7 +57,7 @@ class CurrentModelPointer(BaseModel):
 
     schema_version: Literal["1.0"] = "1.0"
     user_id: str = Field(min_length=1)
-    research_file_id: int = Field(gt=0)
+    research_file_id: SqliteInt64Id
     ticker: str
     selected: ModelVersionRef | None = None
     epoch: int = Field(ge=0)

@@ -100,6 +100,7 @@ from .build_types import (
     BuildResult,
     PopulateStats,
 )
+from .model_state_identity import validate_sha256_hex
 from .build_model_product_contracts import (
     ArtifactLocation,
     BuildDiagnostic,
@@ -427,6 +428,11 @@ class CompiledModelIntermediate:
 
     content_digest: str
     source_bundle: SourceBundle
+    #: The stored row's raw payload and its ``content_sha256``: what the version
+    #: binds as "the bundle this compile read" (sidecar payload and digest, render
+    #: identity, provenance). Never re-derived from ``source_bundle``.
+    source_bundle_payload: Mapping[str, Any]
+    source_bundle_content_sha256: str
     model_spec: ModelSpec
     model: FinancialModel
     typed_analysis_values: dict[str, dict[int, Any]]
@@ -468,8 +474,8 @@ class CompiledModelIntermediate:
     sensitivity_results: dict[str, object]
     valuation_input_readiness: ValuationInputReadiness
     provider_registry: ProviderRegistry | None
-    scenario_source_records: Sequence[Mapping[str, Any]] = ()
     evaluation_reads: Mapping[tuple[str, int], tuple[tuple[str, int], ...]] = field(default_factory=dict)
+    case_evaluation_reads: Mapping[str, Mapping[tuple[str, int], tuple[tuple[str, int], ...]]] = field(default_factory=dict)
     #: Compiled lines of the BusinessModel nodes whose history is unresolved
     #: (``BmNodeHistoryResult.unresolved_items``): their ``business_model_node_unresolved``
     #: finding is the one record of the missing history, and finalization stamps their
@@ -486,6 +492,10 @@ class CompiledModelIntermediate:
             )
         ):
             raise ValueError("intermediate content_digest must be lowercase sha256 hex")
+        validate_sha256_hex(
+            self.source_bundle_content_sha256,
+            field_name="source_bundle_content_sha256",
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,6 +569,8 @@ def compile_model_intermediate(
     source_bundle: SourceBundle,
     model_spec: ModelSpec,
     *,
+    source_bundle_payload: Mapping[str, Any],
+    source_bundle_content_sha256: str,
     business_model_revision: BusinessModelRevision,
     validation_mode: bool = False,
     run_diagnostics: bool = False,
@@ -574,7 +586,12 @@ def compile_model_intermediate(
     )
     model_spec = ModelSpec.model_validate(model_spec)
     validate_source_bundle_valuation_evidence(source_bundle)
-    validate_source_bundle_binding_and_selection(source_bundle, model_spec)
+    validate_source_bundle_binding_and_selection(
+        source_bundle,
+        model_spec,
+        persisted_source_bundle_payload=source_bundle_payload,
+        persisted_source_bundle_wire_digest=source_bundle_content_sha256,
+    )
     # Read capabilities once from the declared compile inputs so every stage
     # dispatches from the same authority. Absence is feature-off: a bundle
     # without a capability record stays on the generic arm throughout.
@@ -610,6 +627,7 @@ def compile_model_intermediate(
         None
         if model_spec.valuation_policy is None
         else model_spec.valuation_policy.peer_policy,
+        bundle_content_sha256=source_bundle_content_sha256,
     )
     business_model_revision = resolve_model_spec_business_model_revision(
         model_spec,
@@ -964,7 +982,12 @@ def compile_model_intermediate(
     historical_periods = [int(period) for period in model.time_structure.historical_periods]
     _normalize_projected_cash_roll_forward(model)
     _normalize_projected_balance_sheet_roll_forward(model)
-    _normalize_three_statement_spine(model)
+    spine = _normalize_three_statement_spine(
+        model, opening_balances=pin_opening_balances
+    )
+    model_spec_seed_coverage.extend(
+        dict(row) for row in spine["source_fact_coverage"]
+    )
     if financial_schedule_result is None:
         financial_schedule_result = _complete_financial_schedules(model)
     if working_capital_schedule_result is None:
@@ -1188,7 +1211,7 @@ def compile_model_intermediate(
     scenario_output_values, scenario_output_item_ids = compute_scenario_outputs(
         model, unresolved_cases=unresolved_cases,
     )
-    scenario_source_records = _populate_scenario_eps(
+    _populate_scenario_eps(
         model,
         {
             case: dict(
@@ -1196,9 +1219,12 @@ def compile_model_intermediate(
             )
             for case, outputs in scenario_output_values.items()
         },
-        scenario_output_item_ids.get("base", {}).get(eps_publication_basis),
-        existing_seed_coverage=model_spec_seed_coverage,
-        base_eval_reads=getattr(scenario_output_values, "base_eval_reads", None),
+        {
+            case: item_ids[eps_publication_basis]
+            for case, item_ids in scenario_output_item_ids.items()
+            if eps_publication_basis in item_ids
+        },
+        control_ids=scenario_output_values.control_ids,
     )
     seed_coverage_manifest = _build_seed_coverage_manifest(
         model,
@@ -1207,7 +1233,12 @@ def compile_model_intermediate(
         model_spec_seed_coverage=model_spec_seed_coverage,
         projection_seed_coverage=control_snapshot_projection.coverage,
     )
-    _populate_thesis_snapshot(model, scenario_output_values)
+    _populate_thesis_snapshot(
+        model,
+        scenario_output_values,
+        scenario_output_item_ids,
+        control_ids=scenario_output_values.control_ids,
+    )
     scenario_results = scenario_results_payload(scenario_output_values, unresolved_cases)
     model.build_index()
     computed_values = _computed_base_results(model)
@@ -1358,6 +1389,8 @@ def compile_model_intermediate(
     return _seal_compiled_intermediate(CompiledModelIntermediate(
         content_digest="0" * 64,
         source_bundle=source_bundle,
+        source_bundle_payload=source_bundle_payload,
+        source_bundle_content_sha256=source_bundle_content_sha256,
         model_spec=model_spec,
         model=model,
         typed_analysis_values=typed_analysis_values,
@@ -1393,8 +1426,8 @@ def compile_model_intermediate(
         sensitivity_results=sensitivity_results,
         valuation_input_readiness=valuation_input_readiness,
         provider_registry=registry,
-        scenario_source_records=scenario_source_records,
         evaluation_reads=analysis_graph.last_eval_reads,
+        case_evaluation_reads=scenario_output_values.case_eval_reads,
         unresolved_node_items=tuple(node_history.unresolved_items),
     ))
 
@@ -1630,6 +1663,8 @@ def finalize_compiled_model(
     )
     render_compiler_inputs = _render_compiler_inputs(
         source_bundle=source_bundle,
+        source_bundle_payload=intermediate.source_bundle_payload,
+        source_bundle_content_sha256=intermediate.source_bundle_content_sha256,
         model_spec=model_spec,
         source_bundle_id=source_bundle_id,
         source_bundle_identity_digest=source_bundle_identity_digest,
@@ -1649,7 +1684,6 @@ def finalize_compiled_model(
     valuation_evidence_status = intermediate.valuation_evidence_status
     model_spec_valuation = intermediate.model_spec_valuation
     seed_coverage_manifest = intermediate.seed_coverage_manifest
-    scenario_source_records = intermediate.scenario_source_records
     evaluation_reads = intermediate.evaluation_reads
     canonical_control_curves = intermediate.canonical_control_curves
     direct_scenario_control_ids = intermediate.direct_scenario_control_ids
@@ -1707,18 +1741,13 @@ def finalize_compiled_model(
         model,
         model_spec,
         computed_values=computed_values,
-        seed_coverage_manifest=(
-            *seed_coverage_manifest,
-            *scenario_source_records,
-        ),
+        seed_coverage_manifest=seed_coverage_manifest,
     )
     preview_provenance = target_build.project_provenance_map(
         doc,
         ours,
         plan,
-        source_bundle_digest=compiler_input_content_hash(
-            source_bundle
-        ).removeprefix("sha256:"),
+        source_bundle_digest=intermediate.source_bundle_content_sha256,
         model_spec_digest=compiler_input_content_hash(
             model_spec
         ).removeprefix("sha256:"),
@@ -1726,10 +1755,10 @@ def finalize_compiled_model(
         model_spec=model_spec,
         seed_coverage_manifest=(
             *seed_coverage_manifest,
-            *scenario_source_records,
             *document_seed_rows,
         ),
         evaluation_reads=evaluation_reads,
+        case_evaluation_reads=intermediate.case_evaluation_reads,
     )
     provenance_seconds = perf_counter() - provenance_started
     schedule_input_audit = build_schedule_input_audit(
@@ -1811,9 +1840,7 @@ def finalize_compiled_model(
         doc,
         ours,
         plan,
-        source_bundle_digest=compiler_input_content_hash(
-            source_bundle
-        ).removeprefix("sha256:"),
+        source_bundle_digest=intermediate.source_bundle_content_sha256,
         model_spec_digest=compiler_input_content_hash(
             model_spec
         ).removeprefix("sha256:"),
@@ -1821,10 +1848,10 @@ def finalize_compiled_model(
         model_spec=model_spec,
         seed_coverage_manifest=(
             *seed_coverage_manifest,
-            *scenario_source_records,
             *document_seed_rows,
         ),
         evaluation_reads=evaluation_reads,
+        case_evaluation_reads=intermediate.case_evaluation_reads,
     )
     provenance_diagnostics = provenance_diagnostics_for_map(
         provenance,
@@ -1927,7 +1954,6 @@ def finalize_compiled_model(
         workbook_semantics_hash=workbook_semantics_hash,
         render_compiler_inputs=render_compiler_inputs,
         seed_coverage_manifest=seed_coverage_manifest,
-        scenario_source_records=scenario_source_records,
         evaluation_reads=evaluation_reads,
         provider_registry=registry,
     )

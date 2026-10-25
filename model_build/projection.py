@@ -1,6 +1,6 @@
 """The per-period pin: each (required role, period) resolved from its own filing, at its selected vintage.
 
-Owner: ``docs/queue/pin-resolves-each-period-and-vintage-from-its-own-filing.md`` (Invariant);
+Owner: ``docs/closed/pin-resolves-each-period-and-vintage-from-its-own-filing.md`` (Invariant);
 plan ``docs/design/build-model-package-boundary-plan-2026-10-05.md`` §2.4 (the corpus-facts lift,
 landing here) and §2.6 (no product imports). Moved from ``scripts/research/bench/projection.py``,
 which proved it (``docs/qa/financial-model-bench-acceptance-2026-10-05.md`` §2, §4b, §4e) and is
@@ -2023,13 +2023,6 @@ _EVIDENCED_ABSENCE_DEBT_ROLES = frozenset({
 def filing_line_observation_id(line: FilingLineRef) -> str:
   """The canonical dimension-complete identity carried by a sourced observation."""
   return mint_source_fact_ref(line, "statement").observation_id
-
-
-def cited_source_observation_id(source: Mapping[str, Any]) -> str:
-  """The observation id of a cited ``source`` object an agent wrote (``document.CITED_SOURCE_KINDS``):
-  ``cited:<kind>:<first 16 hex of the sha256 of its sorted-key JSON>``, so one citation is one id."""
-  digest = hashlib.sha256(json.dumps(source, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-  return f"cited:{source['kind']}:{digest[:16]}"
 
 
 def typed_values_from_projection(

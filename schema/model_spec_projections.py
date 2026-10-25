@@ -140,9 +140,10 @@ def project_valuation_policy(
             "beta_floor_evidence_ids": policy["beta_floor"].evidence_ids,
         }
     )
+    sofr_row = observed.get("sofr_rate")
     control = ValuationControlAuthoring(
         method="dcf",
-        sofr_rate=float(observed["sofr_rate"].value),
+        sofr_rate=None if sofr_row is None else float(sofr_row.value),
         beta_floor=float(policy["beta_floor"].value),
         terminal_growth_rate=float(record.terminal_policy.terminal_growth.base),
         terminal_multiple=float(record.terminal_policy.exit_multiple.base),
