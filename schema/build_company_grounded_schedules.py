@@ -5709,8 +5709,6 @@ def _apply_share_policy(
                 strategy="employee_stock_plan_revenue_ratio",
             )
         )
-        _set_periods(model.get_item(_FM_EMPLOYEE_PLAN_PROCEEDS), projected)
-        wired.append(_FM_EMPLOYEE_PLAN_PROCEEDS)
     reported_dividends = _latest_reported_amount(
         values, historical, _CASH_FLOW_DIVIDENDS
     )
@@ -7167,8 +7165,9 @@ def _retire_absent_role_schedules(
         if catalog.role(role).statement not in ("balance_sheet", "cash_flow", "income_statement"):
             continue
         lines = role_items[role]
-        # A role's filing-fact row (``hff_fact_items``) is its own schedule row when no
-        # role that claims it is owed: a shared landing row stays with its live role.
+        # A role's non-face schedule row (``population_items`` or ``hff_fact_items``) is its
+        # own schedule row when no role that claims it is owed: a shared landing row stays
+        # with its live role.
         landing = tuple(
             item_id
             for item_id in lines.hff_fact_items
@@ -7176,7 +7175,11 @@ def _retire_absent_role_schedules(
             and not item_id.startswith("tpl.fm.")
             and _no_live_claimant(item_id, role_items, terminal_rows)
         )
-        owned = tuple(dict.fromkeys((*_role_lines(model, role_items, role), *landing)))
+        owned = tuple(
+            item_id
+            for item_id in dict.fromkeys((*_role_lines(model, role_items, role), *landing))
+            if item_id.startswith("tpl.fm.") or _no_live_claimant(item_id, role_items, terminal_rows)
+        )
         if any(_authored_periods(model.get_item(item_id), projected) for item_id in owned):
             continue
         face = {
@@ -7615,15 +7618,11 @@ def _lower_cited_operands(
     # A cited role's filing-fact (landing) row is its own cell when no live role claims it:
     # readers that sum it leave it with the role's face.
     cited_lines = {
-        role: (
-            *role_lines,
-            *(
-                item_id
-                for item_id in role_items[role].hff_fact_items
-                if item_id in model._index
-                and item_id not in role_lines
-                and _no_live_claimant(item_id, role_items, terminal)
-            ),
+        role: tuple(
+            item_id
+            for item_id in dict.fromkeys((*role_lines, *role_items[role].hff_fact_items))
+            if item_id in model._index
+            and (item_id.startswith("tpl.fm.") or _no_live_claimant(item_id, role_items, terminal))
         )
         for role, role_lines in lines.items()
     }
