@@ -4,6 +4,12 @@ These policies are deliberately narrower than forecast judgment.  They only
 activate when the compiled model already contains the accepted company's own
 historical anchors and the exact ModelSpec/BMR controls needed by the formula.
 Every output remains a live formula and carries an explicit derivation owner.
+
+Entered through ``schema/build.py`` and ``model_build/target_build.py`` with the compiled
+model, ``BusinessModelRevision``, driver registry and role dispositions;
+``apply_company_grounded_schedule_policies`` mutates the ``FinancialModel`` in
+place and returns the wired items, source-fact coverage and diagnostics. Shared
+schedule helpers come from ``build_financial_schedules``. See ``schema/README.md``.
 """
 
 from __future__ import annotations
@@ -166,6 +172,8 @@ _LEASE_PAYMENTS = "tpl.a.capital_sources.operating_lease_liability_payments"
 _LEASE_ENDING = "tpl.a.capital_sources.operating_lease_liability_ending"
 
 _CURRENT_DEBT = "tpl.a.capital_sources.current_portion_of_long_term_debt"
+_SHORT_TERM_DEBT_ROLE = "statement.bs.short_term_debt"
+_LONG_TERM_DEBT_ROLE = "statement.bs.long_term_debt"
 
 _BASIC_SHARES = "tpl.a.dividends_shares.basic_shares_outstanding"
 _DILUTED_SHARES = "tpl.a.tax_net_income.diluted_shares_outstanding"
@@ -4052,6 +4060,50 @@ def _apply_balance_sheet_policy(
         if installed is not None:
             wired.append(installed)
 
+    # A zero-debt issuer whose terminal long-term debt balance evidences zero debt
+    # and whose filings report no current portion owes no current portion: the debt
+    # schedule's current-debt row projects zero cited to the evidenced zero debt line.
+    terminal_period = max(historical)
+    terminal_debt_rows = _terminal_rows(role_dispositions)
+    short_debt_terminal = terminal_debt_rows.get(_SHORT_TERM_DEBT_ROLE)
+    short_debt_lines = _role_lines(model, role_items, _SHORT_TERM_DEBT_ROLE)
+    long_debt_zero_lines = tuple(
+        item_id
+        for item_id in _role_lines(model, role_items, _LONG_TERM_DEBT_ROLE)
+        if _is_zero_value(values.get(item_id, {}).get(terminal_period))
+    )
+    if (
+        _CURRENT_DEBT in model._index
+        and short_debt_lines
+        and all(
+            values.get(item_id, {}).get(terminal_period) is None
+            for item_id in short_debt_lines
+        )
+        and values.get(_CURRENT_DEBT, {}).get(terminal_period) is None
+        and not _forecast_reads_authored_control(
+            model, model.get_item(_CURRENT_DEBT), projected, nonzero_only=True
+        )
+        and short_debt_terminal is not None
+        and (
+            short_debt_terminal.state in ("not_applicable", "unowed")
+            or short_debt_terminal.not_disclosed_in_vintage
+        )
+        and long_debt_zero_lines
+    ):
+        cited_short_debt = (
+            short_debt_lines if short_debt_terminal.state == "not_applicable" else ()
+        )
+        installed = _install_zero_projection(
+            model,
+            item_id=_CURRENT_DEBT,
+            projected=projected,
+            note="zero-debt issuer has no current portion of long-term debt",
+            strategy="historical_zero_balance_policy",
+            dependencies=(*cited_short_debt, *long_debt_zero_lines),
+        )
+        if installed is not None:
+            wired.append(installed)
+
     # Some normalized vendor balance-sheet fields are inclusive aggregates even
     # though the canonical model presents their components on separate rows.
     # Activate the bridge only when the exact terminal statement identity proves
@@ -5657,6 +5709,8 @@ def _apply_share_policy(
                 strategy="employee_stock_plan_revenue_ratio",
             )
         )
+        _set_periods(model.get_item(_FM_EMPLOYEE_PLAN_PROCEEDS), projected)
+        wired.append(_FM_EMPLOYEE_PLAN_PROCEEDS)
     reported_dividends = _latest_reported_amount(
         values, historical, _CASH_FLOW_DIVIDENDS
     )
@@ -6486,7 +6540,7 @@ def _land_historical_bridge_operands(
     historical: tuple[int, ...],
     facts: tuple[HistoricalBasisFact, ...],
     landed: dict[tuple[str, int], tuple[Decimal, tuple[HistoricalBasisFact, ...]]],
-    derived_cells: dict[tuple[str, int], Decimal] | None = None,
+    derived_cells: dict[tuple[str, int], tuple[Decimal, tuple[str, ...]]] | None = None,
 ) -> None:
     """Lower each bound bridge from its own vintage, preserving statement rows.
 
@@ -6525,11 +6579,11 @@ def _land_historical_bridge_operands(
         if (comp_id, yr) in landed:
             return landed[(comp_id, yr)][0]
         if (comp_id, yr) in derived_cells:
-            return derived_cells[(comp_id, yr)]
+            return derived_cells[(comp_id, yr)][0]
         if comp_id == _FM_OTHER_ITEMS_ADJUSTMENT and (_FM_OTHER_ITEMS, yr) in landed:
             return landed[(_FM_OTHER_ITEMS, yr)][0]
         if comp_id == _FM_OTHER_ITEMS_ADJUSTMENT and (_FM_OTHER_ITEMS, yr) in derived_cells:
-            return derived_cells[(_FM_OTHER_ITEMS, yr)]
+            return derived_cells[(_FM_OTHER_ITEMS, yr)][0]
         comp_item = model._index.get(comp_id)
         if comp_item is None:
             return Decimal(0)
@@ -6681,7 +6735,10 @@ def _land_historical_bridge_operands(
                     )
                     if already != 0:
                         landed.pop((other_target, period), None)
-                        derived_cells[(other_target, period)] = summary_val - already
+                        derived_cells[(other_target, period)] = (
+                            summary_val - already,
+                            (_FM_SBC_ADD_BACK, _FM_ACQUIRED_INTANGIBLE_AMORTIZATION),
+                        )
                     else:
                         landed[(other_target, period)] = (summary_val, summary_rows)
                     refs = [
@@ -6701,7 +6758,10 @@ def _land_historical_bridge_operands(
                         explicit_tax = [r.id for r in refs[1:] if not r.id.endswith("other_items_adjustment")]
                         if already != 0:
                             landed.pop((adj_target, period), None)
-                            derived_cells[(adj_target, period)] = summary_val - already
+                            derived_cells[(adj_target, period)] = (
+                                summary_val - already,
+                                (_FM_SBC_ADJUSTMENT, _FM_ACQUIRED_INTANGIBLE_AMORTIZATION),
+                            )
                         else:
                             landed[(adj_target, period)] = (summary_val, summary_rows)
                         refs = [
@@ -6721,7 +6781,14 @@ def _land_historical_bridge_operands(
                         )
                         if already != 0:
                             landed.pop((tax_target, period), None)
-                            derived_cells[(tax_target, period)] = summary_val - already
+                            derived_cells[(tax_target, period)] = (
+                                summary_val - already,
+                                (
+                                    _FM_SBC_ADJUSTMENT,
+                                    _FM_ACQUIRED_INTANGIBLE_AMORTIZATION,
+                                    _FM_OTHER_ITEMS_ADJUSTMENT,
+                                ),
+                            )
                         else:
                             landed[(tax_target, period)] = (summary_val, summary_rows)
                         refs = [
@@ -6818,7 +6885,7 @@ def _apply_filing_schedule_disclosures(
     landed = _filing_schedule_cells(
         model._index, historical, historical_basis_facts
     )
-    derived_cells: dict[tuple[str, int], Decimal] = {}
+    derived_cells: dict[tuple[str, int], tuple[Decimal, tuple[str, ...]]] = {}
     _land_historical_bridge_operands(
         model, historical, historical_basis_facts, landed, derived_cells
     )
@@ -6837,7 +6904,12 @@ def _apply_filing_schedule_disclosures(
             float(value),
             provenance=ValueProvenance.imported_edgar,
         )
-        _set_constant_override(item, period, float(value))
+        _set_constant_override(
+            item,
+            period,
+            float(value),
+            origin=_derivation("filing_schedule_disclosure", ()),
+        )
         wired.add(item.id)
         if item.id == _FM_NON_GAAP_TAX_EFFECT:
             tax_effect_disclosed_periods.add(period)
@@ -6899,7 +6971,7 @@ def _apply_filing_schedule_disclosures(
                 }
                 for fact in facts
             )
-    for (item_id, period), value in derived_cells.items():
+    for (item_id, period), (value, components) in derived_cells.items():
         item = model.get_item(item_id)
         _set_imported_value(
             item,
@@ -6907,7 +6979,12 @@ def _apply_filing_schedule_disclosures(
             float(value),
             provenance=ValueProvenance.derived,
         )
-        _set_constant_override(item, period, float(value))
+        _set_constant_override(
+            item,
+            period,
+            float(value),
+            origin=_derivation("historical_bridge_summary_residual", components),
+        )
         wired.add(item.id)
     return {
         "wired": tuple(sorted(wired)),
@@ -7005,6 +7082,20 @@ def _cited_absence_cells(
     )
 
 
+def _no_live_claimant(
+    item_id: str,
+    role_items: Mapping[str, RoleItems],
+    terminal_rows: Mapping[str, RoleDisposition],
+) -> bool:
+    """Whether every role that claims ``item_id`` is absent or unowed at the terminal period."""
+
+    return all(
+        terminal_rows[claimant].state in ("not_applicable", "not_separately_presented", "unowed")
+        for claimant, claimed in role_items.items()
+        if item_id in claimed.all_items()
+    )
+
+
 def _retire_unowed_roles(
     model: FinancialModel,
     role_dispositions: RoleDispositionTable,
@@ -7023,11 +7114,12 @@ def _retire_unowed_roles(
     unowed = sorted({role for role, _period_id in role_dispositions.cells_in("unowed")})
     if not unowed:
         return
+    terminal_rows = _terminal_rows(role_dispositions)
     graph = DependencyGraph()
     graph.build(model)
     for role in unowed:
         for item_id in role_items[role].all_items():
-            if item_id not in model._index:
+            if item_id not in model._index or not _no_live_claimant(item_id, role_items, terminal_rows):
                 continue
             for period in (*historical, *projected):
                 graph.retire(item_id, period)
@@ -7082,11 +7174,7 @@ def _retire_absent_role_schedules(
             for item_id in lines.hff_fact_items
             if item_id in model._index
             and not item_id.startswith("tpl.fm.")
-            and all(
-                terminal_rows[claimant].state in ("not_applicable", "not_separately_presented", "unowed")
-                for claimant, claimed in role_items.items()
-                if item_id in claimed.all_items()
-            )
+            and _no_live_claimant(item_id, role_items, terminal_rows)
         )
         owned = tuple(dict.fromkeys((*_role_lines(model, role_items, role), *landing)))
         if any(_authored_periods(model.get_item(item_id), projected) for item_id in owned):
@@ -7534,12 +7622,7 @@ def _lower_cited_operands(
                 for item_id in role_items[role].hff_fact_items
                 if item_id in model._index
                 and item_id not in role_lines
-                and all(
-                    terminal[claimant].state
-                    in ("not_applicable", "not_separately_presented", "unowed")
-                    for claimant, claimed in role_items.items()
-                    if item_id in claimed.all_items()
-                )
+                and _no_live_claimant(item_id, role_items, terminal)
             ),
         )
         for role, role_lines in lines.items()
@@ -7585,7 +7668,20 @@ def _lower_cited_operands(
                 out.setdefault(item_id, marker_row)
         for role, role_lines in cited_lines.items():
             row = terminal[role] if period in projection else rows.get((role, f"FY{period}"))
-            if row is None or row.state not in ("not_applicable", "not_separately_presented"):
+            zero_debt_short_term_absent = (
+                period not in projection
+                and role == _SHORT_TERM_DEBT_ROLE
+                and row is not None
+                and row.not_disclosed_in_vintage
+                and any(
+                    _is_zero_value(computed.get(item_id, {}).get(period))
+                    for item_id in lines.get(_LONG_TERM_DEBT_ROLE, ())
+                )
+            )
+            if row is None or (
+                row.state not in ("not_applicable", "not_separately_presented")
+                and not zero_debt_short_term_absent
+            ):
                 continue
             if row.state == "not_applicable" and not (
                 role in optional_roles or role in balance_roles
@@ -7816,7 +7912,10 @@ def _lower_cited_operands(
                     and formula_ref.ref.id in (_CASH_FLOW_SBC, _EMPLOYEE_PLAN_PROCEEDS)
                 )
                 and (
-                    row.state == "not_applicable"
+                    (
+                        row.state == "not_applicable"
+                        or (row.not_disclosed_in_vintage and reader.id not in statement_totals)
+                    )
                     and not (
                         period in projection
                         and not _is_not_numeric(formula_ref.ref.id, target)
@@ -7981,6 +8080,8 @@ def _apply_acquisition_goodwill_allocation_history(
     model: FinancialModel,
     historical: tuple[int, ...],
     historical_basis_facts: tuple[HistoricalBasisFact, ...],
+    *,
+    role_dispositions: RoleDispositionTable | None = None,
 ) -> dict[str, tuple[Any, ...]]:
     """Author each filed year of the acquisition-cost-to-goodwill share from its filing facts.
 
@@ -7994,7 +8095,15 @@ def _apply_acquisition_goodwill_allocation_history(
     files no ``goodwill_acquired`` line in a year it made no acquisition, so
     the cash fact alone evidences the absence; a zero-cash year whose
     ``goodwill_acquired`` is positive contradicts itself and stays
-    unauthored, as does a positive-cash year missing that fact.
+    unauthored, as does a positive-cash year missing that fact. A year with no
+    ``acquisition_cash_paid`` fact is also a cited absence when
+    ``statement.cf.acquisitions_of_businesses`` is cited ``not_applicable`` in
+    ``role_dispositions`` for that period and no positive ``goodwill_acquired``
+    fact exists: the filing's own cited absence of acquisitions evidences that
+    no acquisition cost exists to allocate; the disposition's citation is
+    returned in ``evidenced_absence_cells``. A ``not_disclosed_in_vintage``
+    period carries no citation (its disposition is an ``unbound`` row), so it
+    yields no cited absence here.
 
     The graph's ratio law (an absent denominator, or an all-evidenced-zero
     ``0/0``, is ``EvidencedAbsent``) does not make the zero-cash branch
@@ -8021,6 +8130,15 @@ def _apply_acquisition_goodwill_allocation_history(
             and digits.isdigit()
         ):
             facts[(fact.accounting_definition, int(digits))] = fact
+    acq_dispositions = (
+        {}
+        if role_dispositions is None
+        else {
+            row.period_id: row
+            for row in role_dispositions.rows
+            if row.required_role == "statement.cf.acquisitions_of_businesses"
+        }
+    )
     coverage: list[dict[str, object]] = []
     absences: list[tuple[str, int, dict[str, str]]] = []
     wired = False
@@ -8028,6 +8146,26 @@ def _apply_acquisition_goodwill_allocation_history(
         goodwill = facts.get(("goodwill_acquired", period))
         cash = facts.get(("acquisition_cash_paid", period))
         if cash is None:
+            disposition = acq_dispositions.get(f"FY{period}")
+            if (
+                disposition is not None
+                and disposition.state == "not_applicable"
+                and disposition.absence_citation is not None
+                and (
+                    goodwill is None
+                    or _scaled_to(
+                        goodwill.value, source_scale=goodwill.scale, target_scale="units"
+                    )
+                    == 0
+                )
+            ):
+                absences.append(
+                    (
+                        item.id,
+                        period,
+                        disposition.absence_citation.model_dump(mode="json"),
+                    )
+                )
             continue
         cash_value = _scaled_to(
             cash.value, source_scale=cash.scale, target_scale="units"
@@ -8049,7 +8187,12 @@ def _apply_acquisition_goodwill_allocation_history(
             _set_imported_value(
                 item, period, share, provenance=ValueProvenance.imported_edgar
             )
-            _set_constant_override(item, period, share)
+            _set_constant_override(
+                item,
+                period,
+                share,
+                origin=_derivation("filed_goodwill_acquired_share", ()),
+            )
             coverage.extend(
                 {
                     "source_kind": "source_bundle_schedule_disclosure",
@@ -8156,7 +8299,10 @@ def apply_company_grounded_schedule_policies(
         model, historical, historical_basis_facts
     )
     allocation = _apply_acquisition_goodwill_allocation_history(
-        model, historical, historical_basis_facts
+        model,
+        historical,
+        historical_basis_facts,
+        role_dispositions=role_dispositions,
     )
     graph = DependencyGraph()
     graph.build(model)

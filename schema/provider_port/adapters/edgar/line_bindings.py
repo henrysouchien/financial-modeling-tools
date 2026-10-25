@@ -91,9 +91,9 @@ def load_edgar_line_bindings() -> tuple[EdgarLineBinding, ...]:
                 f"{sorted(missing)!r}"
             )
     bindings = tuple(_row_to_binding(row) for row in payload)
-    required_roles = [binding.required_role for binding in bindings]
-    if len(set(required_roles)) != len(required_roles):
-        raise ValueError("Edgar required-role bindings must be unique")
+    keys = [(binding.tag, binding.statement_role, binding.required_role) for binding in bindings]
+    if len(set(keys)) != len(keys):
+        raise ValueError("Edgar line bindings must be unique by (tag, statement_role, required_role)")
     return bindings
 
 
@@ -107,10 +107,10 @@ def edgar_binding_by_tag() -> dict[str, tuple[EdgarLineBinding, ...]]:
 def mapping_by_required_role() -> dict[str, EdgarLineBinding]:
     """Return the reviewed Edgar presentation binding for each model role."""
 
-    return {
-        binding.required_role: binding
-        for binding in load_edgar_line_bindings()
-    }
+    out: dict[str, EdgarLineBinding] = {}
+    for binding in load_edgar_line_bindings():
+        out.setdefault(binding.required_role, binding)
+    return out
 
 
 def binding_for_filing_line(line: FilingLineRef) -> EdgarLineBinding | None:

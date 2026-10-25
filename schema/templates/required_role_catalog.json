@@ -1517,7 +1517,9 @@
       "template_build_items": [
         "financial_model.proceeds_from_employee_stock_purchase_plan"
       ],
-      "population_items": [],
+      "population_items": [
+        "tpl.a.dividends_shares.proceeds_from_employee_stock_purchase_plan"
+      ],
       "hff_fact_items": []
     },
     {

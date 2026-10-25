@@ -366,6 +366,12 @@
     "notes": null
   },
   {
+    "tag": "us-gaap:ProceedsFromStockPlans",
+    "statement_role": "cash_flow",
+    "required_role": "statement.cf.proceeds_from_stock_plans",
+    "notes": null
+  },
+  {
     "tag": "us-gaap:ProceedsFromIssuanceOfSharesUnderIncentiveAndShareBasedCompensationPlans",
     "statement_role": "cash_flow",
     "required_role": "statement.cf.employee_stock_purchase_plan",
