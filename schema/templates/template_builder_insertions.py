@@ -1624,18 +1624,22 @@ SGA_DRIVER_BASE_FORECAST_ITEM_IDS = (
     "tpl.fm.income_statement.sales_and_marketing",
     "tpl.fm.income_statement.general_and_administrative",
 )
-#: The assumptions operating-expense total's historical lane (before D&A, which that total has
-#: never carried): the functional lines and the combined SG&A line.
+#: The assumptions operating-expense total's historical and forecast lanes: the same
+#: operating-expense rows as ``tpl.fm.income_statement.total_operating_expenses``.
 SGA_OPEX_BASE_HISTORICAL_ITEM_IDS = (
     "tpl.fm.income_statement.sales_and_marketing",
     "tpl.fm.income_statement.research_and_development",
     "tpl.fm.income_statement.general_and_administrative",
     SELLING_GENERAL_ADMINISTRATIVE_ITEM_ID,
+    OPERATING_DEPRECIATION_AMORTIZATION_ITEM_ID,
+    RESTRUCTURING_CHARGES_ITEM_ID,
 )
 SGA_OPEX_BASE_FORECAST_ITEM_IDS = (
     "tpl.fm.income_statement.sales_and_marketing",
     "tpl.fm.income_statement.research_and_development",
     "tpl.fm.income_statement.general_and_administrative",
+    OPERATING_DEPRECIATION_AMORTIZATION_ITEM_ID,
+    RESTRUCTURING_CHARGES_ITEM_ID,
 )
 #: The drivers that read the G&A assumption row as their "SG&A" base, by the row they drive.
 SGA_DRIVER_BASE_READER_ITEM_IDS = (
