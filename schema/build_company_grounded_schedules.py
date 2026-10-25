@@ -7083,12 +7083,13 @@ def _cited_absence_cells(
 def _no_live_claimant(
     item_id: str,
     role_items: Mapping[str, RoleItems],
-    terminal_rows: Mapping[str, RoleDisposition],
+    dispositions: Mapping[str, RoleDisposition],
 ) -> bool:
-    """Whether every role that claims ``item_id`` is absent or unowed at the terminal period."""
+    """Whether every role that claims ``item_id`` is absent or unowed in ``dispositions``."""
 
     return all(
-        terminal_rows[claimant].state in ("not_applicable", "not_separately_presented", "unowed")
+        (row := dispositions.get(claimant)) is not None
+        and row.state in ("not_applicable", "not_separately_presented", "unowed")
         for claimant, claimed in role_items.items()
         if item_id in claimed.all_items()
     )
@@ -7622,7 +7623,6 @@ def _lower_cited_operands(
             item_id
             for item_id in dict.fromkeys((*role_lines, *role_items[role].hff_fact_items))
             if item_id in model._index
-            and (item_id.startswith("tpl.fm.") or _no_live_claimant(item_id, role_items, terminal))
         )
         for role, role_lines in lines.items()
     }
@@ -7660,13 +7660,22 @@ def _lower_cited_operands(
 
     def cited_in(period: int) -> dict[str, RoleDisposition]:
         out: dict[str, RoleDisposition] = {}
+        period_rows = (
+            terminal
+            if period in projection
+            else {
+                claimant: disposition
+                for claimant in role_items
+                if (disposition := rows.get((claimant, f"FY{period}"))) is not None
+            }
+        )
         if period in projection:
             # A cited inclusion the document persisted on a line no role owns (an
             # assumption row of a cash-flow aggregate) is the same cited cell.
             for item_id, marker_row in marker_rows.items():
                 out.setdefault(item_id, marker_row)
         for role, role_lines in cited_lines.items():
-            row = terminal[role] if period in projection else rows.get((role, f"FY{period}"))
+            row = period_rows.get(role)
             zero_debt_short_term_absent = (
                 period not in projection
                 and role == _SHORT_TERM_DEBT_ROLE
@@ -7689,7 +7698,12 @@ def _lower_cited_operands(
             for item_id in role_lines:
                 if item_id in statement_totals:
                     continue
-                # An author holds a forecast only where it yields an amount: a rate on a
+                if (
+                    not item_id.startswith("tpl.fm.")
+                    and not zero_debt_short_term_absent
+                    and not _no_live_claimant(item_id, role_items, period_rows)
+                ):
+                    continue
                 # cited-absent base (interest on no debt) computes to nothing.
                 if (
                     period in projection
