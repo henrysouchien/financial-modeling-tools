@@ -78,7 +78,8 @@ class PersistedBuildModelRunReport(_StoredContract):
     price_target_status: dict[str, JsonValue]
     #: The CurrentModelPointer projection ``{epoch, selected}`` read after the commit.
     current_model: dict[str, JsonValue] | None
-    agent: BuildModelReportAssessment
+    #: Agent judgment recorded by ``fms_report_build_model``; ``None`` when written by ``build_model`` publish before ``fms_report_build_model`` runs.
+    agent: BuildModelReportAssessment | None = None
 
 
 __all__ = [
